@@ -319,6 +319,24 @@ export function markdownInto(view,text,context={},onLater=()=>{}){
   loadMarkdown(text).then(()=>{if(view.isConnected&&renderMarkdown(view,text,context))onLater();},()=>{});
 }
 
+/**
+ * Where a spot in Markdown that `root` shows falls in its `source`: `offset`
+ * into the text node `node`. The node's text is found in the source as often
+ * as it shows before the node; null when the source has it otherwise, as with
+ * a character reference such as `&amp;`.
+ * @param {Element} root @param {Node} node @param {number} offset @param {string} source
+ */
+export function sourcePosition(root,node,offset,source){
+  const text=node.nodeType===Node.TEXT_NODE&&root.contains(node)?node.nodeValue:'';
+  if(!text)return null;
+  let before='',seen=0,at=-1;
+  const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
+  for(let current=walker.nextNode();current&&current!==node;current=walker.nextNode())before+=current.nodeValue;
+  for(let found=before.indexOf(text);found>=0;found=before.indexOf(text,found+1))seen++;
+  for(let count=0;count<=seen;count++){at=source.indexOf(text,at+1);if(at<0)return null;}
+  return at+offset;
+}
+
 // A link to a page of oneloop, such as #/task/WEB-042 or this page's own
 // address with one, opens that page in place.
 const appRoute=href=>{if(href.startsWith('#/'))return href;try{const url=new URL(href);return url.origin===location.origin&&url.pathname===location.pathname&&url.hash.startsWith('#/')?url.hash:null;}catch{return null;}};

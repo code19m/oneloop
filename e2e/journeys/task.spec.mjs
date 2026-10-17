@@ -23,20 +23,27 @@ test('Ctrl+S saves the task title where it is typed and never saves the page', {
   expect((await (await instance.api.get(`/api/tasks/${instance.projects[0].task.id}`)).json()).title).toBe('Saved with the shortcut');
 });
 
-test('a description shows as Markdown, opens for editing on a click, saves on Escape and links to app pages in place', async ({ page, instance }) => {
+test('a description shows as Markdown, opens for editing where it is clicked, saves on Escape and links to app pages in place', async ({ page, instance }) => {
   const { project, task } = instance.projects[0];
   await command(instance.api, 'task.update', { taskId: task.id, description: '## Plan\n\nSee [the Board](#/board) and **this**.' }, task.revision);
   await openApp(page, instance);
   const reader = page.locator('#task-description-content');
   await expect(reader.getByRole('heading', { name: 'Plan' })).toBeVisible();
-  await reader.getByText('this').click();
+  // The caret lands where the click does, just before "this".
+  await reader.getByText('this').click({ position: { x: 1, y: 8 } });
   const editor = page.locator('#task-description');
   await expect(editor).toBeFocused();
-  await editor.pressSequentially(' More.');
+  await editor.pressSequentially('all of ');
   await editor.press('Escape');
   await expect(page.getByRole('button', { name: 'Edit description' })).toBeFocused();
-  await expect(reader).toContainText('this. More.');
-  expect((await (await instance.api.get(`/api/tasks/${task.id}`)).json()).description).toBe('## Plan\n\nSee [the Board](#/board) and **this**. More.');
+  await expect(reader).toContainText('all of this.');
+  // A double-click selects the word it lands on.
+  await reader.getByRole('heading', { name: 'Plan' }).dblclick();
+  await expect(editor).toBeFocused();
+  await editor.pressSequentially('Steps');
+  await editor.press('Escape');
+  await expect(reader.getByRole('heading', { name: 'Steps' })).toBeVisible();
+  expect((await (await instance.api.get(`/api/tasks/${task.id}`)).json()).description).toBe('## Steps\n\nSee [the Board](#/board) and **all of this**.');
   await reader.getByRole('link', { name: 'the Board' }).click();
   // An address without a project opens the Board of the project on screen.
   await expect(page).toHaveURL(new RegExp(`#/board/${project.id}$`));

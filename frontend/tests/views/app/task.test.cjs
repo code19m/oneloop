@@ -106,7 +106,7 @@ test('epic, milestone and task descriptions share bounded readers and editors th
 const describedTask = (desc, options = {}) => taskPage({ actions: true, ...options, prepare: (D, w) => { D.tasks.find(item => item.id === 'BIR-079').desc = desc; options.prepare?.(D, w); } });
 const click = (t, element) => element.dispatchEvent(new t.w.MouseEvent('click', { bubbles: true, cancelable: true }));
 
-test('a description shows as Markdown, and a click on its text opens the editor with the caret at the end', () => {
+test('a description shows as Markdown, and a click on its text opens the editor, at the end where the browser can\'t place the caret', () => {
   const source = '## Plan\n\n- [ ] Write **tests**\n\nSee BIR-064 and XYZ-001, `BIR-065` and [the guide](https://example.invalid/guide).\nA new line, as the text has it.';
   const t = describedTask(source), reader = () => t.d.getElementById('task-description-content');
   assert.equal(t.d.getElementById('task-description'), null, 'no editor until the person opens it');
@@ -128,6 +128,21 @@ test('a description shows as Markdown, and a click on its text opens the editor 
   editor.blur();
   assert.equal(t.d.getElementById('task-description'), null); assert(reader().querySelector('.markdown-body'));
   assert.equal(t.d.querySelector('.description-edit').hidden, false); assert.equal(t.commands.length, 0);
+});
+
+test('a click on the description puts the caret where it landed, and a double-click selects that word', () => {
+  const t = describedTask('## Plan\n\nWrite **tests** before the code.'), strong = t.d.querySelector('#task-description-content strong');
+  // jsdom lays nothing out, so the browser's answer for the point is given: in "tests", after "te".
+  t.d.caretPositionFromPoint = () => ({ offsetNode: strong.firstChild, offset: 2 });
+  strong.dispatchEvent(new t.w.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+  const editor = t.d.getElementById('task-description');
+  assert.equal(t.d.activeElement, editor);
+  assert.deepEqual([editor.selectionStart, editor.selectionEnd], [19, 19]);
+  // The editor took the text's place under the pointer before the second press.
+  const press = new t.w.MouseEvent('mousedown', { bubbles: true, cancelable: true, detail: 2 });
+  editor.dispatchEvent(press);
+  assert.equal(press.defaultPrevented, true);
+  assert.equal(editor.value.slice(editor.selectionStart, editor.selectionEnd), 'tests');
 });
 
 test('Escape and Ctrl+Enter save the description, which shows again once saved, and give focus to Edit', async () => {

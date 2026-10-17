@@ -348,6 +348,19 @@ function directPreviews() {
   return { w, d: w.document, host: w.document.getElementById('host'), views: importModule(dom, 'src/features/files/file-views.js') };
 }
 
+test('a spot in rendered Markdown is found in its source, as often as its text shows before it', () => {
+  const { d, host, views } = directPreviews();
+  const source = '## Plan\n\nWrite **one** test and **one** more.\n\nTom &amp; Jerry';
+  views.markdownInto(host, source, { breaks: true });
+  const nodes = [...host.querySelectorAll('h2,strong,p')].map(element => element.firstChild), at = (node, offset) => views.sourcePosition(host, node, offset, source);
+  const [heading, , first, second, entity] = nodes;
+  assert.equal(at(heading, 1), 4, 'after the P of ## Plan');
+  assert.equal(at(first, 2), 19, 'in the first **one**');
+  assert.equal(at(second, 2), 36, 'in the second, which repeats the first');
+  assert.equal(at(entity, 4), null, 'the source writes & otherwise');
+  assert.equal(at(d.createTextNode('one'), 0), null, 'text the description doesn\'t show');
+});
+
 test('a Knowledge context links relative files and shows relative images; attachments keep them inert', () => {
   const text = ['[Guide](guides/setup.md#install)', '[Missing](missing.md)', '[Unsafe](javascript:alert(1))', '![Logo](assets/logo.png)', '![Other](other.png)'].join('\n\n');
   const context = {
