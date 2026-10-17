@@ -176,6 +176,17 @@ test('a press below the description keeps the editor in place until the press en
   }
 });
 
+test('Escape in an empty or emptied description keeps focus on its field, which opens it again', () => {
+  for (const desc of ['', 'Saved text']) {
+    const t = describedTask(desc);
+    t.A.editDescription('BIR-079');
+    const editor = t.d.getElementById('task-description');
+    editor.value = ''; editor.dispatchEvent(new t.w.Event('input', { bubbles: true }));
+    editor.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    assert.equal(t.d.activeElement, t.d.getElementById('task-description'), JSON.stringify(desc));
+  }
+});
+
 test('Escape while a press is still down gives focus to Edit, though the editor waits for the press to end', () => {
   const t = describedTask('One line'), below = t.d.querySelector('.task-activity h2');
   t.A.editDescription('BIR-079');

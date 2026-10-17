@@ -277,13 +277,17 @@ Object.assign(App, {
     if (!input) return;
     input.focus({ preventScroll: true }); input.setSelectionRange(input.value.length, input.value.length); input.scrollTop = input.scrollHeight;
   },
-  /** Escape and Cmd/Ctrl+Enter leave the description, which saves it, and give focus to Edit. */
+  /**
+   * Escape and Cmd/Ctrl+Enter leave the description, which saves it, and
+   * give focus to Edit. An empty description has no Edit: its field, which
+   * stays, is what opens it again.
+   */
   descriptionKey(event) {
     if (event.isComposing || event.keyCode === 229 || !(event.key === 'Escape' || event.key === 'Enter' && (event.metaKey || event.ctrlKey))) return;
     event.preventDefault(); event.stopPropagation();
     const input = event.currentTarget, edit = input.closest('.task-description')?.querySelector('.description-edit');
     input.blur();
-    if (edit && !edit.hidden) edit.focus({ preventScroll: true });
+    (edit && !edit.hidden ? edit : document.getElementById('task-description'))?.focus({ preventScroll: true });
   },
   /**
    * Show the saved status, block and deadline of the open task around its

@@ -28,6 +28,8 @@ All notable changes to oneloop are recorded here. The format follows
   other controls when the task's files are drawn again, such as after a move
   or a change made elsewhere. When the file is deleted, focus goes to the same
   control of the file in its place.
+- Esc or Ctrl+Enter in an empty description now keeps focus on its field,
+  instead of losing it to the page.
 
 ## [0.1.0-rc.6] - 2026-10-17
 
