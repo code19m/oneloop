@@ -1,6 +1,6 @@
 //! The bootstrap: what the client needs to show its first view.
 
-use super::board::{board_counts_connection, board_page_with_total, task_page_generation};
+use super::board::{board_columns, board_counts_connection};
 use super::roadmap::{epics, milestones, tracks};
 use super::*;
 
@@ -36,8 +36,15 @@ pub(super) fn bootstrap_snapshot(
             .optional()?,
         None => None,
     };
+    // Someone else's switch, or one to a project the person can no longer
+    // open, counts as none.
+    let switched = query.switched_to.filter(|id| {
+        query.switched_by.as_deref() == Some(actor.user_id.as_str())
+            && projects.iter().any(|project| &project.id == id)
+    });
     let selected = direct_project
         .or(query.project_id)
+        .or(switched)
         .or_else(|| projects.first().map(|project| project.id.clone()));
     if selected
         .as_ref()
@@ -66,7 +73,7 @@ pub(super) fn bootstrap_snapshot(
         inbox_unread_count: unread_notification_count(connection, actor)?,
         selected_project_id: selected.clone(),
         view,
-        done_order: None,
+        board_filter: None,
         board_counts: None,
         board_pages: Default::default(),
         pool_counts: Default::default(),
@@ -80,32 +87,16 @@ pub(super) fn bootstrap_snapshot(
         let counted_at = (result.view == "roadmap").then(unix_now).transpose()?;
         result.epics = epics(connection, project_id, time_zone, counted_at)?;
         result.milestones = milestones(connection, project_id)?;
-        let counts = board_counts_connection(connection, project_id)?;
-        if result.view == "board" {
+        let counts = if result.view == "board" {
             require_project(connection, actor, project_id, Need::Read, false)?;
-            let generation = task_page_generation(connection, project_id)?;
-            result.done_order = Some(query.done_order);
-            for (status, total) in [
-                (TaskStatus::Planning, counts.planning),
-                (TaskStatus::InProgress, counts.in_progress),
-                (TaskStatus::InReview, counts.in_review),
-                (TaskStatus::Done, counts.done),
+            // The pages a Board read gives for the address's filter.
+            let board = board_columns(connection, project_id, Some(PAGE_SIZE), &query.filter)?;
+            for (status, page) in [
+                (TaskStatus::Planning, board.planning),
+                (TaskStatus::InProgress, board.in_progress),
+                (TaskStatus::InReview, board.in_review),
+                (TaskStatus::Done, board.done),
             ] {
-                let page = board_page_with_total(
-                    connection,
-                    &BoardQuery {
-                        project_id: project_id.into(),
-                        status,
-                        cursor: None,
-                        limit: Some(PAGE_SIZE),
-                        filter: TaskFilter {
-                            done_order: query.done_order,
-                            ..TaskFilter::default()
-                        },
-                    },
-                    Some(total),
-                    generation,
-                )?;
                 result.board_pages.insert(
                     status.as_str().into(),
                     PageSummary {
@@ -115,7 +106,11 @@ pub(super) fn bootstrap_snapshot(
                 );
                 result.tasks.extend(page.items);
             }
-        }
+            result.board_filter = Some(query.filter);
+            board.counts
+        } else {
+            board_counts_connection(connection, project_id)?
+        };
         if let Some(id) = direct_task.as_deref() {
             result.tasks.retain(|task| task.id != id);
             result.tasks.push(task_view(connection, id)?);

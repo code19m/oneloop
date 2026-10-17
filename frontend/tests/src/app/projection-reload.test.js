@@ -3,8 +3,9 @@ import test from 'node:test';
 import {createProjectionReload,createSignInLoad,routeScope} from '../../../src/app/projection-reload.js';
 import {createBootstrapController} from '../../../src/data/bootstrap-controller.js';
 import {createReadController} from '../../../src/data/read-controller.js';
-import {createLegacyData,hydrateLegacyData,mergeEpicTaskPage} from '../../../src/data/projection-store.js';
+import {createLegacyData,hydrateLegacyData,mergeEpicTaskPage,reconcileCommandResult} from '../../../src/data/projection-store.js';
 import {ApiError} from '../../../src/data/api-client.js';
+import {normalizeBoardFilters} from '../../../src/data/board-filters.js';
 import {settle,useGlobals,waitFor} from '../../support/helpers.cjs';
 
 const projection=(projectId,extra={})=>({timeZone:projectId,session:{userId:'u1',isAdmin:true},users:[{id:'u1',name:'Owner',isAdmin:true,isActive:true}],
@@ -119,7 +120,9 @@ test('the address decides what the bootstrap loads, and the project on screen fi
   const onScreen={context:()=>({projectId:'p1'})};
   assert.deepEqual(routeScope('#/task/ONE-1',onScreen),{taskId:'ONE-1',view:'task'});
   assert.deepEqual(routeScope('#/board/p2',onScreen),{projectId:'p2',view:'board'});
-  assert.deepEqual(routeScope('#/board/p2?search=x',onScreen),{projectId:'p2',view:'metadata'},'a filtered Board reads its cards afterwards');
+  const filters=normalizeBoardFilters({search:'x',assigneeIds:['u1']});
+  assert.deepEqual(routeScope('#/board/p2?search=x&assignee=u1',onScreen),{projectId:'p2',view:'board',filters},'a filtered Board comes with its cards');
+  for(const scope of [{projectId:'p1'},{projectId:'p2',view:'board'}])assert.deepEqual(routeScope('#/board/p2?search=x',onScreen,scope),{view:'board',...scope},'a load that names another project or page leaves the filters out');
   assert.deepEqual(routeScope('#/roadmap/p2',onScreen),{projectId:'p2',view:'roadmap'});
   assert.deepEqual(routeScope('#/knowledge/p2/tree/guides',onScreen),{projectId:'p2',view:'metadata'});
   assert.deepEqual(routeScope('#/inbox',onScreen),{projectId:'p1',view:'metadata'});
@@ -156,6 +159,38 @@ test('a full refresh of the Board uses the cards its bootstrap carries, unless a
   }
 });
 
+test('a hint that a column was re-spaced reads the Board again, and the cards take the server\'s order',async()=>{
+  const t=page({view:'board',projectId:'p1',board:{},hash:'#/board/p1'});
+  const card=(id,position)=>({...view(id),position});
+  const empty={items:[],nextCursor:null,total:0},board=planning=>({planning:{items:planning,nextCursor:null,total:planning.length},inProgress:empty,inReview:empty,done:empty,counts:{planning:planning.length}});
+  // The Board draws a column's cards in the order the projection holds them.
+  const order=()=>t.data.tasks.filter(task=>task.state==='planning').map(task=>task.internalId);
+  const read=t.reads.board('p1');await t.called(1);t.next('boardView').resolve(board([card('a',1),card('b',2)]));await read;
+  // The move put c between a and b, but found no room there: the server re-spaced the column.
+  reconcileCommandResult(t.data,{entities:[{entityType:'task',...card('c',1536),revision:2}]});
+  const live=t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'task',entityId:'c',entityRevision:2,respaced:true}]});
+  await t.called(2);
+  assert.equal(t.calls[1].name,'boardView');
+  t.next('boardView').resolve(board([card('a',1024),card('c',1536),card('b',2048)]));
+  assert.equal((await live).stale,false);
+  assert.deepEqual(order(),['a','c','b']);
+});
+
+test('a checklist hint gives its Board card the new counts with one task read',async()=>{
+  const t=page({view:'board',projectId:'p1',board:{},hash:'#/board/p1'});
+  const empty={items:[],nextCursor:null,total:0};
+  const read=t.reads.board('p1');await t.called(1);
+  t.next('boardView').resolve({planning:{items:[view('t1')],nextCursor:null,total:1},inProgress:empty,inReview:empty,done:empty,counts:{planning:1}});await read;
+  const live=t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'checklist',entityId:'t1',taskId:'t1',entityRevision:1}]});
+  await t.called(2);await settle();
+  // A checklist change moves no card, so the column counts stay as they are.
+  assert.deepEqual(t.calls.slice(1).map(call=>call.name),['task']);
+  t.next('task').resolve({...view('t1'),checklistDone:1,checklistTotal:2,checklistVersion:1});
+  assert.equal((await live).stale,false);
+  const card=t.data.tasks.find(task=>task.internalId==='t1');
+  assert.deepEqual([card.checklistDone,card.checklistTotal],[1,2]);
+});
+
 /** A sign-in of `person` on a page that shows `context`; the bootstrap records each load and answers with `answer`. */
 function signInPage(context,answer=async()=>({stale:false}),person='u1'){
   const loads=[],bootstrap={load:async scope=>{loads.push(scope);return answer(scope);}};
@@ -163,12 +198,12 @@ function signInPage(context,answer=async()=>({stale:false}),person='u1'){
   return {signIn,loads};
 }
 
-/** A first visit to the Board with the real bootstrap controller; `answer` answers each bootstrap read. */
-function firstVisit(answer){
+/** A first visit to the Board, or to `hash`, with the real bootstrap controller; `answer` answers each bootstrap read. */
+function firstVisit(answer,hash='#/board'){
   const data=createLegacyData(),reads=[];
   const api={bootstrap:async scope=>{reads.push(scope);return answer(reads.length);}};
-  const signIn=createSignInLoad({bootstrap:createBootstrapController({api,data}),api,data,getApp:()=>null,location:{hash:'#/board'}});
-  return {data,reads,signIn};
+  const signIn=createSignInLoad({bootstrap:createBootstrapController({api,data}),api,data,getApp:()=>null,location:{hash}});
+  return {data,api,reads,signIn};
 }
 
 test('the first load after the session check uses the read that started with it',async()=>{
@@ -178,6 +213,20 @@ test('the first load after the session check uses the read that started with it'
   assert.equal((await t.signIn.load()).stale,false);
   assert.deepEqual(t.reads,[{view:'board'}]);
   assert.equal(t.data.bootstrapView,'board');
+});
+
+test('a filtered Board address loads with one bootstrap, whose cards the Board takes for its filters',async()=>{
+  const filters=normalizeBoardFilters({search:'x',blocked:true}),empty={nextCursor:null,total:0};
+  // The server names the filter its Board pages were read for.
+  const boardFilter={search:'x',trackIds:[],epicIds:[],assigneeIds:[],noAssignee:false,blocked:true,doneOrder:'manual'};
+  const t=firstVisit(()=>projection('p1',{view:'board',boardFilter,boardPages:{planning:{nextCursor:null,total:1},inProgress:empty,inReview:empty,done:empty},tasks:[view('t1')]}),'#/board/p1?search=x&blocked=1');
+  t.signIn.prefetch();
+  t.data.session={id:'s1',userId:'u1'};
+  await t.signIn.load();
+  assert.deepEqual(t.reads.map(scope=>[scope.projectId,scope.view,scope.filters]),[['p1','board',filters]]);
+  // A Board read would fail here: this API has none.
+  assert.equal(createReadController({api:t.api,data:t.data}).adoptBoard('p1',{search:'x',blocked:true}),true);
+  assert.deepEqual(t.data.tasks.map(task=>task.internalId),['t1']);
 });
 
 test('a session change drops the read that started with the session check',async()=>{
@@ -216,29 +265,29 @@ test('a project the account can no longer open loads the default project, and a 
   assert.deepEqual(task.loads,[{taskId:'TWO-1',view:'task'},{view:'metadata'}]);
 });
 
-test('a new tab opens the project its person switched to last, and never another person\'s',async t=>{
+test('a new tab sends this browser\'s last switch with its one read, and shows the answer to whoever signed in',async t=>{
   useGlobals(t,{localStorage:storage({'oneloop.project':JSON.stringify({userId:'u1',projectId:'p2'})})});
-  for(const person of ['u1','u2']){
-    // Each read answers with its own project, for the person signing in.
-    const visit=firstVisit(count=>projection(count===1?'p2':'p1',{session:{userId:person,isAdmin:true},users:[{id:person,name:person,isAdmin:true,isActive:true}]}));
+  // The server opens the switch for the person who made it, and the first project for anyone else.
+  for(const [person,project] of [['u1','p2'],['u2','p1']]){
+    const visit=firstVisit(()=>projection(project,{session:{userId:person,isAdmin:true},users:[{id:person,name:person,isAdmin:true,isActive:true}]}));
     visit.signIn.prefetch();
     visit.data.session={id:'s1',userId:person};
     await visit.signIn.load();
-    // Before the session is known, the read asks for the last switch; only its own person gets it.
-    assert.deepEqual(visit.reads.map(scope=>[scope.projectId??null,scope.view]),person==='u1'?[['p2','board']]:[['p2','board'],[null,'board']],person);
-    assert.equal(visit.data.timeZone,person==='u1'?'p2':'p1',`${person} sees the project of the read for them`);
+    assert.deepEqual(visit.reads,[{view:'board',lastSwitch:{userId:'u1',projectId:'p2'}}],person);
+    assert.equal(visit.data.timeZone,project,`${person} sees the project of the read for them`);
   }
 });
 
-test('a remembered project that is gone opens the default project and is forgotten, but only by its person',async t=>{
+test('a switch to a project its person can no longer open is forgotten, but only by its person',async t=>{
   const remembered=storage({'oneloop.project':JSON.stringify({userId:'u1',projectId:'p2'})});useGlobals(t,{localStorage:remembered});
   const gone=new ApiError('project not found',{status:404,code:'not_found'});
   const other=signInPage({view:'board',projectId:null,board:{},hash:'#/board/p2'},async scope=>{if(scope.projectId)throw gone;return {stale:false};},'u2');
   await other.signIn.load();
   assert.equal(remembered.values.has('oneloop.project'),true,'someone else who can\'t open it leaves the switch alone');
-  const {signIn,loads}=signInPage(null,async scope=>{if(scope.projectId)throw gone;return {stale:false};});
+  // The server opens the first project instead of the one it can't.
+  const {signIn,loads}=signInPage(null,async()=>({stale:false,projection:{selectedProjectId:'p1'}}));
   await signIn.load();
-  assert.deepEqual(loads,[{projectId:'p2',view:'board'},{view:'board'}]);
+  assert.deepEqual(loads,[{view:'board',lastSwitch:{userId:'u1',projectId:'p2'}}]);
   assert.equal(remembered.values.has('oneloop.project'),false);
 });
 

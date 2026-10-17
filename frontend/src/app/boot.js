@@ -50,19 +50,20 @@ const reportError = (error, form = null) => {
   if (app) app.toast(feedback.message || 'The request could not be completed.', 'error');
   else showStartupError(error);
 };
+const gateway = createCommandGateway({ api, data, getScope:()=>sessionKey(data),onChange: (result) => runtimeHooks?.publish({ type:'command', result }),onPending:(key,pending)=>recovery?.interactionPending(key,pending) });
 // A Board filter that names a value the loaded project lacks, such as a deleted
 // track, is dropped before any read sends it.
-const bootstrap = createBootstrapController({ api, data, onReady: (projection) => { app?.keepKnownFilters(); runtimeHooks?.publish({ type:'bootstrap', projection }); }, onError: (error) => {
+const bootstrap = createBootstrapController({ api, data, writes:gateway, onReady: (projection) => { app?.keepKnownFilters(); runtimeHooks?.publish({ type:'bootstrap', projection }); }, onError: (error) => {
   if(error instanceof ApiError&&(error.code==='network_error'||error.status===401))return;
   if(error instanceof ApiError&&[403,404].includes(error.status))return;
   reportError(error);
 }, onForeign:(userId)=>recovery?.ownsAnswer(userId) });
-const gateway = createCommandGateway({ api, data, getScope:()=>sessionKey(data),onChange: (result) => runtimeHooks?.publish({ type:'command', result }),onPending:(key,pending)=>recovery?.interactionPending(key,pending) });
-// A read repaints only the view that shows what it loaded.
-const reads = createReadController({api,data,onBoard:()=>app?.context?.().view==='board'?app.refreshBoard():app?.refreshCounts(),onRoadmap:()=>app?.refreshRoadmap(),onPool:()=>app?.refreshPool(),onTask:(task)=>{const context=app?.context?.();if(context?.view==='task'&&context.taskId===task.id)app.refresh();},onEpic:()=>app?.refreshEpic(),onCounts:()=>app?.refreshCounts(),onError:()=>{}});
+// A read repaints only the view that shows what it loaded. A task read
+// shows on its page as a change from elsewhere does, in place.
+const reads = createReadController({api,data,writes:gateway,onBoard:()=>app?.context?.().view==='board'?app.refreshBoard():app?.refreshCounts(),onRoadmap:()=>app?.refreshRoadmap(),onPool:()=>app?.refreshPool(),onTask:(task)=>{const context=app?.context?.();if(context?.view==='task'&&context.taskId===task.id)app.refreshTask(task.id);},onEpic:()=>app?.refreshEpic(),onCounts:()=>app?.refreshCounts(),onError:()=>{}});
 const reloadProjection = createProjectionReload({data,bootstrap,reads,getApp:()=>app,getBridge:()=>bridge,getRecovery:()=>recovery});
 const signInLoad = createSignInLoad({bootstrap,api,data,getApp:()=>app});
-const routeScope = () => scopeOfRoute(location.hash, app);
+const routeScope = (scope) => scopeOfRoute(location.hash, app, scope);
 runtimeHooks = createRuntimeHooks({ api, gateway, data, reload: reloadProjection });
 
 const auth = createAuthController({
@@ -99,7 +100,6 @@ installTooltips(document);
 installSaveShortcut(document,recovery);
 installDisclosures(document);
 installPreviews(document,runtimeHooks);
-installChecklistControls(document);
 
 runtimeHooks.subscribe(change=>{
   const boardChanged=change.type==='sse'&&change.kind!=='inbox.changed'&&!['comment','attachment','knowledge_source'].includes(change.entityType)
@@ -114,8 +114,9 @@ try {
   await auth.initialize();
   ({ App: app } = await import('../../views/app.js'));
   recovery.start();
-  bridge = installViewBridge({app,data,gateway,auth,api,reads,recovery,reloadBootstrap:(scope={})=>bootstrap.load({...routeScope(),...scope})});
+  bridge = installViewBridge({app,data,gateway,auth,api,reads,recovery,reloadBootstrap:(scope={})=>bootstrap.load(routeScope(scope))});
   globalThis.OneloopRuntime = Object.freeze({ ...bridge, transport:runtimeHooks, now:api.serverNow });
+  installChecklistControls(document,bridge);
   app.refresh();
   routeLoader=async(options={})=>{try{await bridge.loadCurrentRoute(options);}catch(error){if(!recovery.handleRouteError(error))reportError(error);}};
   window.addEventListener('hashchange',routeLoader);

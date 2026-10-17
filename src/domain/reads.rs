@@ -6,8 +6,7 @@ mod bootstrap;
 mod roadmap;
 
 use board::{
-    board_counts_connection, board_page_connection, board_page_with_total,
-    epic_task_page_connection, task_page_generation,
+    board_columns, board_counts_connection, board_page_connection, epic_task_page_connection,
 };
 use bootstrap::bootstrap_snapshot;
 use roadmap::{epics, milestones, tracks};
@@ -33,22 +32,26 @@ use super::{
 
 pub(super) use board::{checklist_item, task_view};
 
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Clone, Debug, Default)]
 pub struct BootstrapQuery {
     pub project_id: Option<String>,
     pub task_id: Option<String>,
     pub view: Option<String>,
-    /// The order of the Board's Done page, when the bootstrap has Board pages.
-    #[serde(default)]
-    pub done_order: DoneOrder,
+    /// The project that this browser last switched to, and the person who
+    /// switched. It opens when nothing else names a project, but only for
+    /// that person and while they can open it.
+    pub switched_to: Option<String>,
+    pub switched_by: Option<String>,
+    /// The filter and Done order of the Board pages, when the bootstrap has them.
+    pub filter: TaskFilter,
 }
 
 /// The size of a page of tasks or Pool items, and the most one may hold.
 const PAGE_SIZE: usize = 50;
 
 /// Which tasks a Board read shows, and the order of its Done column.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskFilter {
     /// Text in the task key or title, in any case.
     pub search: Option<String>,
@@ -161,37 +164,7 @@ impl DomainService {
     pub async fn board_view(&self, actor: &Actor, query: BoardViewQuery) -> AppResult<BoardView> {
         access::read(&self.db, actor, move |connection, actor| {
             require_project(connection, actor, &query.project_id, Need::Read, false)?;
-            let counts = board_counts_connection(connection, &query.project_id)?;
-            let generation = task_page_generation(connection, &query.project_id)?;
-            let unfiltered = query.filter.is_empty();
-            let page = |status: TaskStatus, total: i64| {
-                board_page_with_total(
-                    connection,
-                    &BoardQuery {
-                        project_id: query.project_id.clone(),
-                        status,
-                        cursor: None,
-                        limit: query.limit,
-                        filter: query.filter.clone(),
-                    },
-                    unfiltered.then_some(total),
-                    generation,
-                )
-            };
-            let planning = page(TaskStatus::Planning, counts.planning)?;
-            let in_progress = page(TaskStatus::InProgress, counts.in_progress)?;
-            let in_review = page(TaskStatus::InReview, counts.in_review)?;
-            let done = page(TaskStatus::Done, counts.done)?;
-
-            let result = BoardView {
-                project_id: query.project_id,
-                planning,
-                in_progress,
-                in_review,
-                done,
-                counts,
-            };
-            Ok(result)
+            board_columns(connection, &query.project_id, query.limit, &query.filter)
         })
         .await
     }
@@ -265,7 +238,53 @@ impl DomainService {
     }
 }
 
+/// The projects the actor may read, with what it may manage in each and the
+/// prefixes each had before.
 fn projects(connection: &rusqlite::Connection, actor: &Actor) -> AppResult<Vec<ProjectView>> {
+    let mut projects = readable_projects(connection, actor)?;
+    let mut earlier = earlier_prefixes(
+        connection,
+        &projects
+            .iter()
+            .map(|project| (project.id.as_str(), project.task_prefix.as_str()))
+            .collect::<Vec<_>>(),
+    )?;
+    for project in &mut projects {
+        project.earlier_prefixes = earlier.remove(&project.id).unwrap_or_default();
+    }
+    Ok(projects)
+}
+
+/// The prefixes that each project, given by its ID and current prefix, had
+/// before, in one query for all of them.
+pub(in crate::domain) fn earlier_prefixes(
+    connection: &rusqlite::Connection,
+    projects: &[(&str, &str)],
+) -> AppResult<std::collections::HashMap<String, Vec<String>>> {
+    let current: std::collections::HashMap<&str, &str> = projects.iter().copied().collect();
+    let ids = serde_json::to_string(&current.keys().collect::<Vec<_>>())
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut statement = connection.prepare_cached(
+        "SELECT project_id,prefix FROM project_prefixes
+         WHERE project_id IN (SELECT value FROM json_each(?1)) ORDER BY prefix",
+    )?;
+    let mut earlier = std::collections::HashMap::<String, Vec<String>>::new();
+    for row in statement.query_map([ids], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })? {
+        let (project, prefix) = row?;
+        if current.get(project.as_str()) != Some(&prefix.as_str()) {
+            earlier.entry(project).or_default().push(prefix);
+        }
+    }
+    Ok(earlier)
+}
+
+/// The projects the actor may read, and what it may manage in each.
+fn readable_projects(
+    connection: &rusqlite::Connection,
+    actor: &Actor,
+) -> AppResult<Vec<ProjectView>> {
     let sql = if actor.is_admin {
         "SELECT p.id,p.name,p.task_prefix,p.revision,1,1 FROM projects p WHERE p.deleted_at IS \
                      NULL ORDER BY lower(p.name),p.id"
@@ -316,6 +335,7 @@ fn project_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectView> {
         id: row.get(0)?,
         name: row.get(1)?,
         task_prefix: row.get(2)?,
+        earlier_prefixes: Vec::new(),
         revision: row.get(3)?,
         manage_roadmap: row.get(4)?,
         manage_board: row.get(5)?,
@@ -435,8 +455,19 @@ fn pool_page_connection(
 /// The ID of the task that `value` names by its ID or its key, such as
 /// `WEB-042`. Callers check access to the task's project.
 pub(crate) fn resolve_task_id(connection: &rusqlite::Connection, value: &str) -> AppResult<String> {
-    connection.query_row("SELECT id FROM tasks WHERE (id=?1 OR task_key=?1 COLLATE NOCASE) AND deleted_at IS NULL",[value],|row|row.get(0)).optional()?.ok_or(AppError::NotFound { resource: "task" })
+    connection
+        .prepare_cached(TASK_BY_ID_OR_KEY_SQL)?
+        .query_row([value], |row| row.get(0))
+        .optional()?
+        .ok_or(AppError::NotFound { resource: "task" })
 }
+
+/// A task by its ID or its key, as two lookups that each search their own
+/// unique index whatever the statistics say. As one lookup with OR, SQLite
+/// read the tasks one by one until it met the one named, with any
+/// statistics, which was slow on large instances.
+const TASK_BY_ID_OR_KEY_SQL: &str = "SELECT id FROM tasks WHERE id=?1 AND deleted_at IS NULL
+    UNION ALL SELECT id FROM tasks WHERE task_key=?1 COLLATE NOCASE AND deleted_at IS NULL";
 
 #[cfg(test)]
 mod tests;

@@ -49,6 +49,8 @@ test('bootstrap uses encoded identifiers, supports empty responses, and rejects 
   const api = createApiClient({ fetchImpl: async (url) => { requested = url; return new Response(null, { status: 204 }); } });
   assert.equal(await api.bootstrap({ projectId: 'my project', taskId: 'BIR-001' }), null);
   assert.equal(requested, '/api/bootstrap?projectId=my+project&taskId=BIR-001');
+  await api.bootstrap({ view: 'metadata', lastSwitch: { userId: 'u1', projectId: 'my project' } });
+  assert.equal(requested, '/api/bootstrap?view=metadata&switchedTo=my+project&switchedBy=u1');
   const invalid = createApiClient({ fetchImpl: async () => new Response('bad', { status: 200 }) });
   await assert.rejects(invalid.command(prepareCommand('task.update', {})), error => error.code === 'invalid_response' && error.uncertain);
 });
@@ -60,10 +62,13 @@ test('a Board bootstrap asks for Done in the order this browser chose', async (t
   saveDoneOrder('completed', undefined); t.after(() => saveDoneOrder('manual', undefined));
   await api.bootstrap({ projectId: 'p1', view: 'board' });
   await api.bootstrap({ projectId: 'p1', view: 'roadmap' });
+  // A filtered Board's pages come for its filters, named as a Board read names them.
+  await api.bootstrap({ projectId: 'p1', view: 'board', filters: { search: 'x', trackIds: ['t1', 't2'], blocked: true } });
   assert.deepEqual(requested, [
     '/api/bootstrap?projectId=p1&view=board',
     '/api/bootstrap?projectId=p1&view=board&doneOrder=completed',
     '/api/bootstrap?projectId=p1&view=roadmap',
+    '/api/bootstrap?projectId=p1&view=board&search=x&trackIds=t1%2Ct2&blocked=true&doneOrder=completed',
   ]);
 });
 

@@ -76,6 +76,8 @@ function loadAttachments(taskId,force=false,background=false){
   });
   loading.set(taskId,request);
 }
+/** Read the files of task `id` again, as they changed elsewhere; the open task page shows them. */
+export function reloadAttachments(id){loadAttachments(id,true,true);}
 /**
  * Load the attachments of task `id` each time its page opens (`opened`), and
  * when the task lost its list, and show its uploads, after its page draws.
@@ -90,7 +92,11 @@ export function mountAttachments(id,opened=false){
   for(const job of current){let row=host.querySelector(`[data-upload-id="${esc(job.id)}"]`);if(!row){row=document.createElement('div');row.className='upload-row';row.dataset.uploadId=job.id;setHTML(row,'<div class="upload-copy"><span class="upload-name"></span><span class="upload-state"></span><progress max="100"></progress></div><button type="button" class="btn quiet" data-upload-action="cancel">Cancel</button><button type="button" class="btn quiet" data-upload-action="retry">Retry</button><button type="button" class="btn quiet" data-upload-action="remove">Dismiss</button>');host.append(row);UIMotion.enter(row);}
     row.querySelector('.upload-name').textContent=displayText(job.file.name);const status=row.querySelector('.upload-state');status.textContent=job.error||(job.state==='uploading'?`Uploading ${job.progress}%`:job.state==='cancelled'?'Upload cancelled':'Uploaded');status.setAttribute('role',job.state==='error'?'alert':'status');
     const progress=row.querySelector('progress');progress.value=job.progress;progress.hidden=job.state!=='uploading';progress.setAttribute('aria-label',displayText(job.file.name)+' upload');
+    const focused=row.contains(document.activeElement)?document.activeElement:null;
     row.querySelector('[data-upload-action="cancel"]').hidden=job.state!=='uploading';row.querySelector('[data-upload-action="retry"]').hidden=!['error','cancelled'].includes(job.state)||job.validation;row.querySelector('[data-upload-action="remove"]').hidden=job.state==='uploading';
+    // A control that the upload's new state hides gives its focus to the
+    // row's next one, as Cancel does to Retry when the upload fails.
+    if(focused?.hidden){const controls=[...row.querySelectorAll('button')],shown=controls.filter(button=>!button.hidden);(shown.find(button=>controls.indexOf(button)>controls.indexOf(focused))??shown[0]??zone?.querySelector('.attachment-dropzone'))?.focus({preventScroll:true});}
   }
   host.onclick=event=>{const button=event.target.closest('[data-upload-action]');if(!button)return;const job=jobs.find(j=>j.id===button.closest('[data-upload-id]').dataset.uploadId);if(!job)return;const action=button.dataset.uploadAction;if(action==='cancel'){job.cancelled=true;job.state='cancelled';job.reader?.abort();mountAttachments(id);}else if(action==='retry')start(job);else{jobs.splice(jobs.indexOf(job),1);loadAttachments(id,true);mountAttachments(id);}};
 }
@@ -281,16 +287,16 @@ function refreshAttachments(id){
 }
 function refreshShownAttachments(){const context=App.context();if(context.view==='task')refreshAttachments(context.taskId);}
 
-// Another person signing in, a new projection and live updates change what
-// the attachments show. The first page that shows them starts following.
+// Another person signing in and a new projection change what the attachments
+// show; live changes to them come through `reloadAttachments`. The first page
+// that shows them starts following.
 let following=false;
 function followChanges(){
   if(following)return;following=true;
   let accountScope=D.session?.id;
   runtime().transport.subscribe(change=>{
     if(change?.type==='auth'&&accountScope!==D.session?.id){clearAccount();accountScope=D.session?.id;}
-    if(change?.type==='bootstrap'){loaded=new WeakSet();return;}
-    if(change?.type==='sse'&&change.taskId&&(!change.entityType||['attachment','task'].includes(change.entityType))){const changedTask=taskById(change.taskId);if(changedTask)loadAttachments(changedTask.id,true,true);}
+    if(change?.type==='bootstrap')loaded=new WeakSet();
   });
 }
 function clearAccount(){jobs.splice(0).forEach(job=>{job.cancelled=true;job.reader?.abort();});loaded=new WeakSet();loading.clear();refreshPending.clear();retentionPending.clear();reorderPending.clear();attachmentsRead=new Set();}

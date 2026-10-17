@@ -1,5 +1,5 @@
 //! Blocking and unblocking tasks, and editing a block reason.
-use super::ordering::task_insert_position;
+use super::ordering::{placed, task_insert_position};
 use super::*;
 
 pub(super) fn block_task(
@@ -215,20 +215,23 @@ pub(super) fn unblock_task(
                      WHERE id=?4 AND revision=?5",
         params![actor.user_id, now, resolution, block_id, block_revision],
     )?;
-    if complete {
+    let respaced = if complete {
         // A blocked task is never Done yet, so this always completes it, at
         // the top of Done as any move without a place.
-        let position = task_insert_position(tx, &task.project_id, "done", &input.task_id, 0)?;
+        let (position, respaced) =
+            task_insert_position(tx, &task.project_id, "done", &input.task_id, 0)?;
         tx.execute(
             MOVE_TASK_SQL,
             params!["done", position, Some(now), now, input.task_id, expected],
         )?;
+        respaced
     } else {
         tx.execute(
             "UPDATE tasks SET updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",
             params![now, input.task_id, expected],
         )?;
-    }
+        false
+    };
     let event_type = if complete {
         "task.unblocked_and_completed"
     } else {
@@ -246,7 +249,7 @@ pub(super) fn unblock_task(
             field_key: None,
             before: Some(json!({"blocked":true})),
             after: Some(json!({"blocked":false,"resolution":resolution,"completed":complete})),
-            metadata: json!({"blockId":block_id}),
+            metadata: placed(json!({"blockId":block_id}), respaced),
             entity_revision: Some(block_revision + 1),
         },
         now,

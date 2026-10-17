@@ -187,7 +187,9 @@ schema describes the payload of each operation.
 ### Rules for every call
 
 - **IDs.** Tools take the IDs that reads return. Anywhere a tool takes a task
-  ID, it also accepts a task key, such as `WEB-042`.
+  ID, it also accepts a task key, such as `WEB-042`. A task keeps its key when
+  its project's prefix changes; `list_projects` names a project's earlier
+  prefixes in `earlierPrefixes`.
 - **Retries.** Every write takes an `idempotencyKey` of 1 to 128 visible ASCII
   characters. If you retry with the same key and the same input, oneloop applies
   the change only once. The same key with different input fails with

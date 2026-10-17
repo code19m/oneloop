@@ -32,7 +32,7 @@ async fn bootstrap_and_task_reads_accept_readable_keys() {
                 project_id: Some("p1".into()),
                 task_id: Some(key),
                 view: None,
-                done_order: Default::default(),
+                ..Default::default()
             },
         )
         .await
@@ -217,7 +217,7 @@ async fn epic_task_counts_come_only_with_the_roadmap() {
                     project_id: Some("p1".into()),
                     task_id: task,
                     view: view.map(str::to_owned),
-                    done_order: Default::default(),
+                    ..Default::default()
                 },
             )
             .await
@@ -385,4 +385,38 @@ async fn hidden_and_missing_resources_have_identical_http_errors() {
         let [a, b] = errors;
         assert_eq!(response(a).await, response(b).await);
     }
+}
+
+#[tokio::test]
+async fn a_bootstrap_opens_the_project_of_a_switch_only_for_its_person_while_they_can_open_it() {
+    let f = fixture().await;
+    let app = router(&f);
+    let selected = async |user: &str, query: &str| -> (u16, Value) {
+        let response = app
+            .clone()
+            .oneshot(signed_in_get(
+                user,
+                &format!("/api/bootstrap?view=board&{query}"),
+            ))
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+        (status, body["selectedProjectId"].clone())
+    };
+    // The manager can open both projects; the member only the first.
+    for (user, query, answer) in [
+        ("u1", "switchedTo=p2&switchedBy=u1", json!("p2")),
+        ("u2", "switchedTo=p2&switchedBy=u2", json!("p1")),
+        ("u1", "switchedTo=p2&switchedBy=u2", json!("p1")),
+    ] {
+        assert_eq!(
+            selected(user, query).await,
+            (200, answer),
+            "{user}: {query}"
+        );
+    }
+    // A project that the address names keeps its rule.
+    let (status, _) = selected("u2", "projectId=p2&switchedTo=p1&switchedBy=u2").await;
+    assert_eq!(status, 404);
 }

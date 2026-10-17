@@ -109,12 +109,17 @@ export function installRoute(ctx, account) {
     filterBoard(filters){return whileBusy(reads.board(context().projectId,filters,{skipUnchanged:true}));},
     /** @param {string} status */
     async loadMoreBoard(status){const result=await reads.moreBoard(status);if(!result.stale)app.acceptMoreBoard(status);return result;},
-    /** Switch to another project, once typed text may be left. @param {string} projectId */
+    /**
+     * Switch to another project, once typed text may be left. One bootstrap
+     * loads it for the page the switch shows, as from Page not found to the
+     * Roadmap that its address names, so that page needs no read of its own.
+     * @param {string} projectId
+     */
     async selectProject(projectId){
       if(!await mayLeavePage())return {stale:true};
-      const generation=++projectGeneration,scope=sessionScope();
+      const generation=++projectGeneration,scope=sessionScope(),page=app.pageAfterSwitch(projectId);
       routeGeneration++;
-      const loaded=await whileBusy(reloadBootstrap({projectId,taskId:undefined,view:context().view==='roadmap'?'roadmap':['board','task'].includes(context().view)?'board':'metadata'}));
+      const loaded=await whileBusy(reloadBootstrap({projectId,taskId:undefined,view:page==='roadmap'?'roadmap':['board','task'].includes(page)?'board':'metadata'}));
       if(loaded?.stale||generation!==projectGeneration||scope!==sessionScope())return {stale:true};
       app.selectProject(projectId);
       return loadCurrentRoute({reuseBootstrap:true});

@@ -18,7 +18,7 @@
  *   acceptMoreBoard:ViewMethod, acceptMoreUsers:ViewMethod, askToDiscard:ViewMethod, clearAddress:ViewMethod,
  *   clearTaskSaving:ViewMethod, closeOverlays:ViewMethod, commentDraft:ViewMethod, confirm:ViewMethod, fieldError:ViewMethod,
  *   followAddress:ViewMethod, isRendering:ViewMethod, keepKnownFilters:ViewMethod, nav:ViewMethod, noteTaskSaved:ViewMethod, noteTaskSaving:ViewMethod,
- *   offerUndo:ViewMethod, openModal:ViewMethod, openPeek:ViewMethod, openTask:ViewMethod, prepareBlock:ViewMethod,
+ *   offerUndo:ViewMethod, openModal:ViewMethod, openPeek:ViewMethod, openTask:ViewMethod, pageAfterSwitch:ViewMethod, prepareBlock:ViewMethod,
  *   redrawDialog:ViewMethod, refreshAfterDialog:ViewMethod, refreshBackground:ViewMethod, refreshBoard:ViewMethod,
  *   refreshCounts:ViewMethod, refreshEpic:ViewMethod, refreshPool:ViewMethod, refreshProfileAccess:ViewMethod,
  *   refreshRoadmap:ViewMethod, refreshTask:ViewMethod, refreshTaskChecklist:ViewMethod, refreshTaskDrafts:ViewMethod,

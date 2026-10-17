@@ -236,6 +236,21 @@ test('SSE board hints coalesce, treat null revisions as unknown and wait for opt
   t.controller.dispose();
 });
 
+test('a hint that a column was re-spaced reloads the Board, also in the tab that made the move',async()=>{
+  useMockedClock();
+  const context={view:'board',projectId:'p1'},reloads=[];
+  const t=fixture({app:{context:()=>context},transport:{reload:async(options)=>{reloads.push(options);return {stale:false};}}});
+  // This tab moved the task twice: its command results gave it both revisions.
+  t.data.tasks[0].revision=3;
+  t.controller.beforeRender({userId:'u1',...context});
+  const hint=(entityRevision,respaced)=>t.events.listeners.hint({data:JSON.stringify({kind:'activity.changed',projectId:'p1',entityType:'task',entityId:'opaque-task',entityRevision,respaced})});
+  hint(2,true);hint(3,false);
+  await delay(90);
+  assert.equal(reloads.length,1);
+  assert.deepEqual(reloads[0].hints.map(item=>[item.entityRevision,item.respaced]),[[2,true]]);
+  t.controller.dispose();
+});
+
 test('SSE reconciliation reloads metadata on task routes and ignores unrelated task hints',async()=>{
   useMockedClock();
   const context={view:'task',taskId:'ONE-101',projectId:'p1'},reloads=[];

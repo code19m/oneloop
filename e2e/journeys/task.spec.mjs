@@ -57,6 +57,8 @@ test('a click in a long description opens the editor with its caret in view, nea
   await openApp(page, instance);
   await page.getByRole('button', { name: 'Show more' }).click();
   const reader = page.locator('#task-description-content'), editor = page.locator('#task-description');
+  // The reader grows to its full height first; a click while it grows lands on another line.
+  await reader.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
   await reader.getByText('Line 55 of the plan.').click({ position: { x: 1, y: 8 } });
   await expect(editor).toBeFocused();
   // Line 55 of 60 shows near the end of the editor's text.
@@ -243,6 +245,32 @@ test('a checklist grows, ticks and moves by keyboard, and follows a change made 
   await expect(page.locator(`[data-task="${task.taskKey}"] .card-checklist`)).toHaveText('2/2');
 });
 
+test('a refused checklist tick goes back in place, and the description being typed keeps its text and focus', async ({ page, instance, allowedConsoleErrors }) => {
+  const { task } = instance.projects[0];
+  await command(instance.api, 'task.checklist.add', { taskId: task.id, title: 'Build' });
+  await openApp(page, instance);
+  const box = page.getByLabel('Done: Build'), description = page.locator('#task-description');
+  // The server refuses the tick once the person types in the description again.
+  allowedConsoleErrors.push(/400 .*\/api\/commands$/);
+  let refuse;
+  const typed = new Promise(resolve => { refuse = resolve; });
+  await page.route('**/api/commands', async route => {
+    await typed;
+    await route.fulfill({ status: 400, json: { error: { code: 'validation_failed', message: 'The tick was refused.', details: { field: 'done' } } } });
+  });
+  await box.check();
+  await description.click();
+  await page.keyboard.type('Typed meanwhile');
+  const editor = await description.elementHandle();
+  const read = page.waitForResponse(response => new URL(response.url()).pathname === `/api/tasks/${task.id}`);
+  refuse();
+  await read;
+  await expect(box).not.toBeChecked();
+  await expect(page.locator('.checklist-count')).toHaveText('0/1');
+  // The read that puts the checklist right draws nothing else of the page again.
+  expect(await editor.evaluate(element => [element.isConnected, element === document.activeElement, element.value])).toEqual([true, true, 'Typed meanwhile']);
+});
+
 test('live metadata, delayed reads and completed saves preserve task typing and pickers', async ({ page, instance }) => {
   await openApp(page, instance);
   const description = page.locator('#task-description'), title = page.locator('.tp-title');
@@ -392,9 +420,10 @@ test('a live change re-reads the task page in the background, so it does not cou
   });
   await command(instance.writer, 'task.update', { taskId: task.id, title: 'Renamed elsewhere' }, task.revision);
   await expect(page.locator('.tp-title')).toHaveValue('Renamed elsewhere');
-  // The live change reads the discussion again, once, although it replaced the task.
-  await expect.poll(() => reads.filter(read => read.path.endsWith('/comments')).length).toBeGreaterThanOrEqual(1);
-  await expect.poll(() => reads.filter(read => read.path.endsWith('/attachments')).length).toBeGreaterThanOrEqual(1);
+  // The live change reads the task and its activity, which is all a new title can change.
+  await expect.poll(() => reads.filter(read => read.path.startsWith('/api/activity/')).length).toBeGreaterThanOrEqual(1);
+  expect(reads.filter(read => read.path.endsWith('/comments') || read.path.endsWith('/attachments'))).toEqual([]);
+  expect(reads.filter(read => read.path === `/api/tasks/${task.id}`)).not.toEqual([]);
   expect(reads.filter(read => !read.background)).toEqual([]);
 });
 

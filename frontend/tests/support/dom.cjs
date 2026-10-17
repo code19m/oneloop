@@ -232,6 +232,7 @@ function wire(dom, { api: answers = {}, reads: readAnswers = {}, reloadBootstrap
       w.Recovery.start();
       const bridge = installViewBridge({ app: w.App, data, gateway, auth, api, reads, recovery: w.Recovery, reloadBootstrap });
       w.OneloopRuntime = Object.freeze({ ...bridge, transport: runtime, now: api.serverNow });
+      importModule(dom, 'src/features/checklist/checklist.js').installChecklistControls(w.document, bridge);
       w.App.refresh();
       return bridge;
     },
@@ -284,7 +285,6 @@ function bootApp({
   importModule(dom, 'src/app/motion.js').installDisclosures(w.document);
   importModule(dom, 'src/features/files/preview.js').installPreviews(w.document, wiring.runtime);
   importModule(dom, 'src/app/save-shortcut.js').installSaveShortcut(w.document, w.Recovery);
-  importModule(dom, 'src/features/checklist/checklist.js').installChecklistControls(w.document);
   prepare?.(w.DATA, w);
   for (const name of libraries) load(dom, name);
   load(dom, 'app');

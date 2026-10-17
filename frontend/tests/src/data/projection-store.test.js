@@ -135,7 +135,7 @@ test('epics from command results keep or bring their counts, never the loading s
 
 test('a newest-first Done keeps live cards in completion order, newest first',()=>{
   const data=createLegacyData(),value=bootstrap();
-  value.doneOrder='completed';value.boardPages={done:{nextCursor:null,total:0}};value.selectedProjectId='p1';
+  value.boardFilter={doneOrder:'completed'};value.boardPages={done:{nextCursor:null,total:0}};value.selectedProjectId='p1';
   hydrateLegacyData(data,value);
   assert.equal(data.boardPageInfo.filters.doneOrder,'completed');
   const done=(id,position,completedAt)=>({...value.tasks[0],id,taskKey:`BIR-${id}`,status:'done',position,completedAt});
@@ -151,7 +151,7 @@ test('a newest-first Done keeps live cards in completion order, newest first',()
 
 test('a newest-first Done puts the task completed last first within one second',()=>{
   const data=createLegacyData(),value=bootstrap();
-  value.doneOrder='completed';value.boardPages={done:{nextCursor:null,total:0}};value.selectedProjectId='p1';
+  value.boardFilter={doneOrder:'completed'};value.boardPages={done:{nextCursor:null,total:0}};value.selectedProjectId='p1';
   hydrateLegacyData(data,value);
   const done=(id,completionOrder)=>({...value.tasks[0],id,taskKey:`BIR-${id}`,status:'done',position:1,completedAt:200,completionOrder});
   appendBoardTasks(data,[done('first',7),done('last',9),done('second',8)]);

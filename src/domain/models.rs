@@ -28,6 +28,9 @@ pub struct ProjectView {
     pub id: String,
     pub name: String,
     pub task_prefix: String,
+    /// The prefixes the project had before `task_prefix`. Its older tasks
+    /// keep their keys with them, which still name the tasks.
+    pub earlier_prefixes: Vec<String>,
     pub revision: i64,
     pub manage_roadmap: bool,
     pub manage_board: bool,
@@ -225,9 +228,10 @@ pub struct BootstrapView {
     pub selected_project_id: Option<String>,
     /// The initial view this bootstrap was built for.
     pub view: String,
-    /// The Done order of `board_pages`, present when the bootstrap has them.
+    /// The filter and Done order of `board_pages`, present when the bootstrap
+    /// has them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub done_order: Option<super::DoneOrder>,
+    pub board_filter: Option<super::TaskFilter>,
     pub board_counts: Option<BoardCounts>,
     #[serde(default)]
     pub board_pages: std::collections::BTreeMap<String, PageSummary>,

@@ -6,14 +6,32 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- In MCP, `list_projects` names the task prefixes that each project had
+  before, in `earlierPrefixes`. Older tasks keep their keys with them.
+
+### Changed
+
+- A Board address with filters, as after a refresh or from a bookmark, now
+  loads with one request instead of two, so its cards show sooner.
+- A change to a task's checklist no longer makes every open page of the task
+  load its comments, activity and files again: they load only the task, and
+  the tab that made the change loads nothing.
+- Other changes to a task now also load only what they can change on its
+  open page. A new title, status or other field loads the task and its
+  activity, but not its comments and files. A comment loads the comments,
+  and a change to the files loads the files.
+
 ### Fixed
 
-- **Sign out** now signs out your other open tabs in the browser at once.
-  They forget their project, the Board's filters and open dialogs too, so the
-  next person who signs in there starts from their own project. A session that
-  ends by itself still keeps each tab's address. A tab that still shows you
-  after someone else signed in elsewhere signs out too, and leaves their
-  session alone.
+- **Sign out** now signs out your other open tabs in the browser at once. They
+  go straight to the sign-in page, without first saying that the session
+  ended. They forget their project, the Board's filters and open dialogs too,
+  so the next person who signs in there starts from their own project. A
+  session that ends by itself still keeps each tab's address. A tab that still
+  shows you after someone else signed in elsewhere signs out too, and leaves
+  their session alone.
 - **Confirm your identity** now closes when the session ends while it asks,
   as when you sign out in another tab, so the sign-in page can be used at
   once instead of after **Cancel**.
@@ -21,7 +39,7 @@ All notable changes to oneloop are recorded here. The format follows
   to the browser's history, so **Back** returns to the page you were on.
 - Choosing another project on **Page not found** or **Access denied** now opens
   that project's page of the same kind, such as its **Knowledge**, or else its
-  **Board**.
+  **Board**, and loads it with one request.
 - While another project's **Roadmap** loads, its header and the sidebar's
   **Board** count show no numbers instead of 0. The header's counts of tracks,
   epics and milestones now also follow changes made elsewhere.
@@ -29,11 +47,16 @@ All notable changes to oneloop are recorded here. The format follows
   tab before the new page arrived made the tab start a second reload, and the
   new page then said **oneloop was updated**.
 - Dragging selected text no longer causes an error in Firefox.
+- A click on **Back to Board**, or on another control outside the task's
+  own fields, could do nothing when a change made elsewhere arrived just then
+  and drew the page while the button was pressed. The page now waits for the
+  press to end.
 - Focus stays on a file's name, **Download**, **Delete**, **Temporary** and its
   other controls when the task's files are drawn again, such as after a move
   or a change made elsewhere. When the file is deleted, focus goes to the same
   control of the file in its place, and when an upload ends or is dismissed,
-  to the drop area.
+  to the drop area. When an upload fails, focus on its **Cancel** goes to its
+  **Retry**, and back to **Cancel** when you retry.
 - Esc or Ctrl+Enter (Cmd+Enter on macOS) in an empty description now keeps
   focus on its field, instead of losing it to the page.
 - A click on a task's description now puts the cursor where you clicked, and
@@ -44,6 +67,37 @@ All notable changes to oneloop are recorded here. The format follows
   description's own box, so the footnote could stay out of view.
 - Mermaid diagrams in descriptions and file previews now use the app's colors
   in light and dark, as Knowledge already did.
+- When a task was moved, or put back with **Undo**, to a place in a column
+  with no room left between two cards, oneloop gave the column's cards new
+  positions, but open Boards, the one that made the move too, kept the old
+  ones and showed the task in the wrong place until the Board was read again.
+  Every open Board now shows the column's new order at once.
+- When a page loaded a change made elsewhere while you moved, added or
+  deleted something on it, such as a card on the Board, a track on the
+  Roadmap or an item in the Pool, it could show that as it was before your
+  change, until the page was read again. It now loads the change again once
+  yours is saved.
+- A new tab in a browser where someone else switched projects last loaded
+  its data twice, and when you couldn't open their project, the browser
+  console showed an error. It now loads once and opens the project its
+  address names, or else the one you switched to last, or else your first.
+- After you turned a Pool item into a task, or deleted a Pool item, a task,
+  an epic, a track or a milestone, your tab loaded the page's data a second
+  time when it heard of its own change. It now loads only what the change
+  needs; other open tabs still load it once.
+- When the server refused a checklist change, or found nothing to change, the
+  task's page was drawn again at once, even while you typed elsewhere on it.
+  The checklist is now put right in place, and what you type stays.
+- In MCP, `create_attachment_upload` with a `replacesAttachmentId` that names
+  a file of another task failed with `validation_failed`, but with
+  `not_found` for an ID that names no file, so it told whether an ID exists.
+  Both now fail with `not_found`.
+- After a project's task prefix changed, the keys of its older tasks, such as
+  `OLD-012`, stayed plain text in descriptions. They now link to their tasks.
+- Opening or changing a task, its comments, its activity or its files read
+  the instance's tasks one by one until it found the task, which made these
+  requests slow on large instances. They now find the task through its
+  index.
 
 ## [0.1.0-rc.6] - 2026-10-17
 

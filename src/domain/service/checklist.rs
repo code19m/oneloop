@@ -79,47 +79,43 @@ pub(super) fn insert_item(
     Ok(id)
 }
 
-/// Records a checklist change for the audit trail. The activity feeds don't
-/// show it. The task's revision stays, so the live hint names none, and other
-/// tabs read the task again.
-fn record_change(
+/// Takes a task's checklist to its next version for a change to item
+/// `item_id`, and records the change for the audit trail, which the feeds
+/// don't show. The activity and its live hint name the checklist at that
+/// version, so pages of the task read only the task, and a tab that already
+/// has the version reads nothing. The task's revision stays as it is. The
+/// command returns `item`, and the task with its new counts and checklist.
+fn changed(
     tx: &Transaction<'_>,
     actor: &Actor,
     (project_id, task_id, item_id): (&str, &str, &str),
     event_type: &str,
     (before, after): (Option<Value>, Option<Value>),
+    item: Value,
     now: i64,
-) -> AppResult<ActivityEvent> {
-    record_activity_tx(
+) -> AppResult<Mutation> {
+    let version: i64 = tx
+        .prepare_cached(
+            "UPDATE tasks SET checklist_version=checklist_version+1 WHERE id=?1 RETURNING checklist_version",
+        )?
+        .query_row([task_id], |row| row.get(0))?;
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
             project_id: Some(project_id),
-            entity_type: "task",
+            entity_type: "checklist",
             entity_id: task_id,
             task_id: Some(task_id),
             event_type,
-            field_key: Some("checklist"),
+            field_key: None,
             before,
             after,
             metadata: json!({"itemId": item_id}),
-            entity_revision: None,
+            entity_revision: Some(version),
         },
         now,
-    )
-}
-
-/// What a checklist command returns: the item, unless it was deleted, and
-/// the task with its new counts and its next checklist version.
-fn changed(
-    tx: &Transaction<'_>,
-    item: Value,
-    task_id: &str,
-    event: ActivityEvent,
-    item_id: &str,
-) -> AppResult<Mutation> {
-    tx.prepare_cached("UPDATE tasks SET checklist_version=checklist_version+1 WHERE id=?1")?
-        .execute([task_id])?;
+    )?;
     Ok(Mutation {
         entities: vec![item, task_entity(tx, task_id)?],
         events: vec![event],
@@ -153,15 +149,15 @@ pub(super) fn add_checklist_item(
         )));
     }
     let id = insert_item(tx, &input.task_id, count, &title, now)?;
-    let event = record_change(
+    changed(
         tx,
         actor,
         (&task.project_id, &input.task_id, &id),
         "task.checklist.added",
         (None, Some(json!({"title": title, "done": false}))),
+        item_entity(tx, &id)?,
         now,
-    )?;
-    changed(tx, item_entity(tx, &id)?, &input.task_id, event, &id)
+    )
 }
 
 pub(super) fn update_checklist_item(
@@ -192,7 +188,7 @@ pub(super) fn update_checklist_item(
          WHERE id=?5 AND revision=?6",
         params![title, done, now, expected + 1, input.item_id, expected],
     )?;
-    let event = record_change(
+    changed(
         tx,
         actor,
         (&before.project_id, &before.task_id, &input.item_id),
@@ -201,10 +197,9 @@ pub(super) fn update_checklist_item(
             Some(json!({"title": before.title, "done": before.done})),
             Some(json!({"title": title, "done": done})),
         ),
+        item_entity(tx, &input.item_id)?,
         now,
-    )?;
-    let item = item_entity(tx, &input.item_id)?;
-    changed(tx, item, &before.task_id, event, &input.item_id)
+    )
 }
 
 pub(super) fn move_checklist_item(
@@ -256,16 +251,15 @@ pub(super) fn move_checklist_item(
         now,
         Some((&input.item_id, expected)),
     )?;
-    let event = record_change(
+    changed(
         tx,
         actor,
         (&before.project_id, &before.task_id, &input.item_id),
         "task.checklist.moved",
         (Some(json!(before.position)), Some(json!(position))),
+        item_entity(tx, &input.item_id)?,
         now,
-    )?;
-    let item = item_entity(tx, &input.item_id)?;
-    changed(tx, item, &before.task_id, event, &input.item_id)
+    )
 }
 
 pub(super) fn delete_checklist_item(
@@ -285,7 +279,7 @@ pub(super) fn delete_checklist_item(
     // The items after it move up, so positions stay without gaps.
     let ids = item_ids(tx, &before.task_id)?;
     resequence(tx, "task_checklist_items", &ids, now, None)?;
-    let event = record_change(
+    changed(
         tx,
         actor,
         (&before.project_id, &before.task_id, &input.id),
@@ -294,8 +288,7 @@ pub(super) fn delete_checklist_item(
             Some(json!({"title": before.title, "done": before.done})),
             None,
         ),
+        deleted("checklistItem", &input.id, &before.project_id, expected + 1),
         now,
-    )?;
-    let item = deleted("checklistItem", &input.id, &before.project_id, expected + 1);
-    changed(tx, item, &before.task_id, event, &input.id)
+    )
 }

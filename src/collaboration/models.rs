@@ -230,6 +230,8 @@ pub struct SseHint {
     pub entity_id: Option<String>,
     pub entity_revision: Option<i64>,
     pub notification_id: Option<String>,
+    /// A move re-spaced the task's column, which moved its other cards too.
+    pub respaced: bool,
     #[serde(skip)]
     pub recipient_ids: BTreeSet<String>,
 }

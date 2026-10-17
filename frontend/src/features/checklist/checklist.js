@@ -15,13 +15,14 @@ import { fileIcons as icons } from '../files/preview.js';
 
 /** @typedef {{id:string,taskId:string,title:string,done:boolean,revision:number}} ChecklistItem */
 /** @typedef {{id:string,checklist?:ChecklistItem[]}} ChecklistTask */
+/** @typedef {ReturnType<typeof import('../../app/bridge/checklist.js').installChecklist> & {report:(error:unknown)=>void}} ChecklistRuntime */
 
 /** The most items a checklist holds, as the server allows. */
 const MAX_ITEMS = 50;
-/** The server-backed checklist actions, which the view bridge adds. */
-const runtime = () => /** @type {any} */ (globalThis).OneloopRuntime;
+/** The view bridge's server-backed checklist actions, which the page installs with the controls. @type {ChecklistRuntime|null} */
+let bridge = null;
 /** The title typed into `item` that is not saved yet, if any. @param {ChecklistItem} item @returns {{value:string,unsaved:boolean}|null} */
-const draftOf = (item) => runtime()?.checklistDraft?.(item.taskId, item.id) ?? null;
+const draftOf = (item) => bridge?.checklistDraft(item.taskId, item.id) ?? null;
 
 /**
  * An item's row. Its fields have ids, so a redraw of the page puts focus and
@@ -119,7 +120,6 @@ function owner(control) {
   const itemId = /** @type {HTMLElement|null} */ (control.closest('[data-checklist-item]'))?.dataset.checklistItem;
   return { taskId, itemId };
 }
-const report = (/** @type {unknown} */ error) => runtime().report(error);
 
 /** A title as one line, the way the server keeps it. @param {string} value */
 const oneLine = (value) => value.replace(/\s+/g, ' ').trim();
@@ -140,23 +140,26 @@ function announceMove(taskId, itemId) {
 
 /**
  * Answer the checklists' controls in `doc`: ticks, titles that save
- * themselves as they lose focus, removal, the add field and moving by grip.
- * @param {Document} doc
+ * themselves as they lose focus, removal, the add field and moving by grip,
+ * through the view bridge's checklist actions in `runtime`.
+ * @param {Document} doc @param {ChecklistRuntime} runtime
  */
-export function installChecklistControls(doc) {
+export function installChecklistControls(doc, runtime) {
+  bridge = runtime;
+  const report = (/** @type {unknown} */ error) => runtime.report(error);
   /** The revision each title had when someone started typing it, which its save builds on. */
   const bases = new WeakMap();
   doc.addEventListener('change', event => {
     const box = /** @type {HTMLInputElement} */ (event.target);
     if (!box.matches?.('[data-checklist-done]')) return;
     const { taskId, itemId } = owner(box);
-    if (taskId && itemId) runtime().updateChecklistItem(taskId, itemId, { done: box.checked }).catch(report);
+    if (taskId && itemId) runtime.updateChecklistItem(taskId, itemId, { done: box.checked }).catch(report);
   });
   doc.addEventListener('click', event => {
     const button = /** @type {Element} */ (event.target).closest?.('[data-checklist-remove]'), row = button?.closest('[data-checklist-item]');
     if (!button || !row) return;
     const { taskId, itemId } = owner(button), next = focusAfter(row);
-    if (taskId && itemId) runtime().deleteChecklistItem(taskId, itemId).catch(report);
+    if (taskId && itemId) runtime.deleteChecklistItem(taskId, itemId).catch(report);
     // The row is gone at once, and its button with it.
     next?.focus({ preventScroll: true });
   });
@@ -178,7 +181,7 @@ export function installChecklistControls(doc) {
     title.value = value;
     // A title whose save was refused is sent again, even unchanged.
     if (value === title.defaultValue && !title.matches('[data-unsaved]')) return;
-    runtime().updateChecklistItem(taskId, itemId, { title: value }, { expectedRevision: base, conflictElement: () => titleField(taskId, itemId) }).catch(report);
+    runtime.updateChecklistItem(taskId, itemId, { title: value }, { expectedRevision: base, conflictElement: () => titleField(taskId, itemId) }).catch(report);
   }, true);
   doc.addEventListener('keydown', event => {
     const field = /** @type {HTMLInputElement|HTMLTextAreaElement} */ (event.target);
@@ -197,7 +200,7 @@ export function installChecklistControls(doc) {
     if (!title || !taskId) return;
     // The field is ready for the next item at once, and gets this one back if it can't be added.
     field.value = '';
-    runtime().addChecklistItem(taskId, title).catch((/** @type {unknown} */ error) => { if (!field.value) field.value = title; report(error); });
+    runtime.addChecklistItem(taskId, title).catch((/** @type {unknown} */ error) => { if (!field.value) field.value = title; report(error); });
   });
   sortable({
     grip: '#app .task-checklist [data-checklist-grip]', row: '[data-checklist-item]', list: '.task-checklist', scroll: '.task-page',
@@ -205,7 +208,7 @@ export function installChecklistControls(doc) {
     move: (grip, target, after) => {
       const { taskId, itemId } = owner(grip), targetId = /** @type {HTMLElement} */ (target).dataset.checklistItem;
       if (!taskId || !itemId || !targetId) return;
-      runtime().moveChecklistItem(taskId, itemId, after ? { afterItemId: targetId } : { beforeItemId: targetId }).catch(report);
+      runtime.moveChecklistItem(taskId, itemId, after ? { afterItemId: targetId } : { beforeItemId: targetId }).catch(report);
       announceMove(taskId, itemId);
     },
   });

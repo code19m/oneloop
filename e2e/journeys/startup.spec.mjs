@@ -179,6 +179,20 @@ test('an unresolved task uses its layout while loading and only shows a confirme
   await expect(page.locator('.loading-task')).toHaveCount(0);
 });
 
+test('a response the test holds is the answer the page gets when it is released', async ({ page, instance }) => {
+  const { task } = instance.projects[1];
+  await openApp(page, instance, 'board');
+  const held = await holdResponses(page, `**/api/tasks/${task.taskKey}`);
+  const answer = page.waitForResponse(response => response.url().endsWith(`/api/tasks/${task.taskKey}`));
+  try {
+    await page.evaluate(key => { location.hash = `#/task/${key}`; }, task.taskKey);
+    await held.started;
+    // The task changes after the server answered the held read.
+    await command(instance.api, 'task.update', { taskId: task.id, title: 'Changed after the answer' }, task.revision);
+  } finally { await held.release(); }
+  expect((await (await answer).json()).title).toBe(task.title);
+});
+
 test('a delayed task destination cannot reopen after the user returns to Board', async ({ page, instance }) => {
   await openApp(page, instance);
   const secondary = instance.projects[1];
@@ -204,6 +218,18 @@ test('a sidebar click still navigates when a render lands between press and rele
   await page.mouse.down();
   // Background work, such as the route-loading indicator, renders at any moment.
   await page.evaluate(() => window.App.refresh());
+  await page.mouse.up();
+  await expect(page).toHaveURL(new RegExp(`#/board/${instance.projects[0].project.id}$`));
+  await expect(page.getByRole('heading', { name: 'Board', exact: true })).toBeVisible();
+});
+
+test('Back to Board still goes to the Board when a change made elsewhere draws the task page between press and release', async ({ page, instance }) => {
+  await openApp(page, instance);
+  const back = await page.getByRole('button', { name: 'Back to Board' }).boundingBox();
+  await page.mouse.move(back.x + back.width / 2, back.y + back.height / 2);
+  await page.mouse.down();
+  // A live update draws the page in the background, which waits for no field there now.
+  await page.evaluate(() => window.App.refreshBackground());
   await page.mouse.up();
   await expect(page).toHaveURL(new RegExp(`#/board/${instance.projects[0].project.id}$`));
   await expect(page.getByRole('heading', { name: 'Board', exact: true })).toBeVisible();
@@ -256,6 +282,29 @@ test('the address keeps the project through a refresh, Back and Forward, and a n
   await tab.goto(`${instance.url}/#/board`);
   await expect(tab).toHaveURL(`${instance.url}/#/board/${second.project.id}`);
   await expect(titles(tab)).toHaveText([second.task.title]);
+});
+
+test('choosing another project on Page not found opens its page of that kind with one request', async ({ page, instance, allowedConsoleErrors }) => {
+  allowedConsoleErrors.push(/404 .*\/api\/bootstrap\?/);
+  const [, second] = instance.projects;
+  const shown = {
+    board: page.locator('.board .card-title-button').filter({ hasText: second.task.title }),
+    // The epic's task counts come with the project, so no Roadmap read follows.
+    roadmap: page.locator('[data-epic]').filter({ hasText: second.epic.title }).filter({ hasText: '0 done · 1 open' }),
+  };
+  for (const kind of ['board', 'roadmap']) {
+    await openApp(page, instance, `${kind}/no-such-project`);
+    await expect(page.locator('.page-error .error-code')).toHaveText('404');
+    // The project's reads, without the live stream or session checks, which run at any moment.
+    const requests = [], record = request => { const url = new URL(request.url()); if (url.pathname === '/api/bootstrap' || url.pathname.startsWith('/api/projects/')) requests.push(url); };
+    page.on('request', record);
+    await page.locator('.switcher-btn').click();
+    await page.locator('#project-switcher-menu').getByRole('button', { name: second.project.name }).click();
+    await expect(page).toHaveURL(`${instance.url}/#/${kind}/${second.project.id}`);
+    await expect(shown[kind]).toBeVisible();
+    page.off('request', record);
+    expect(requests.map(url => [url.pathname, url.searchParams.get('projectId'), url.searchParams.get('view')]), kind).toEqual([['/api/bootstrap', second.project.id, kind]]);
+  }
 });
 
 test('a link into another project loads that project first, showing the Board skeleton until it lands', async ({ page, instance }) => {

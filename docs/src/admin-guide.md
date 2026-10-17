@@ -82,7 +82,8 @@ oneloop user passwd alice
 To create a project, choose **New project** in the project selector. A project
 needs a name and a task prefix of 2 to 4 letters or digits. Task IDs use the
 prefix, such as `APP-042`. If you change the prefix later, only new tasks use
-it.
+it. Older tasks keep their keys, which still open them and still link to them
+in descriptions.
 
 To delete a project, open its **Settings**, choose **Delete project** and type
 the project's name. This deletes all of the project's work and files, and you

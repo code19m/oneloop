@@ -10,6 +10,9 @@ const receipt = '<style>h1{color:blue}</style><h1>Receipt</h1><script>parent.evi
 /** An attachment as the server lists it. */
 const serverFile = (id, name, previewKind, overrides = {}) => ({ id, name, size: 10, mediaType: 'application/octet-stream', previewKind, isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: `/content/${id}`, sourceUrl: `/source/${id}`, downloadUrl: `/download/${id}`, ...overrides });
 
+/** Send the live hint of a change to the files of BIR-079 made elsewhere, as the event stream does. */
+const filesChanged = t => t.events.at(-1).emit('hint', { kind: 'activity.changed', projectId: 'p1', taskId: 'bir-079', entityType: 'attachment', entityId: 'changed-file' });
+
 /** A task page whose server lists `files`; `contents` maps a file's source address to its text. */
 async function withServerFiles(files, contents = {}, options = {}) {
   const t = bootApp({ route: 'task/BIR-079', api: { attachments: async () => ({ items: files }) }, setup: w => { w.fetch = async url => ({ ok: true, arrayBuffer: async () => new TextEncoder().encode(contents[url] ?? '').buffer }); }, ...options });
@@ -318,7 +321,7 @@ test('live updates read attachments and storage usage again passively', async ()
   // Each read answers at once; let its reply land before the next step.
   const answered = async (count, message) => { await waitFor(() => reads.length === count, message); await settle(); };
   await answered(1, 'the task page reads its attachments');
-  listener({ type: 'sse', taskId: 'BIR-079', entityType: 'task' });
+  filesChanged(t);
   await answered(2, 'a live update reads them again');
   const current = t.D.tasks.find(item => item.id === 'BIR-079');
   t.D.tasks.splice(t.D.tasks.indexOf(current), 1, { ...current, attachments: [] }); t.A.refresh();
@@ -332,7 +335,7 @@ test('live updates read attachments and storage usage again passively', async ()
   assert.deepEqual(reads, [['attachments', false], ['attachments', true], ['attachments', true], ['storage', false], ['storage', true], ['storage', true]]);
 });
 
-test('a task page reads its attachments once each time it opens and once per live change, though task reads replace the task', async () => {
+test('a task page reads its attachments once each time it opens, and keeps them when a live read replaces the task', async () => {
   let reads = 0, taskReads;
   // The task as the server sends it. Reading it replaces the task's object, as the projection does.
   const view = (revision, title) => ({ id: 'bir-079', taskKey: 'BIR-079', projectId: 'p1', epicId: 'e2', title, description: '', status: 'planning', position: 1, createdAt: 1, updatedAt: revision, assigneeIds: [], activeBlock: null, revision });
@@ -346,22 +349,26 @@ test('a task page reads its attachments once each time it opens and once per liv
   const open = async () => { t.A.openTask('BIR-079'); await settle(); await t.bridge.loadCurrentRoute(); await settle(); };
   await open();
   assert.equal(reads, 1, 'the task opens');
-  // Another person changes the task: the live hint reads the attachments, and the live read of the task replaces it.
+  // Another person changes the task: its live read replaces the task, which keeps its files.
   latest = view(2, 'Changed elsewhere');
   t.events.at(-1).emit('hint', { kind: 'activity.changed', projectId: 'p1', taskId: 'bir-079', entityType: 'task', entityId: 'bir-079', entityRevision: 2 });
   await waitFor(() => t.d.querySelector('.tp-title').value === 'Changed elsewhere', 'the live read draws the changed task'); await settle();
-  assert.equal(reads, 2, 'the live change');
+  assert.equal(reads, 1, 'a change to the task reads no files');
+  assert.equal(t.d.querySelector('.attachment-title').textContent, 'notes.txt');
   t.A.nav('board'); await open();
-  assert.equal(reads, 3, 'the task opens again');
+  assert.equal(reads, 2, 'the task opens again');
   assert.equal(t.d.querySelector('.attachment-title').textContent, 'notes.txt');
 });
 
 test('a live reload of the files waits for a press on the page to end, so its click lands', async () => {
-  const t = await withServerFiles([serverFile('notes', 'notes.txt', 'text')]);
+  let reads = 0;
+  const files = [serverFile('notes', 'notes.txt', 'text')];
+  const t = await withServerFiles(files, {}, { api: { attachments: async () => { reads++; return { items: files }; } } });
   const card = () => t.d.querySelector('[data-attachment-id="notes"]'), pressed = card();
   const pointer = type => pressed.dispatchEvent(new t.w.PointerEvent(type, { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' }));
   pointer('pointerdown');
-  t.runtime.publish({ type: 'sse', taskId: 'BIR-079', entityType: 'attachment' }); await settle();
+  filesChanged(t);
+  await waitFor(() => reads === 2, 'the live change reads the files'); await settle();
   assert.equal(card(), pressed, 'the file stays under the pressed button');
   pointer('pointerup'); pressed.dispatchEvent(new t.w.MouseEvent('click', { bubbles: true, cancelable: true }));
   await waitFor(() => card() !== pressed, 'the files are drawn again once the press ends');
@@ -370,10 +377,9 @@ test('a live reload of the files waits for a press on the page to end, so its cl
 test('a live re-read of attachments that lost access stays quiet', async () => {
   let reads = 0;
   const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, api: { attachments: async () => { if (++reads > 1) throw new ApiError('task not found', { status: 404, code: 'not_found' }); return { items: [] }; } } });
-  const listener = change => t.runtime.publish(change);
   const notices = []; t.A.toast = (text, kind) => notices.push([text, kind]);
   await waitFor(() => reads === 1, 'the page reads its attachments'); await settle();
-  listener({ type: 'sse', taskId: 'BIR-079', entityType: 'task' });
+  filesChanged(t);
   await waitFor(() => reads === 2, 'a live update reads them again'); await settle();
   assert.deepEqual(notices, [], 'leaving the project explains the change, not a failed read');
 });
@@ -455,20 +461,27 @@ test('closing a preview gives focus back to its file name after a live update dr
   const t = await withServerFiles([serverFile('notes', 'notes.txt', 'text')], { '/source/notes': 'notes' });
   const opener = t.d.querySelector('.attachment-title');
   opener.focus(); t.A.previewAttachment('BIR-079', 'notes');
-  t.runtime.publish({ type: 'sse', taskId: 'BIR-079', entityType: 'attachment' });
+  filesChanged(t);
   await waitFor(() => !opener.isConnected, 'the live read draws the list again');
   t.d.querySelector('[data-file-close]').click();
   assert.equal(t.d.activeElement, t.d.querySelector('.attachment-title'));
 });
 
-test('each control of a file, and the drop area, keeps focus when a change from elsewhere draws the files again', async () => {
-  const t = await withServerFiles([serverFile('hello', 'hello.txt', 'text'), serverFile('world', 'world.md', 'markdown')]);
+test('each control of a file, and the drop area, keeps focus when a change from elsewhere draws the files again', async context => {
+  const files = [serverFile('hello', 'hello.txt', 'text'), serverFile('world', 'world.md', 'markdown')];
+  // A live read waits for the page's feed and reads the activity too, so both land before the next change reads again.
+  const feed = async () => ({ items: [], nextCursor: null });
+  const t = await withServerFiles(files, {}, { api: { attachments: async () => ({ items: files }), comments: feed, activity: feed } });
+  context.mock.timers.enable({ apis: ['setTimeout'] });
   for (const control of ['[data-attachment-id="world"] .attachment-grip', '[data-attachment-id="world"] .attachment-thumbnail', '[data-attachment-id="world"] .attachment-title', '[data-attachment-id="world"] .retention-switch', '[data-attachment-id="world"] .file-download', '[data-attachment-id="world"] .file-remove', '.attachment-dropzone']) {
     const old = t.d.querySelector(control); old.focus();
-    t.runtime.publish({ type: 'sse', taskId: 'BIR-079', entityType: 'attachment' });
-    await waitFor(() => !old.isConnected, 'the live read draws the files again');
+    filesChanged(t);
+    // The live read waits a moment, so that changes made together read once.
+    for (let step = 0; step < 3; step++) { context.mock.timers.tick(100); await settle(); }
+    assert.equal(old.isConnected, false, `${control}: the live read draws the files again`);
     assert.equal(t.d.activeElement, t.d.querySelector(control), control);
   }
+  context.mock.timers.reset();
 });
 
 test('focus stays on a file\'s control when the server answers a move, and goes to the file in its place when it is deleted', async () => {
@@ -486,6 +499,20 @@ test('focus stays on a file\'s control when the server answers a move, and goes 
   t.d.querySelector('[data-confirm-accept]').click();
   await waitFor(() => !t.d.querySelector('[data-attachment-id="world"]'), 'the file is deleted');
   assert.equal(t.d.activeElement, t.d.querySelector('[data-attachment-id="hello"] .file-remove'));
+});
+
+test('a control that an upload\'s new state hides gives its focus to the row\'s next one: Cancel to Retry, and Retry to Cancel', async () => {
+  const t = bootApp({ route: 'task/BIR-079', api: { attachments: async () => ({ items: [] }) } });
+  const control = action => t.d.querySelector(`[data-upload-action="${action}"]`);
+  t.A.attachFiles('BIR-079', { files: [new t.w.File(['notes'], 'notes.txt', { type: 'text/plain' })], value: '' });
+  await waitFor(() => t.calls.some(call => call.method === 'uploadAttachment' && !call.settled), 'the upload was sent');
+  control('cancel').focus();
+  t.calls.filter(call => call.method === 'uploadAttachment').at(-1).reject(new ApiError('The server is busy', { status: 503, code: 'unavailable' }));
+  await waitFor(() => control('cancel').hidden, 'the upload fails');
+  assert.equal(t.d.activeElement, control('retry'), 'Cancel of an upload that failed');
+  control('retry').click();
+  await waitFor(() => !control('cancel').hidden, 'the upload starts again');
+  assert.equal(t.d.activeElement, control('cancel'), 'Retry of an upload that starts again');
 });
 
 test('when an upload ends or is dismissed, focus on its controls goes to the drop area', async () => {

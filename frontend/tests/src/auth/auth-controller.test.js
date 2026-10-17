@@ -124,15 +124,16 @@ const authAs=(person)=>({sessionId:`s-${person}`,authenticatedAt:1,user:{id:pers
 
 /**
  * The windows of `count` tabs of one browser. A change of local storage in one
- * fires a storage event in the others, as browsers do and jsdom doesn't.
+ * fires a storage event in the others, as browsers do and jsdom doesn't: only
+ * when the value changes.
  */
 function browser(count){
   const windows=Array.from({length:count},()=>new JSDOM('',{url:'http://localhost/'}).window);
   for(const from of windows){
     const {setItem,removeItem}=from.Storage.prototype,others=windows.filter((window)=>window!==from);
     const tell=(key,newValue)=>queueMicrotask(()=>{for(const to of others)to.dispatchEvent(new to.StorageEvent('storage',{key,newValue}));});
-    from.Storage.prototype.setItem=function(key,value){setItem.call(this,key,value);tell(key,String(value));};
-    from.Storage.prototype.removeItem=function(key){removeItem.call(this,key);tell(key,null);};
+    from.Storage.prototype.setItem=function(key,value){const before=this.getItem(key);setItem.call(this,key,value);if(before!==String(value))tell(key,String(value));};
+    from.Storage.prototype.removeItem=function(key){const before=this.getItem(key);removeItem.call(this,key);if(before!==null)tell(key,null);};
   }
   return windows;
 }
@@ -143,11 +144,11 @@ function browser(count){
  * its last session change was a sign-out on purpose.
  */
 async function tabOf(window,person,{api={},loadBootstrap=async()=>({stale:false})}={}){
-  const tab={data:authData(),cleared:0,signedOut:false};
+  const tab={data:authData(),cleared:0,signedOut:false,changes:[]};
   tab.auth=createAuthController({
     api:{me:async()=>{if(!person)throw new ApiError('Sign in',{status:401});return authAs(person);},logout:async()=>{},...api},
     data:tab.data,refresh:()=>{},getApp:()=>({clearAddress(){tab.cleared++;}}),loadBootstrap,reportError:()=>{},windowObject:window,
-    onSessionChange:(_session,change)=>{tab.signedOut=!!change?.signedOut;},
+    onSessionChange:(session,change)=>{tab.signedOut=!!change?.signedOut;if(!session)tab.changes.push(tab.signedOut?'signed out':'session ended');},
   });
   await tab.auth.initialize();
   return tab;
@@ -175,6 +176,55 @@ test('a sign-out on purpose wins over a request that met the end of its session 
   other.auth.expire();signingOut.auth.expire();
   answer.resolve();await leaving;await settle();
   for(const [name,tab] of [['here',signingOut],['there',other]]){assert.equal(tab.cleared,1,name);assert.equal(tab.signedOut,true,name);}
+});
+
+test('a tab whose session ends while its person signs out in another tab goes straight to the sign-in page',async(t)=>{
+  page(t);
+  const [here,there]=browser(2),answer=deferred(),other=await tabOf(there,'u1'),signingOut=await tabOf(here,'u1',{api:{logout:()=>answer.promise}});
+  const leaving=signingOut.auth.logout();await settle();
+  // The server ended the session, and a read in the other tab met that before the sign-out's answer came.
+  other.auth.expire();
+  assert.equal(other.signedOut,true,'it says nothing about a session that ended by itself');assert.equal(other.cleared,1);
+  answer.resolve();await leaving;await settle();
+  assert.equal(other.cleared,1,'it signs out once');
+});
+
+test('a sign-out note that a closed tab left still reaches the other tabs at the next sign-out',async(t)=>{
+  page(t);
+  const [here,there]=browser(2);
+  // A tab of this browser closed while its sign-out was on its way, long before these tabs opened.
+  here.localStorage.setItem('oneloop.signingOut','u1');await settle();
+  const answer=deferred(),other=await tabOf(there,'u1'),signingOut=await tabOf(here,'u1',{api:{logout:()=>answer.promise}});
+  const leaving=signingOut.auth.logout();await settle();
+  other.auth.expire();
+  assert.deepEqual(other.changes,['signed out'],'it goes straight to the sign-in page');
+  answer.resolve();await leaving;await settle();
+});
+
+test('the other tabs hear of a sign-out before its note goes, so none meets the ended session in between',async(t)=>{
+  page(t);
+  const [here,there]=browser(2),other=await tabOf(there,'u1'),signingOut=await tabOf(here,'u1');
+  // A request of the other tab meets the ended session just as the note goes, as the app's response observer does.
+  there.addEventListener('storage',(event)=>{if(event.key==='oneloop.signingOut'&&event.newValue===null&&other.data.session)other.auth.expire();});
+  await signingOut.auth.logout();await settle();
+  assert.deepEqual(other.changes,['signed out']);
+});
+
+test('a sign-out that doesn\'t reach the server, or whose tab went away, leaves a session that ends later to end by itself',async(t)=>{
+  page(t);
+  const [here,there]=browser(2),offline=deferred(),other=await tabOf(there,'u1'),failing=await tabOf(here,'u1',{api:{logout:()=>offline.promise}});
+  const failed=assert.rejects(failing.auth.logout(),(error)=>error.code==='network_error');await settle();
+  offline.reject(new ApiError('Unable to reach oneloop',{code:'network_error'}));await failed;await settle();
+  assert.equal(other.data.session?.userId,'u1','the other tab stays signed in');
+  other.auth.expire();
+  assert.equal(other.signedOut,false,'its session ends by itself');assert.equal(other.cleared,0,'and keeps its address');
+  // A tab that started a sign-out and went away before it ended.
+  t.mock.timers.enable({apis:['Date']});
+  const [, left]=browser(2),stale=await tabOf(left,'u1');
+  left.dispatchEvent(new left.StorageEvent('storage',{key:'oneloop.signingOut',newValue:'u1'}));
+  t.mock.timers.tick(31_000);
+  stale.auth.expire();
+  assert.equal(stale.signedOut,false,'a sign-out can be on its way for only as long as the server can take to answer');
 });
 
 test('a Confirm your identity prompt closes when its session ends, by itself or by a sign-out in another tab, and its action stops quietly',async(t)=>{

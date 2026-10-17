@@ -240,19 +240,19 @@ async fn a_deleted_task_keeps_its_checklist_for_undo() {
 }
 
 #[tokio::test]
-async fn checklist_changes_stay_out_of_the_feed_and_tell_other_tabs_to_read_the_task() {
+async fn checklist_changes_stay_out_of_the_feed_and_name_the_checklist_at_its_new_version() {
     let f = fixture().await;
     let task = task_with_checklist(&f, &["Plan"]).await;
     let view = f.service.task(&f.member, task.clone()).await.unwrap();
     let item = view.checklist.unwrap()[0].id.clone();
     let tick = json!({"itemId":item,"done":true});
-    change(&f, DomainOperation::UpdateChecklistItem, tick, Some(1))
+    let result = change(&f, DomainOperation::UpdateChecklistItem, tick, Some(1))
         .await
         .unwrap();
     let (recorded, shown): (i64, i64) = query_one(
         &f.db,
-        "SELECT (SELECT COUNT(*) FROM activity_events WHERE field_key='checklist'),
-                (SELECT COUNT(*) FROM activity_projection WHERE field_key='checklist' AND is_hidden=0)",
+        "SELECT (SELECT COUNT(*) FROM activity_events WHERE entity_type='checklist'),
+                (SELECT COUNT(*) FROM activity_projection WHERE entity_type='checklist' AND is_hidden=0)",
         [],
     )
     .await;
@@ -264,9 +264,11 @@ async fn checklist_changes_stay_out_of_the_feed_and_tell_other_tabs_to_read_the_
     assert!(
         feed.items
             .iter()
-            .all(|event| event.field_key.as_deref() != Some("checklist"))
+            .all(|event| event.entity_type != "checklist")
     );
-    // A task hint without a revision, which no tab has seen already.
+    // The hint names the checklist at the version the command returns, which
+    // the tab that made the change has, and no other tab has yet.
+    let version = result.entities[1]["checklistVersion"].as_i64().unwrap();
     let hint: String = query_one(
         &f.db,
         "SELECT payload_json FROM outbox_messages ORDER BY id DESC LIMIT 1",
@@ -275,13 +277,20 @@ async fn checklist_changes_stay_out_of_the_feed_and_tell_other_tabs_to_read_the_
     .await;
     let hint: Value = serde_json::from_str(&hint).unwrap();
     assert_eq!(
-        (
+        [
             &hint["entityType"],
+            &hint["entityId"],
             &hint["taskId"],
             &hint["entityRevision"]
-        ),
-        (&json!("task"), &json!(task), &Value::Null)
+        ],
+        [
+            &json!("checklist"),
+            &json!(task),
+            &json!(task),
+            &json!(version)
+        ]
     );
+    assert_eq!(version, view.checklist_version + 1);
 }
 
 #[tokio::test]

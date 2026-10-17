@@ -309,6 +309,7 @@ fn deliver_message(
             entity_id: None,
             entity_revision: None,
             notification_id: None,
+            respaced: false,
             recipient_ids: BTreeSet::from([message.aggregate_id.clone()]),
         }),
         _ => None,
@@ -339,6 +340,7 @@ fn deliver_inbox_change(
         entity_id: None,
         entity_revision: None,
         notification_id: None,
+        respaced: false,
         recipient_ids: BTreeSet::from([message.aggregate_id.clone()]),
     }))
 }
@@ -394,6 +396,7 @@ fn deliver_notification(
         entity_id: Some(message.aggregate_id.clone()),
         entity_revision: None,
         notification_id: Some(message.aggregate_id.clone()),
+        respaced: false,
         recipient_ids: recipients,
     }))
 }
@@ -478,6 +481,10 @@ fn deliver_activity(
             .map(str::to_owned),
         entity_revision: payload.get("entityRevision").and_then(Value::as_i64),
         notification_id: None,
+        respaced: payload
+            .get("respaced")
+            .and_then(Value::as_bool)
+            .unwrap_or_default(),
         recipient_ids: recipients,
     }))
 }

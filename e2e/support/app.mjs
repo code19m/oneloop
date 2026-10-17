@@ -101,10 +101,15 @@ export async function holdResponses(page, pattern) {
   await page.route(pattern, handler);
   return {
     started,
+    /**
+     * Deliver the held answers, then stop holding. The route stays until
+     * they are delivered: without it, the browser would ask the server again
+     * and the page would get a newer answer than the held one.
+     */
     async release() {
       release();
+      while (pending.size) await Promise.allSettled([...pending]);
       await page.unroute(pattern, handler);
-      await Promise.allSettled([...pending]);
     },
   };
 }

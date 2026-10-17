@@ -447,28 +447,35 @@ test('a tab whose live updates a newer tab took says so, and Resume takes them b
  assert.equal(notice(),null);
 });
 
-test('a task page reads its comments and activity once each time it opens and once per live change, though task reads replace the task', async () => {
+test('a live change on a task page reads only what it can change: the task and its activity, its comments, or its files', async t => {
  const reads=[];let taskReads;
  // The task as the server sends it. Reading it replaces the task's object, as the projection does.
  const view=(revision,title)=>({id:'bir-079',taskKey:'BIR-079',projectId:'p1',epicId:'e2',title,description:'',status:'planning',position:1,createdAt:1,updatedAt:revision,assigneeIds:[],activeBlock:null,revision});
  let latest=view(1,'Flexible reading schedule');
- const t=bootApp({route:'board',api:{
-  comments:async()=>{reads.push('comments');return {items:[],nextCursor:null};},
-  activity:async()=>{reads.push('activity');return {items:[],nextCursor:null};},
-  attachments:async()=>({items:[]}),task:async()=>latest,
+ const empty={items:[],nextCursor:null};
+ const app=bootApp({route:'board',api:{
+  comments:async()=>{reads.push('comments');return empty;},
+  comment:async()=>{reads.push('comment');return {items:[],context:[],replyCounts:{}};},
+  activity:async()=>{reads.push('activity');return empty;},
+  attachments:async()=>{reads.push('files');return {items:[]};},
+  task:async()=>{reads.push('task');return latest;},
  },reads:{task:id=>taskReads.task(id)}});
  // The route loader's task read draws the page again, as boot.js wires it.
- taskReads=createReadController({api:t.api,data:t.D,onTask:task=>{const context=t.A.context();if(context.view==='task'&&context.taskId===task.id)t.A.refresh();}});
- const open=async()=>{t.A.openTask('BIR-079');await settle();await t.bridge.loadCurrentRoute();await settle();};
+ taskReads=createReadController({api:app.api,data:app.D,onTask:task=>{const context=app.A.context();if(context.view==='task'&&context.taskId===task.id)app.A.refreshTask(task.id);}});
+ const open=async()=>{app.A.openTask('BIR-079');await settle();await app.bridge.loadCurrentRoute();await settle();};
  await open();
- assert.deepEqual(reads,['comments','activity'],'the task opens');
- // Another person changes the task: the live read of the task replaces it, then reads the page.
+ assert.deepEqual(reads.sort(),['activity','comments','files','task'],'the task opens');
+ t.mock.timers.enable({apis:['setTimeout']});
+ /** Send a live hint for BIR-079, let its read run, and give what it read. */
+ const live=async hint=>{reads.length=0;app.events.at(-1).emit('hint',{kind:'activity.changed',projectId:'p1',taskId:'bir-079',...hint});for(let step=0;step<4;step++){t.mock.timers.tick(100);await settle();}return reads.sort();};
  latest=view(2,'Changed elsewhere');
- t.events.at(-1).emit('hint',{kind:'activity.changed',projectId:'p1',taskId:'bir-079',entityType:'task',entityId:'bir-079',entityRevision:2});
- await waitFor(()=>reads.length>=4,'the live read reads the page');await settle();
- assert.deepEqual(reads.slice(2),['comments','activity'],'the live change');
- t.A.nav('board');await open();
- assert.deepEqual(reads.slice(4),['comments','activity'],'the task opens again');
+ assert.deepEqual(await live({entityType:'task',entityId:'bir-079',entityRevision:2}),['activity','task'],'another person changes the task');
+ assert.equal(app.d.querySelector('.tp-title').value,'Changed elsewhere');
+ assert.deepEqual(await live({entityType:'task',entityId:'bir-079',entityRevision:2}),['activity'],'a change the page has shows only in the activity');
+ assert.deepEqual(await live({entityType:'comment',entityId:'c9'}),['activity','comment','comments'],'a comment');
+ assert.deepEqual(await live({entityType:'attachment',entityId:'f9'}),['activity','files'],'a file');
+ assert.deepEqual(await live({entityType:'task',entityId:'bir-079',entityRevision:null}),['activity','files'],'the files\' order, which names no revision');
+ t.mock.timers.reset();
 });
 
 test('a task page shows its comments and activity when the task read lands before them', async () => {

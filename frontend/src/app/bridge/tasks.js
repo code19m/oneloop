@@ -2,7 +2,7 @@
 
 /** The view bridge's task actions: fields saved from the task page, new tasks and Pool promotions, blocks, deletion and Undo. */
 
-import { toWireStatus } from '../../data/wire.js';
+import { toWireScope, toWireStatus } from '../../data/wire.js';
 import { retryableFailure, validDate } from '../action-feedback.js';
 import { isFormRetryPending, completeForm } from '../form-feedback.js';
 import { text } from './commands.js';
@@ -130,8 +130,10 @@ export function installTasks(ctx) {
     const disabled=buttons.map(button=>button.disabled);
     buttons.forEach(button=>button.disabled=true);
     // A promotion that meets a change to its Pool item builds on the item's
-    // latest revision, and Use latest fills in the item's text.
+    // latest revision, and Use latest fills in the item's text. The Pool shows
+    // again afterwards, so its page is read again after the reload.
     const promotion=source?{
+      poolScope:toWireScope(source.scope),
       onRetry:(/** @type {number} */ revision)=>{if(promotionSource?.id===source.id)promotionSource.entity.revision=revision;},
       onLatest:(/** @type {any} */ latest)=>{
         if(context().modal?.poolId!==source.id)return;

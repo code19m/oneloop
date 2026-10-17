@@ -2,64 +2,72 @@
 
 import { ApiError } from '../data/api-client.js';
 import { leaveAdminPage, leaveUnavailableProject } from '../features/recovery/controller.js';
-import { boardFiltered } from '../data/board-filters.js';
+import { boardFiltered, normalizeBoardFilters } from '../data/board-filters.js';
 import { toWireScope } from '../data/wire.js';
 import { lastSwitch, pageOf, readAddress, rememberSwitch } from './address.js';
 
+/** @typedef {{projectId?:string,taskId?:string|null,view?:string,filters?:ReturnType<typeof normalizeBoardFilters>}&Record<string,any>} BootstrapScope */
+
 /**
- * What the bootstrap loads for an address: a task page's task; or the project
- * the address names, else the one on screen, with the Board's first pages, the
- * Roadmap or metadata only. A filtered Board reads its cards afterwards, so it
- * never shows the unfiltered ones first.
- * @param {string} hash @param {any} app
+ * What the bootstrap loads for an address, with `scope` over it: a task
+ * page's task; or the project the address names, else the one on screen,
+ * with the Board's first pages for the address's filters, the Roadmap or
+ * metadata only. The filters belong to the address's page, so a load that
+ * names another project or page, as a project switch does, leaves them out.
+ * @param {string} hash @param {any} app @param {Record<string,any>} [scope]
+ * @returns {BootstrapScope}
  */
-export function routeScope(hash, app) {
+export function routeScope(hash, app, scope = {}) {
   const {page,projectId,taskId,filters}=readAddress(hash);
-  if(page==='task')return {taskId,view:'task'};
+  if(page==='task')return {taskId,view:'task',...scope};
   const project=projectId??app?.context().projectId;
-  const view=page==='board'&&!boardFiltered(filters)?'board':page==='roadmap'?'roadmap':'metadata';
-  return project?{projectId:project,view}:{view};
+  const view=page==='board'?'board':page==='roadmap'?'roadmap':'metadata';
+  const shown=project?{projectId:project,view}:{view},next={...shown,...scope};
+  const samePage=scope.view===undefined&&next.projectId===shown.projectId;
+  return samePage&&view==='board'&&boardFiltered(filters)?{...next,filters:normalizeBoardFilters(filters)}:next;
 }
 
 /**
  * Load the projection as someone signs in, for the page the tab shows. An
  * address that names no project, with none on screen, opens the project of
- * the last switch in this browser, but only for the person who made it. A
- * task they can't open loads only metadata, and a project they can't open
- * loads the first project instead: an address that names it then shows Page
- * not found, and their own switch to it is forgotten.
+ * the last switch in this browser, which the server opens only for the
+ * person who made it and while they can open it; when it can't, their switch
+ * is forgotten. A task they can't open loads only metadata, and a project
+ * that the address names but they can't open loads the first project
+ * instead: the address then shows Page not found.
  * @param {{bootstrap:any,api:any,data:any,getApp:()=>any,location?:{hash:string}}} options
  */
 export function createSignInLoad({ bootstrap, api, data, getApp, location = globalThis.location }) {
   /** @type {{key:string,response:Promise<any>}|null} */ let early = null;
-  /** The scope of the page the tab shows, with the project of `last`, a switch, when the page names none. */
-  const scopeWith = (last) => {
-    const scope = routeScope(location.hash, getApp());
-    return last && !scope.projectId && !scope.taskId ? { ...scope, projectId: last.projectId } : scope;
+  /** The scope of the page the tab shows, with the last switch when the page names no project. */
+  const withSwitch = (/** @type {BootstrapScope} */ scope) => {
+    const last = lastSwitch();
+    return last && !scope.projectId && !scope.taskId ? { ...scope, lastSwitch: last } : scope;
   };
   return Object.freeze({
     /**
      * Start the first load's read while the page checks the session. Both
-     * answer for the same cookie, so neither waits for the other. The person
-     * isn't known yet, so it takes the last switch whoever made it; the load
-     * uses the read only if it still asks for the same scope, and a session
-     * change drops it.
+     * answer for the same cookie, so neither waits for the other, and the
+     * server answers for whoever signed in. The load uses the read if it
+     * still asks for the same page, and a session change drops it.
      */
     prefetch() {
-      const scope = scopeWith(lastSwitch());
-      early = { key: JSON.stringify(scope), response: api.bootstrap(scope) };
+      const scope = routeScope(location.hash, getApp());
+      early = { key: JSON.stringify(scope), response: api.bootstrap(withSwitch(scope)) };
       early.response.catch(() => {});
     },
     /** A session change drops the early read. */
     sessionChanged() { early = null; },
     async load() {
-      const person = data.session?.userId, last = lastSwitch();
-      // Someone else's switch never opens for this person.
-      const scope = scopeWith(last?.userId === person ? last : null);
-      const first = early?.key === JSON.stringify(scope) ? { ...scope, response: early.response } : scope;
+      const person = data.session?.userId, last = lastSwitch(), scope = routeScope(location.hash, getApp());
+      const first = early?.key === JSON.stringify(scope) ? { ...scope, response: early.response } : withSwitch(scope);
       early = null;
-      try { return await bootstrap.load(first); }
-      catch (error) {
+      try {
+        const loaded = await bootstrap.load(first), opened = loaded?.projection?.selectedProjectId;
+        // Another project opened than the one of this person's switch: they can no longer open it.
+        if (person && last?.userId === person && !scope.projectId && !scope.taskId && opened && opened !== last.projectId) rememberSwitch(person, null);
+        return loaded;
+      } catch (error) {
         if (!(error instanceof ApiError) || ![403, 404].includes(error.status)) throw error;
         if (scope.taskId) return bootstrap.load({ view: 'metadata' });
         if (!scope.projectId) throw error;
@@ -100,7 +108,10 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
     try{
       const previous=app?.context(),previousName=data.projects.find((item)=>item.id===previous?.projectId)?.name;
       if(scope.viewOnly&&app&&previous?.projectId&&data.projects.some((item)=>item.id===previous.projectId)){
-        if(previous.view==='board')return complete(scope.hints?.every(hint=>['task','task_block'].includes(hint.entityType))?await reads.patchBoard(previous.projectId,previous.board,scope.hints):await reads.board(previous.projectId,previous.board,{background:!!scope.background}));
+        // Hints of tasks, their blocks and checklists patch their cards. A
+        // column that was re-spaced moved cards no hint names, so the Board
+        // reads its cards again.
+        if(previous.view==='board')return complete(scope.hints?.every(hint=>['task','task_block','checklist'].includes(hint.entityType)&&!hint.respaced)?await reads.patchBoard(previous.projectId,previous.board,scope.hints):await reads.board(previous.projectId,previous.board,{background:!!scope.background}));
         if(previous.view==='roadmap'){
           // An open epic drawer lists tasks, so it reads them again too. A
           // live read waits for a Load more someone started instead of
@@ -112,7 +123,7 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
         }
       }
       let loaded,destinationError;
-      try { loaded=await bootstrap.load({...routeScope(location.hash,app),...scope}); }
+      try { loaded=await bootstrap.load(routeScope(location.hash,app,scope)); }
       catch(error) {
         if (!(error instanceof ApiError) || ![403,404].includes(error.status) || !requestIsCurrent()) throw error;
         destinationError=error;
@@ -134,7 +145,7 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
       if(current.modal?.type==='pool'||current.modal?.poolId)windows.push(reads.pool(current.projectId,toWireScope(current.poolTab),false,undefined,readOptions));
       if(current.peek&&data.epics.some((item)=>item.id===current.peek))windows.push(reads.epic(current.peek,readOptions));
       if(current.view==='board'&&data.projects.some((item)=>item.id===current.projectId)){
-        // A Board bootstrap carries the first page of each column.
+        // A Board bootstrap carries the first page of each column for its filters.
         if(!reads.adoptBoard(current.projectId,current.board))windows.push(reads.board(current.projectId,current.board,readOptions));
       }
       else if(current.view==='roadmap')app.refreshRoadmap();

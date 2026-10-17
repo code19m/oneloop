@@ -182,6 +182,92 @@ async fn http_board_read_parses_multi_filters_and_blocked_across_the_dataset() {
 }
 
 #[tokio::test]
+async fn a_bootstrap_with_board_filters_has_the_pages_that_the_board_read_has_for_them() {
+    let f = fixture().await;
+    let now = now();
+    // More matching Planning tasks than fit on a page, and others that each
+    // filter leaves out.
+    f.db.transaction(move |tx| {
+        for index in 0..60_i64 {
+            let (title, status) = match index {
+                0..55 => ("Needle", "planning"),
+                55..57 => ("Needle", "in_progress"),
+                57..59 => ("Haystack", "planning"),
+                _ => ("Needle", "done"),
+            };
+            tx.execute(
+                "INSERT INTO tasks
+                 (id,project_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at,completed_at)
+                 VALUES (?1,'p1','e1',?2,?3,?4,?5,?2,'u1',?6,?6,?6)",
+                params![format!("filtered-{index:03}"), index + 300, format!("ONE-{}", index + 300), title, status, now],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO task_assignees (task_id,user_id,assigned_by,assigned_at) VALUES ('filtered-001','u2','u1',?1)",
+            [now],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let app = router(&f);
+    let read = async |uri: String| -> Value {
+        let response = app
+            .clone()
+            .oneshot(signed_in_get("u2", &uri))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK, "{uri}");
+        serde_json::from_slice(&body_bytes(response).await).unwrap()
+    };
+    let filter =
+        "search=needle&trackIds=tr1&epicIds=e1&assigneeIds=u3&noAssignee=true&doneOrder=completed";
+    let board = read(format!("/api/projects/p1/board-view?{filter}&limit=50")).await;
+    let bootstrap = read(format!("/api/bootstrap?projectId=p1&view=board&{filter}")).await;
+    let ids = |items: &Value| -> Vec<String> {
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|task| task["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let cards = |status: &str| -> Vec<String> {
+        let tasks = bootstrap["tasks"].as_array().unwrap();
+        ids(&Value::Array(
+            tasks
+                .iter()
+                .filter(|task| task["status"] == status)
+                .cloned()
+                .collect(),
+        ))
+    };
+    for (column, status) in [
+        ("planning", "planning"),
+        ("inProgress", "in_progress"),
+        ("inReview", "in_review"),
+        ("done", "done"),
+    ] {
+        assert_eq!(cards(status), ids(&board[column]["items"]), "{status}");
+        let page = &bootstrap["boardPages"][status];
+        assert_eq!(
+            (&page["total"], &page["nextCursor"]),
+            (&board[column]["total"], &board[column]["nextCursor"]),
+            "{status}"
+        );
+    }
+    // Planning has 54 matches, the task with an assignee being left out.
+    assert_eq!(bootstrap["boardPages"]["planning"]["total"], 54);
+    assert!(bootstrap["boardPages"]["planning"]["nextCursor"].is_string());
+    assert_eq!(bootstrap["boardCounts"], board["counts"]);
+    assert_eq!(
+        bootstrap["boardFilter"],
+        json!({"search":"needle","trackIds":["tr1"],"epicIds":["e1"],"assigneeIds":["u3"],
+               "noAssignee":true,"blocked":false,"doneOrder":"completed"})
+    );
+}
+
+#[tokio::test]
 async fn filtered_board_moves_use_server_validated_visible_anchors() {
     let f = fixture().await;
     let mut ids = Vec::new();
@@ -642,6 +728,65 @@ async fn re_spacing_a_column_with_negative_positions_keeps_its_order() {
 }
 
 #[tokio::test]
+async fn a_change_that_re_spaces_its_column_says_so_in_its_activity_and_hint() {
+    let f = fixture().await;
+    seed_ordering_column(&f, 3).await;
+    let runtime = oneloop::collaboration::CollaborationRuntime::new(f.db.clone());
+    let mut hints = runtime.subscribe();
+    // Whether each change's activity and live hint say that it re-spaced its column.
+    let mut signals = Vec::new();
+    let mut run = async |operation, payload: Value, key: &str, revision| {
+        let result = f
+            .service
+            .execute(&f.manager, command(operation, payload, key, revision))
+            .await
+            .unwrap();
+        drain(&runtime).await;
+        let hint = hints.try_recv().unwrap();
+        signals.push((
+            key.to_owned(),
+            result.events[0].metadata.get("respaced").cloned(),
+            hint.respaced,
+        ));
+    };
+    let top = json!({"taskId":"order-4","status":"planning"});
+    run(DomainOperation::MoveTask, top, "top", Some(1)).await;
+    // Planning holds positions -1024, 0, 1 and 2: no room between 0 and 1.
+    let full_gap = json!({"taskId":"order-5","status":"planning","position":2});
+    run(DomainOperation::MoveTask, full_gap, "full-gap", Some(1)).await;
+    let task = json!({"projectId":"p1","epicId":"e1","title":"New task"});
+    run(DomainOperation::CreateTask, task.clone(), "create", None).await;
+    // The top card sits too close to the lowest position for a gap above it.
+    f.db.run(|connection| {
+        connection.execute(
+            "UPDATE tasks SET position=?1 WHERE id=(SELECT id FROM tasks
+             WHERE status='planning' ORDER BY position LIMIT 1)",
+            [i64::MIN + 10],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    run(
+        DomainOperation::CreateTask,
+        task,
+        "create-at-the-edge",
+        None,
+    )
+    .await;
+    let marked = Some(json!(true));
+    assert_eq!(
+        signals,
+        [
+            ("top".to_owned(), None, false),
+            ("full-gap".to_owned(), marked.clone(), true),
+            ("create".to_owned(), None, false),
+            ("create-at-the-edge".to_owned(), marked, true),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn board_snapshot_batches_cards_and_omits_detail_text_without_changing_search() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static READS: AtomicUsize = AtomicUsize::new(0);
@@ -672,7 +817,7 @@ async fn board_snapshot_batches_cards_and_omits_detail_text_without_changing_sea
                 project_id: Some("p1".into()),
                 task_id: None,
                 view: Some("board".into()),
-                done_order: Default::default(),
+                ..Default::default()
             },
         )
         .await
@@ -1301,7 +1446,7 @@ async fn done_order_cursors_and_parameters_belong_to_their_order() {
         .await
         .unwrap();
     let bootstrap: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
-    assert_eq!(bootstrap["doneOrder"], "completed");
+    assert_eq!(bootstrap["boardFilter"]["doneOrder"], "completed");
     let done = bootstrap["tasks"]
         .as_array()
         .unwrap()

@@ -6,7 +6,7 @@ import {
 } from './projection-store.js';
 import {byStatus, toLegacyScope, toLegacyStatus, toWireStatus} from './wire.js';
 import {mapActivity} from './activity-mapper.js';
-import {NO_ASSIGNEE, boardFiltered, matchesBoardFilters, normalizeBoardFilters} from './board-filters.js';
+import {NO_ASSIGNEE, boardFiltered, matchesBoardFilters, normalizeBoardFilters, sameBoardFilters} from './board-filters.js';
 import {savedDoneOrder} from './done-order.js';
 import {secondsToMilliseconds} from './time.js';
 
@@ -26,9 +26,12 @@ function boardFilters(filters={}){
  * thing, the older caller gets the newer result instead of nothing. Reads of
  * different slots never cancel each other. A background (live) read never
  * replaces a read someone is waiting for: it waits for that read first, and it
- * is dropped when a full refresh landed while it ran.
+ * is dropped when a full refresh landed while it ran. `writes`, the tab's
+ * command gateway, runs a live read that replaces a collection, as of the
+ * Board, the Roadmap or the Pool, again when it overlapped one of the tab's
+ * own changes, which its answer could undo.
  */
-export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_projection)=>{},onPool=(_page)=>{},onTask=(_task)=>{},onEpic=(_page)=>{},onCounts=(_counts)=>{},onError=(_error)=>{}}){
+export function createReadController({api,data,writes={readUnchanged:(/** @type {()=>Promise<any>} */ read,/** @type {()=>boolean} */ _current)=>read()},onBoard=(_state)=>{},onRoadmap=(_projection)=>{},onPool=(_page)=>{},onTask=(_task)=>{},onEpic=(_page)=>{},onCounts=(_counts)=>{},onError=(_error)=>{}}){
   let epoch=0;
   let boardState=null,boardDirty=false,pageController=new AbortController();
   /** @type {Promise<any>|null} */ let boardPageRead=null;
@@ -39,6 +42,13 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
   const poolStates=new Map();
   const current=(/** @type {Token} */ token)=>slots.get(token.slot)===token&&token.epoch===epoch&&!(token.background&&token.projection!==(data.projectionGeneration??0));
   const ignored=(/** @type {Token} */ token,error)=>!current(token)||error?.code==='aborted';
+  /**
+   * The answer of `ask` for the read of `token`. A live read that ran while
+   * this tab moved, added or deleted something may answer from before that
+   * change, and would undo it, so it answers only once it overlapped none.
+   * @template T @param {Token} token @param {()=>Promise<T>} ask @returns {Promise<T>}
+   */
+  const answerOf=(token,ask)=>token.background?writes.readUnchanged(ask,()=>current(token)):ask();
 
   /**
    * Run `work` as the newest read of `slot`. A stale outcome resolves to the
@@ -79,13 +89,14 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
   const boardLost=(/** @type {Token} */ token)=>{if(token.background)boardDirty=true;};
 
   function adoptBoard(projectId,filters={}){
-    if(data.bootstrapView!=='board'||data.boardPageInfo?.projectId!==projectId)return false;
-    if(boardFiltered(filters))return false;
+    const common=boardFilters(filters),loaded=data.boardPageInfo;
+    if(data.bootstrapView!=='board'||loaded?.projectId!==projectId)return false;
+    // The bootstrap's pages are a Board read's for the filters they name.
+    if(!sameBoardFilters(loaded.filters,common)||loaded.filters?.doneOrder!==common.doneOrder)return false;
     // A column that shows more than its first page reads those pages again.
     if(boardState?.projectId===projectId&&Object.values(boardState.depths).some(depth=>depth>1))return false;
-    if(data.boardPageInfo.filters?.doneOrder!==boardFilters(filters).doneOrder)return false;
-    supersedeBoard(boardTarget(projectId,boardFilters(filters)));
-    remember({projectId,filters:boardFilters(filters),pages:data.boardPageInfo.pages});
+    supersedeBoard(boardTarget(projectId,common));
+    remember({projectId,filters:common,pages:loaded.pages});
     onBoard(boardState);return true;
   }
 
@@ -99,17 +110,21 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
       onBoard(boardState);return {stale:false,state:boardState,unchanged:true};
     }
     return read('board',target,!!options.background,async token=>{
-      const started=stamp();
       try{
-        const response=await api.boardView(projectId,common,{signal:token.signal,background:options.background});
-        if(!current(token))return {stale:true};
-        const columns=byStatus(response),pages=STATUSES.map(status=>columns[status]);
-        const depths=loaded()?{...boardState.depths}:Object.fromEntries(STATUSES.map(status=>[status,1]));
-        // A real reconcile rebuilds only the previously loaded depth, using the
-        // server's bounded pages. Ordinary task hints use patchBoard instead.
-        // A write during this read makes its deeper cursors stale; the column then keeps the pages it has.
-        await Promise.all(pages.map(async(page,index)=>{let depth=1;while(depth<(depths[STATUSES[index]]??1)&&page.nextCursor){let next;try{next=await api.board(projectId,{...common,status:toWireStatus(STATUSES[index]),cursor:page.nextCursor},{signal:token.signal,background:options.background});}catch(error){if(error?.code!=='cursor_stale')throw error;break;}page.items.push(...next.items);page.nextCursor=next.nextCursor;depth++;}depths[STATUSES[index]]=depth;}));
-        if(!current(token))return {stale:true};
+        const attempt=async()=>{
+          const started=stamp(),response=await api.boardView(projectId,common,{signal:token.signal,background:options.background});
+          if(!current(token))return null;
+          const columns=byStatus(response),pages=STATUSES.map(status=>columns[status]);
+          const depths=loaded()?{...boardState.depths}:Object.fromEntries(STATUSES.map(status=>[status,1]));
+          // A real reconcile rebuilds only the previously loaded depth, using the
+          // server's bounded pages. Ordinary task hints use patchBoard instead.
+          // A write during this read makes its deeper cursors stale; the column then keeps the pages it has.
+          await Promise.all(pages.map(async(page,index)=>{let depth=1;while(depth<(depths[STATUSES[index]]??1)&&page.nextCursor){let next;try{next=await api.board(projectId,{...common,status:toWireStatus(STATUSES[index]),cursor:page.nextCursor},{signal:token.signal,background:options.background});}catch(error){if(error?.code!=='cursor_stale')throw error;break;}page.items.push(...next.items);page.nextCursor=next.nextCursor;depth++;}depths[STATUSES[index]]=depth;}));
+          return {started,response,pages,depths};
+        };
+        const answer=await answerOf(token,attempt);
+        if(!answer||!current(token))return {stale:true};
+        const {started,response,pages,depths}=answer;
         replaceBoardTasks(data,projectId,pages.flatMap((page)=>page.items));
         const pageMap=Object.fromEntries(STATUSES.map((status,index)=>[status,{nextCursor:pages[index].nextCursor,total:Number(pages[index].total??0)}]));
         // Cards read before a newer projection are not reused as current.
@@ -133,14 +148,17 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
     if(boardState.projectId!==projectId||JSON.stringify(boardState.filters)!==JSON.stringify(common))return {stale:true};
     if(boardState.stamp!==stamp())return board(projectId,filters,{background:true});
     const ids=[...new Set(hints.map(hint=>hint.taskId??hint.entityId).filter(Boolean))];
+    // A checklist change moves no card, so the counts and totals stay.
+    const moved=hints.some(hint=>hint.entityType!=='checklist');
     return read('board',target,true,async token=>{
       try{
         const filtered=boardFiltered(common);
-        const [tasks,counts,head]=await Promise.all([
+        // The cards as the hints left them, read again when the tab changed one meanwhile.
+        const [tasks,counts,head]=await answerOf(token,()=>Promise.all([
           Promise.all(ids.map(async id=>{try{return {id,view:await api.task(id,{signal:token.signal,background:true})};}catch(error){if(error?.status===404)return {id,view:null};throw error;}})),
-          api.counts(projectId,{signal:token.signal,background:true}),
-          filtered?api.boardView(projectId,common,{signal:token.signal,background:true}):null,
-        ]);
+          moved?api.counts(projectId,{signal:token.signal,background:true}):null,
+          moved&&filtered?api.boardView(projectId,common,{signal:token.signal,background:true}):null,
+        ]));
         if(!current(token)||boardState?.projectId!==projectId)return {stale:true};
         for(const {id,view} of tasks){
           const old=data.tasks.find(item=>item.internalId===id);
@@ -153,13 +171,15 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
           if(matches&&page&&(!page.nextCursor||edge&&compareTaskOrder({order:view.position,internalId:view.id,state:status,completedAt:secondsToMilliseconds(view.completedAt)??null,completionOrder:view.completionOrder??null},edge,common.doneOrder)<=0))appendBoardTasks(data,[view]);
           else if(old)data.tasks.splice(data.tasks.indexOf(old),1);
         }
-        const mapped=byStatus(counts);
-        setProjectTaskCounts(data,projectId,mapped);
-        // Filtered totals require the authoritative bounded Board response. Keep
-        // the loaded window and cursors; this read does not replace its cards.
-        if(head){
-          const columns=byStatus(head);for(const status of STATUSES)boardState.pages[status].total=columns[status].total;
-        }else for(const status of STATUSES)boardState.pages[status].total=mapped[status];
+        if(counts){
+          const mapped=byStatus(counts);
+          setProjectTaskCounts(data,projectId,mapped);
+          // Filtered totals require the authoritative bounded Board response. Keep
+          // the loaded window and cursors; this read does not replace its cards.
+          if(head){
+            const columns=byStatus(head);for(const status of STATUSES)boardState.pages[status].total=columns[status].total;
+          }else for(const status of STATUSES)boardState.pages[status].total=mapped[status];
+        }
         boardState.ids=new Set(data.tasks.filter(task=>task.projectId===projectId).map(task=>task.internalId));
         setBoardPageInfo(data,projectId,common,boardState.pages);onBoard(boardState);return {stale:false};
       }catch(error){if(ignored(token,error))return {stale:true};boardLost(token);onError(error);throw error;}
@@ -205,7 +225,7 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
 
   async function roadmap(projectId,options={}){
     return read(`roadmap:${projectId}`,'',!!options.background,async token=>{
-      try{const projection=await api.roadmap(projectId,{signal:token.signal,background:options.background});if(!current(token))return {stale:true};replaceRoadmap(data,projection);onRoadmap(projection);return {stale:false};}
+      try{const projection=await answerOf(token,()=>api.roadmap(projectId,{signal:token.signal,background:options.background}));if(!current(token))return {stale:true};replaceRoadmap(data,projection);onRoadmap(projection);return {stale:false};}
       catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
     });
   }
@@ -217,7 +237,7 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
       data.poolPageInfo[pageKey]={nextCursor:null,total:0,loaded:false,...data.poolPageInfo[pageKey],loading:true,error:false};
       onPool(data.poolPageInfo[pageKey]);
       try{
-        const page=await api.pool(projectId,{scope,cursor,limit:50},{signal:token.signal,background:options.background});if(!current(token))return {stale:true};
+        const page=await answerOf(token,()=>api.pool(projectId,{scope,cursor,limit:50},{signal:token.signal,background:options.background}));if(!current(token))return {stale:true};
         replacePoolPage(data,projectId,scope,page.items,append);setPoolPageInfo(data,projectId,scope,page);
         poolStates.set(key,{projectId,scope,nextCursor:page.nextCursor});onPool(page);return {stale:false,page};
       }catch(error){if(ignored(token,error))return {stale:true};data.poolPageInfo[pageKey]={...data.poolPageInfo[pageKey],loading:false,error:true};onPool(data.poolPageInfo[pageKey]);onError(error);throw error;}

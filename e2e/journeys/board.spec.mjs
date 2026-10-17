@@ -126,11 +126,10 @@ test('the Board keeps its filters and search in its address through a refresh, a
   await expect(page.getByLabel('Search tasks', { exact: true })).toHaveValue('seeded');
   await expect(trackFilter).toContainText(track.name);
   await expect(titles).toHaveText([task.title]);
-  // The page asks for the filtered cards only, so it never shows the others first.
+  // One request loads the page with the filtered cards only, so it never shows the others first.
   const bootstraps = requests.filter(url => url.pathname === '/api/bootstrap');
-  expect(bootstraps.map(url => [url.searchParams.get('projectId'), url.searchParams.get('view')])).toEqual([[project.id, 'metadata']]);
-  const reads = requests.filter(url => url.pathname.endsWith('/board-view'));
-  expect(reads.map(url => [url.searchParams.get('trackIds'), url.searchParams.get('search')])).toEqual([[track.id, 'seeded']]);
+  expect(bootstraps.map(url => ['projectId', 'view', 'trackIds', 'search'].map(key => url.searchParams.get(key)))).toEqual([[project.id, 'board', track.id, 'seeded']]);
+  expect(requests.filter(url => url.pathname.endsWith('/board-view'))).toEqual([]);
 });
 
 test('Board search coalesces typing', async ({ page, instance }) => {

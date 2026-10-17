@@ -10,6 +10,9 @@ import {actionErrorFeedback,retryableFailure} from '../../app/action-feedback.js
 import {mentionFromWire,mentionsToWire} from '../../data/wire.js';
 
 const chronological = (left, right) => left.ts - right.ts || String(left.id ?? '').localeCompare(String(right.id ?? ''));
+// What a live read of an open task reads: the whole projection, or the task,
+// its comments, its activity or its files.
+const READ_ALL = 1, READ_TASK = 2, READ_COMMENTS = 4, READ_ACTIVITY = 8, READ_FILES = 16;
 
 /** @param {any} comment */
 function mapComment(comment) {
@@ -40,7 +43,7 @@ function replace(array, items) { array.splice(0, array.length, ...items); }
 export function installCollaborationController({ transport, recovery, eventSourceFactory = (url) => new EventSource(url), visibility = globalThis.document }) {
   if (!transport?.api || !transport?.commands || !transport?.data) throw new TypeError('Expected the runtime transport');
   const data=transport.data;
-  let app=null,facade=/** @type {{feedback?:(message:string)=>void,filter:()=>{projects:string[],unread:boolean,archived:boolean},inboxBusy?:(busy:boolean)=>void,inboxPage?:(meta:any)=>void,unreadCount?:(count:number)=>void,taskPage?:(id:string,meta:any)=>void,commentSaved?:(id:string,comment:any,result:any)=>void,commentAcknowledged?:(input:any,comment:any)=>void,commentEditor?:(input:any)=>HTMLTextAreaElement|null,acceptCommentLatest?:(input:any,comment:any)=>void,commentDeleted?:(id:string,commentId:string)=>void,commentRestored?:(id:string,commentId:string)=>void,canonicalTask?:(id:string)=>void,target?:(target:any)=>void}|null} */(null),source=null,unsubscribe=null;
+  let app=null,facade=/** @type {{feedback?:(message:string)=>void,filter:()=>{projects:string[],unread:boolean,archived:boolean},inboxBusy?:(busy:boolean)=>void,inboxPage?:(meta:any)=>void,unreadCount?:(count:number)=>void,taskPage?:(id:string,meta:any)=>void,commentSaved?:(id:string,comment:any,result:any)=>void,commentAcknowledged?:(input:any,comment:any)=>void,commentEditor?:(input:any)=>HTMLTextAreaElement|null,acceptCommentLatest?:(input:any,comment:any)=>void,commentDeleted?:(id:string,commentId:string)=>void,commentRestored?:(id:string,commentId:string)=>void,canonicalTask?:(id:string)=>void,taskFiles?:(id:string)=>void,target?:(target:any)=>void}|null} */(null),source=null,unsubscribe=null;
   let sessionKey='',routeKey='',taskGeneration=0,inboxGeneration=0,inboxEntry=false,taskEntry=false;
   let projectReconcileTimer=null,projectReconcileProjectId=null,projectReconcileRunning=false;
   let sessionCheck=null,disposed=false;
@@ -51,6 +54,9 @@ export function installCollaborationController({ transport, recovery, eventSourc
   const pendingProjectHints=new Map();
   const liveReads=new Map();
   const changedComments=new Set();
+  // The revisions at which this tab's own commands deleted records, by ID.
+  // The hint of such a deletion names a record the tab no longer has.
+  const deletedHere=new Map();
   function clearLiveReads(prefix=''){
     for(const [key,job] of liveReads)if(key.startsWith(prefix)){clearTimeout(job.timer);liveReads.delete(key);job.finish({stale:true});}
   }
@@ -88,7 +94,8 @@ export function installCollaborationController({ transport, recovery, eventSourc
     try{return await pending;}finally{if(taskRead===pending)taskRead=null;}
   }
 
-  async function performReadTask(task,{background=false,append=false,targetCommentId=null,targetCommentIds=[],targetBlockId=null,reconcile=false}={}){
+  /** `comments` and `activity` say which of the two to read; a live change reads only what it can change. */
+  async function performReadTask(task,{background=false,append=false,targetCommentId=null,targetCommentIds=[],targetBlockId=null,reconcile=false,comments:readComments=true,activity:readActivity=true}={}){
     if(!task?.internalId)return {stale:true};
     const key=`${currentSession()}:${task.internalId}`,generation=++taskGeneration,expectedRoute=routeKey;
     taskController?.abort();taskController=new AbortController();
@@ -96,37 +103,39 @@ export function installCollaborationController({ transport, recovery, eventSourc
     if(!page.loaded&&!background)facade?.taskPage?.(task.id,{loaded:false,loading:true,error:false,hasMore:false,background});
     try{
       const [comments,activity,target,block]=await Promise.all([
-        append&&page.loaded&&!page.commentsCursor?Promise.resolve({items:[],nextCursor:null}):transport.api.comments(task.internalId,{cursor:append?page.commentsCursor:undefined,limit:50,signal:taskController.signal,background}),
-        append&&page.loaded&&!page.activityCursor?Promise.resolve({items:[],nextCursor:null}):transport.api.activity(task.projectId,{taskId:task.internalId,cursor:append?page.activityCursor:undefined,limit:50,signal:taskController.signal,background}),
-        Promise.all([...new Set([...targetCommentIds,...(targetCommentId?[targetCommentId]:[])])].map(id=>transport.api.comment(task.internalId,id,{signal:taskController.signal,background}))).then(pages=>({items:pages.flatMap(page=>page.items??[]),context:pages.flatMap(page=>page.context??[]),replyCounts:Object.assign({},...pages.map(page=>page.replyCounts))})),
+        !readComments?null:append&&page.loaded&&!page.commentsCursor?Promise.resolve({items:[],nextCursor:null}):transport.api.comments(task.internalId,{cursor:append?page.commentsCursor:undefined,limit:50,signal:taskController.signal,background}),
+        !readActivity?null:append&&page.loaded&&!page.activityCursor?Promise.resolve({items:[],nextCursor:null}):transport.api.activity(task.projectId,{taskId:task.internalId,cursor:append?page.activityCursor:undefined,limit:50,signal:taskController.signal,background}),
+        Promise.all([...new Set(readComments?[...targetCommentIds,...(targetCommentId?[targetCommentId]:[])]:[])].map(id=>transport.api.comment(task.internalId,id,{signal:taskController.signal,background}))).then(pages=>({items:pages.flatMap(page=>page.items??[]),context:pages.flatMap(page=>page.context??[]),replyCounts:Object.assign({},...pages.map(page=>page.replyCounts))})),
         targetBlockId?transport.api.block(task.internalId,targetBlockId,{signal:taskController.signal,background}):Promise.resolve(null),
       ]);
       if(reconcile){
         for(const [rows,depth,read] of [
           [comments,page.commentsDepth??1,cursor=>transport.api.comments(task.internalId,{cursor,limit:50,signal:taskController.signal,background})],
           [activity,page.activityDepth??1,cursor=>transport.api.activity(task.projectId,{taskId:task.internalId,cursor,limit:50,signal:taskController.signal,background})],
-        ]){for(let index=1;index<depth&&rows.nextCursor;index++){const next=await read(rows.nextCursor);rows.items.push(...next.items);rows.context=[...(rows.context??[]),...(next.context??[])];rows.replyCounts={...rows.replyCounts,...next.replyCounts};rows.nextCursor=next.nextCursor;}}
+        ]){for(let index=1;rows&&index<depth&&rows.nextCursor;index++){const next=await read(rows.nextCursor);rows.items.push(...next.items);rows.context=[...(rows.context??[]),...(next.context??[])];rows.replyCounts={...rows.replyCounts,...next.replyCounts};rows.nextCursor=next.nextCursor;}}
       }
       // A task read can replace the task's object while this read runs; the result then goes to the object the page shows.
       const shown=currentTask(task.internalId);
       if(generation!==taskGeneration||key!==`${currentSession()}:${task.internalId}`||expectedRoute!==routeKey||!shown){page.loading=false;return {stale:true};}
       task=shown;
-      const commentRows=new Map([...(comments.context??[]),...(comments.items??[]),...(target?.context??[]),...(target?.items??[])].map((item)=>[item.id,item]));
-      const replyCounts={...comments.replyCounts,...target?.replyCounts};
+      const commentRows=new Map([...(comments?.context??[]),...(comments?.items??[]),...(target?.context??[]),...(target?.items??[])].map((item)=>[item.id,item]));
+      const replyCounts={...comments?.replyCounts,...target?.replyCounts};
       const mappedComments=[...commentRows.values()].map((item)=>({...mapComment(item),replyCount:replyCounts[item.rootId]}));
-      const activityRows=new Map([...(activity.items??[]),...(block?.items??[])].map((item)=>[item.id,item]));
+      const activityRows=new Map([...(activity?.items??[]),...(block?.items??[])].map((item)=>[item.id,item]));
       const mappedActivity=[...activityRows.values()].map((item)=>mapActivity(item,data.users)).filter(Boolean);
       if(append){
         const commentsById=new Map((task.comments??[]).map((item)=>[item.id,item]));for(const item of mappedComments)commentsById.set(item.id,item);task.comments=[...commentsById.values()].sort(chronological);
         const eventsById=new Map((task.activity??[]).map((item)=>[item.id,item]));for(const item of mappedActivity)eventsById.set(item.id,item);task.activity=[...eventsById.values()].sort(chronological);
-      }else{const head=(comments.items??[]).map(mapComment);
-        task.comments=refreshPageWindow(task.comments??[],head,!!comments.nextCursor,item=>item.ts);
-        const byId=new Map(task.comments.map(item=>[item.id,item]));for(const item of mappedComments)byId.set(item.id,item);task.comments=[...byId.values()].sort(chronological);task.activity=refreshPageWindow(task.activity??[],mappedActivity,!!activity.nextCursor,item=>item.ts,Math.min(...(activity.items??[]).map((/** @type {{createdAt:number}} */ item)=>secondsToMilliseconds(item.createdAt)))).sort(chronological);}
+      }else{
+        if(comments){const head=(comments.items??[]).map(mapComment);
+          task.comments=refreshPageWindow(task.comments??[],head,!!comments.nextCursor,item=>item.ts);
+          const byId=new Map(task.comments.map(item=>[item.id,item]));for(const item of mappedComments)byId.set(item.id,item);task.comments=[...byId.values()].sort(chronological);}
+        if(activity)task.activity=refreshPageWindow(task.activity??[],mappedActivity,!!activity.nextCursor,item=>item.ts,Math.min(...(activity.items??[]).map((/** @type {{createdAt:number}} */ item)=>secondsToMilliseconds(item.createdAt)))).sort(chronological);}
       if(append){if(page.commentsCursor)page.commentsDepth=(page.commentsDepth??1)+1;if(page.activityCursor)page.activityDepth=(page.activityDepth??1)+1;}
-      if(append||reconcile||!page.commentsLoaded)page.commentsCursor=comments.nextCursor??null;else if(!comments.nextCursor)page.commentsCursor=null;
-      if(append||reconcile||!page.activityLoaded)page.activityCursor=activity.nextCursor??null;else if(!activity.nextCursor)page.activityCursor=null;
-      page.commentsLoaded=true;page.activityLoaded=true;page.loaded=true;page.loading=false;page.error=false;page.commentsRef=new WeakRef(task.comments);taskPages.set(task.internalId,page);
-      facade?.taskPage?.(task.id,{loaded:true,loading:false,error:false,hasMore:!!(page.commentsCursor||page.activityCursor),background});
+      if(comments){if(append||reconcile||!page.commentsLoaded)page.commentsCursor=comments.nextCursor??null;else if(!comments.nextCursor)page.commentsCursor=null;page.commentsLoaded=true;}
+      if(activity){if(append||reconcile||!page.activityLoaded)page.activityCursor=activity.nextCursor??null;else if(!activity.nextCursor)page.activityCursor=null;page.activityLoaded=true;}
+      page.loaded=!!(page.commentsLoaded&&page.activityLoaded);page.loading=false;page.error=false;page.commentsRef=new WeakRef(task.comments);taskPages.set(task.internalId,page);
+      facade?.taskPage?.(task.id,{loaded:page.loaded,loading:false,error:false,hasMore:!!(page.commentsCursor||page.activityCursor),background});
       return {stale:false};
     }catch(error){
       page.loading=false;
@@ -332,13 +341,39 @@ export function installCollaborationController({ transport, recovery, eventSourc
 
   function entityRevision(entityType,entityId){
     if(!entityType||!entityId)return null;
+    // A task's checklist has its own version, which each change to it raises.
+    if(entityType==='checklist'){const version=currentTask(entityId)?.checklistVersion;return Number.isSafeInteger(version)?version:null;}
     const collections={project:data.projects,track:data.tracks,epic:data.epics,milestone:data.milestones,task:data.tasks,pool_item:data.pool};
     const collection=collections[entityType];if(!collection)return null;
     const item=collection.find((entry)=>entry.id===entityId||entry.internalId===entityId);
-    return Number.isFinite(item?.revision)?Number(item.revision):null;
+    if(!item)return deletedHere.get(entityId)??null;
+    return Number.isFinite(item.revision)?Number(item.revision):null;
+  }
+
+  /**
+   * What a live change can change on its task's page, and so what the page
+   * reads again: the task, its comments, its activity or its files. A change
+   * to the task carries the task's new revision; when the page already has
+   * it, only the change's activity is new. A task hint without a revision is
+   * the new order of the task's files. Checklist changes stay out of the
+   * activity, and the task carries its checklist.
+   */
+  function taskPageParts(hint){
+    switch(hint.entityType){
+      case 'checklist':return hintIsCovered(hint)?0:READ_TASK;
+      case 'comment':return READ_COMMENTS|READ_ACTIVITY;
+      case 'attachment':return READ_FILES|READ_ACTIVITY;
+      case 'task':return hint.entityRevision==null?READ_FILES|READ_ACTIVITY:hintIsCovered(hint)?READ_ACTIVITY:READ_TASK|READ_ACTIVITY;
+      case 'task_block':return READ_TASK|READ_ACTIVITY;
+      case 'knowledge_source':return 0;
+      // A change that names no record can have changed anything the page shows.
+      default:return READ_TASK|READ_COMMENTS|READ_ACTIVITY|READ_FILES;
+    }
   }
 
   function hintIsCovered(hint){
+    // A re-spaced column moved cards that no tab read yet, the acting one included.
+    if(hint?.respaced)return false;
     const revision=hint?.entityRevision;if(!Number.isSafeInteger(revision)||revision<1)return false;
     const current=entityRevision(hint.entityType,hint.entityId);return current!==null&&current>=revision;
   }
@@ -351,7 +386,8 @@ export function installCollaborationController({ transport, recovery, eventSourc
   function scheduleProjectReconcile(projectId,{full=false,hint=/** @type {any} */({})}={}){
     if(projectReconcileProjectId&&projectReconcileProjectId!==projectId)clearProjectReconcile();
     projectReconcileProjectId=projectId;
-    const identity=hint.entityType&&hint.entityId?`${hint.entityType}:${hint.entityId}`:`${hint.kind??'reconcile'}:project`;
+    // A later hint of the same task never replaces the one that says its column was re-spaced.
+    const identity=hint.respaced?'respaced:column':hint.entityType&&hint.entityId?`${hint.entityType}:${hint.entityId}`:`${hint.kind??'reconcile'}:project`;
     const previous=pendingProjectHints.get(identity);
     const previousRevision=previous?.hint?.entityRevision,nextRevision=hint.entityRevision;
     if(!previous||previousRevision==null||nextRevision==null||nextRevision>=previousRevision){
@@ -386,20 +422,24 @@ export function installCollaborationController({ transport, recovery, eventSourc
     if(context.view==='task'){
       const task=currentTask(context.taskId);if(!task)return;
       if(!metadataChange&&hint.taskId&&hint.taskId!==task.internalId)return;
+      const parts=kind==='reconcile'||metadataChange?READ_ALL:taskPageParts(hint);
+      if(!parts)return;
       const session=currentSession(),route=routeKey;
       if(hint.entityType==='comment'&&hint.entityId)changedComments.add(hint.entityId);
-      const full=kind==='reconcile'||metadataChange;
-      const canonical=!hint.entityType||!['comment','attachment'].includes(hint.entityType);
-      scheduleLiveRead(`task:${session}:${task.internalId}`,full?1:canonical?2:4,async flags=>{
+      scheduleLiveRead(`task:${session}:${task.internalId}`,parts,async flags=>{
         if(session!==currentSession()||route!==routeKey)return;
-        if(flags&1){const loaded=await transport.reload({projectId:context.projectId,background:true});if(loaded?.stale)return;}
+        if(flags&READ_ALL){const loaded=await transport.reload({projectId:context.projectId,background:true});if(loaded?.stale)return;}
         if(session!==currentSession()||route!==routeKey)return;
         const current=currentTask(context.taskId);
         if(!current)return;
-        const next=flags&2&&!(flags&1)?await readCanonicalTask(current):current;
-        if(next&&session===currentSession()&&route===routeKey){
-          const targets=[...changedComments];changedComments.clear();
-          await readTask(next,{background:true,targetCommentIds:targets,reconcile:!!(flags&1)});
+        const next=flags&READ_TASK&&!(flags&READ_ALL)?await readCanonicalTask(current):current;
+        if(!next||session!==currentSession()||route!==routeKey)return;
+        // A full refresh draws the files again with the page.
+        if(flags&READ_FILES&&!(flags&READ_ALL))facade?.taskFiles?.(next.id);
+        const comments=!!(flags&(READ_ALL|READ_COMMENTS)),activity=!!(flags&(READ_ALL|READ_ACTIVITY));
+        if(comments||activity){
+          const targets=comments?[...changedComments]:[];if(comments)changedComments.clear();
+          await readTask(next,{background:true,targetCommentIds:targets,reconcile:!!(flags&READ_ALL),comments,activity});
         }
       });
       return;
@@ -408,6 +448,8 @@ export function installCollaborationController({ transport, recovery, eventSourc
     if(kind==='activity.changed'){
       // Knowledge syncs refresh only the Knowledge page, which follows them itself.
       if(['comment','attachment','knowledge_source'].includes(hint.entityType))return;
+      // Besides its task's page, a checklist shows only as a Board card's counts.
+      if(hint.entityType==='checklist'&&context.view!=='board')return;
       const accessChange=['project','membership'].includes(hint.entityType);
       if(['inbox','profile','users','storage','settings'].includes(context.view)&&!accessChange)return;
     }
@@ -474,7 +516,8 @@ export function installCollaborationController({ transport, recovery, eventSourc
       if(Number.isFinite(data.inboxUnreadCount))facade?.unreadCount?.(data.inboxUnreadCount);
       unsubscribe?.();unsubscribe=transport.subscribe((change)=>{
         const next=currentSession();
-        if(next!==sessionKey){sessionKey=next;taskGeneration++;inboxGeneration++;taskController?.abort();inboxController?.abort();taskPages=new Map();clearProjectReconcile();clearLiveReads();sessionCheck=null;inboxPage={key:'',nextCursor:null,unreadCount:0,filteredCount:0,loaded:false};startEvents(true);}
+        if(next!==sessionKey){sessionKey=next;taskGeneration++;inboxGeneration++;taskController?.abort();inboxController?.abort();taskPages=new Map();deletedHere.clear();clearProjectReconcile();clearLiveReads();sessionCheck=null;inboxPage={key:'',nextCursor:null,unreadCount:0,filteredCount:0,loaded:false};startEvents(true);}
+        if(change?.type==='command')for(const entity of change.result?.entities??[])if(entity?.deleted&&entity.id&&Number.isSafeInteger(entity.revision))deletedHere.set(entity.id,entity.revision);
         if(change?.type==='bootstrap'){
           if(Number.isFinite(change.projection?.inboxUnreadCount))facade?.unreadCount?.(change.projection.inboxUnreadCount);
           // A new projection reads the open page's comments and activity again.

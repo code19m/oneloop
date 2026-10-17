@@ -140,7 +140,7 @@ function renderTopbar() {
 
 let paintedPage=null;
 const pageScope=()=>JSON.stringify([D.session?.id,D.session?.userId,state.view,state.projectId,state.taskId]);
-let rendering=false,paintedScope=null,backgroundRenderTimer=null,dialogPaintOwed=false,pressedTaskControl=false,pressedControlTimer=null;
+let rendering=false,paintedScope=null,backgroundRenderTimer=null,dialogPaintOwed=false,pressing=false,pressedControlTimer=null;
 // What waits for a press inside a page to end, after its click.
 const afterRelease=new Set();
 // A filter rewrites the Board's address, but the page stays, and so does focus in its search box.
@@ -157,7 +157,7 @@ function refreshBackground(){
   const authorized=D.session&&(!['task','board','roadmap','settings'].includes(state.view)||canReadProject(state.projectId))&&(!recovery.pageError);
   // WebKit may blur an editor without focusing the pressed button. Keep its
   // DOM target alive through pointer release/click, including slow presses.
-  const busy=POP.el||state.modal||state.peek||pendingConfirmation||document.activeElement?.closest('.task-page,.peek,.modal')||pressedTaskControl;
+  const busy=POP.el||state.modal||state.peek||pendingConfirmation||document.activeElement?.closest('.task-page,.peek,.modal')||pressing;
   if(authorized&&busy&&!(state.view==='task'&&!canBoard()&&document.querySelector('.tp-title:not(:disabled):not([readonly])'))){backgroundRenderTimer=setTimeout(refreshBackground,100);return;}
   render();
 }
@@ -372,6 +372,8 @@ Object.assign(App, {
     if(view==='knowledge')knowledge.route('knowledge',id);
     pushAddress(addressOf(view));render();
   },
+  /** The page that a switch to project `id` shows, which its data loads for first. */
+  pageAfterSwitch,
   /** Go to page `v`, which then loads: of the project on screen, or of `projectId` as a switch to it, in the same history entry. */
   nav(v, { projectId } = {}) {
     if (projectId && visibleProjects().some(project => project.id === projectId)) switchTo(projectId);
@@ -443,7 +445,7 @@ Object.assign(App, {
    * after its click, and say so. Content that moves under a pressed pointer
    * makes the browser drop the click.
    */
-  afterPress(run){if(!pressedTaskControl)return false;afterRelease.add(run);return true;},
+  afterPress(run){if(!pressing)return false;afterRelease.add(run);return true;},
 });
 window.App = App;
 export { App };
@@ -574,16 +576,22 @@ window.addEventListener('hashchange',(event)=>{
   state.peek=null;state.modal=null;state.menu=null;resolveRoute();render();
 });
 // ---------- global listeners ----------
+// A press anywhere on the page, as on Back to Board in the header, keeps what
+// it pressed in the document until it ends: browsers drop a click whose
+// pressed element left the document, so a background render waits for it.
 document.addEventListener('pointerdown', (e) => {
   clearTimeout(pressedControlTimer);
-  pressedTaskControl=!!e.target.closest?.('.task-page,.peek,.modal');
+  pressing=!!e.target.closest?.('#app');
 });
-function releasePress(){pressedTaskControl=false;for(const run of [...afterRelease]){afterRelease.delete(run);run();}}
+function releasePress(){pressing=false;for(const run of [...afterRelease]){afterRelease.delete(run);run();}}
 const releasePressedControl=()=>{clearTimeout(pressedControlTimer);pressedControlTimer=setTimeout(releasePress,0);};
 // Retain the guard through click dispatch and intervening promise callbacks.
 window.addEventListener('pointerup',releasePressedControl,true);
 window.addEventListener('pointercancel',releasePressedControl,true);
 window.addEventListener('click',releasePressedControl,true);
+// Once its click has reached every handler, the press is over, also while
+// timers wait, as under a paused test clock.
+window.addEventListener('click',()=>{clearTimeout(pressedControlTimer);releasePress();});
 // A context menu on macOS ends a press without pointerup, and a native drag in Safari ends it with only dragend.
 for(const type of ['contextmenu','dragend'])window.addEventListener(type,releasePressedControl,true);
 window.addEventListener('blur',()=>{clearTimeout(pressedControlTimer);releasePress();});

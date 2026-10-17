@@ -103,13 +103,15 @@ pub(super) fn space_task_positions(
     Ok(())
 }
 
+/// The position of a task that goes to `index` of its column, and whether the
+/// column was re-spaced to make room, which moved its other cards too.
 pub(super) fn task_insert_position(
     tx: &Transaction<'_>,
     project: &str,
     status: &str,
     moving: &str,
     index: i64,
-) -> AppResult<i64> {
+) -> AppResult<(i64, bool)> {
     for attempt in 0..2 {
         let at = |offset: i64| -> AppResult<Option<i64>> {
             if offset < 0 {
@@ -136,11 +138,21 @@ pub(super) fn task_insert_position(
             }
         };
         if let Some(position) = position {
-            return Ok(position);
+            return Ok((position, attempt > 0));
         }
         if attempt == 0 {
             space_task_positions(tx, project, status)?;
         }
     }
     Err(AppError::internal("task position space exhausted"))
+}
+
+/// The `metadata` of the activity of a change that placed a task, marked when
+/// the task's column was re-spaced: the live hint then tells every Board that
+/// shows the column to read it again.
+pub(super) fn placed(mut metadata: Value, respaced: bool) -> Value {
+    if respaced {
+        metadata["respaced"] = json!(true);
+    }
+    metadata
 }

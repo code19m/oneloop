@@ -254,6 +254,42 @@ pub(super) fn board_page_with_total(
     })
 }
 
+/// The first page of each Board column for `filter`, read at one moment, with
+/// the project's counts. The Board read and the bootstrap share it, so both
+/// give the same pages and totals for the same filter.
+pub(super) fn board_columns(
+    connection: &rusqlite::Connection,
+    project_id: &str,
+    limit: Option<usize>,
+    filter: &TaskFilter,
+) -> AppResult<BoardView> {
+    let counts = board_counts_connection(connection, project_id)?;
+    let generation = task_page_generation(connection, project_id)?;
+    let unfiltered = filter.is_empty();
+    let page = |status: TaskStatus, total: i64| {
+        board_page_with_total(
+            connection,
+            &BoardQuery {
+                project_id: project_id.into(),
+                status,
+                cursor: None,
+                limit,
+                filter: filter.clone(),
+            },
+            unfiltered.then_some(total),
+            generation,
+        )
+    };
+    Ok(BoardView {
+        project_id: project_id.into(),
+        planning: page(TaskStatus::Planning, counts.planning)?,
+        in_progress: page(TaskStatus::InProgress, counts.in_progress)?,
+        in_review: page(TaskStatus::InReview, counts.in_review)?,
+        done: page(TaskStatus::Done, counts.done)?,
+        counts,
+    })
+}
+
 pub(super) fn board_counts_connection(
     connection: &rusqlite::Connection,
     project_id: &str,
