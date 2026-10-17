@@ -197,6 +197,7 @@ async fn events(
                     "entityId":hint.entity_id,
                     "entityRevision":hint.entity_revision,
                     "notificationId":hint.notification_id,
+                    "respaced":hint.respaced,
                 });
                 Event::default()
                     .id(hint.id.clone())

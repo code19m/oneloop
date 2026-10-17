@@ -100,7 +100,9 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
     try{
       const previous=app?.context(),previousName=data.projects.find((item)=>item.id===previous?.projectId)?.name;
       if(scope.viewOnly&&app&&previous?.projectId&&data.projects.some((item)=>item.id===previous.projectId)){
-        if(previous.view==='board')return complete(scope.hints?.every(hint=>['task','task_block'].includes(hint.entityType))?await reads.patchBoard(previous.projectId,previous.board,scope.hints):await reads.board(previous.projectId,previous.board,{background:!!scope.background}));
+        // Task hints patch their cards. A column that was re-spaced moved
+        // cards no hint names, so the Board reads its cards again.
+        if(previous.view==='board')return complete(scope.hints?.every(hint=>['task','task_block'].includes(hint.entityType)&&!hint.respaced)?await reads.patchBoard(previous.projectId,previous.board,scope.hints):await reads.board(previous.projectId,previous.board,{background:!!scope.background}));
         if(previous.view==='roadmap'){
           // An open epic drawer lists tasks, so it reads them again too. A
           // live read waits for a Load more someone started instead of

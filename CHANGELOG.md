@@ -44,6 +44,11 @@ All notable changes to oneloop are recorded here. The format follows
   description's own box, so the footnote could stay out of view.
 - Mermaid diagrams in descriptions and file previews now use the app's colors
   in light and dark, as Knowledge already did.
+- When a task was moved, or put back with **Undo**, to a place in a column
+  with no room left between two cards, oneloop gave the column's cards new
+  positions, but open Boards, the one that made the move too, kept the old
+  ones and showed the task in the wrong place until the Board was read again.
+  Every open Board now shows the column's new order at once.
 
 ## [0.1.0-rc.6] - 2026-10-17
 

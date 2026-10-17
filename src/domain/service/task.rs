@@ -1,6 +1,6 @@
 //! Creating, editing, moving, deleting and restoring tasks.
 use super::checklist::{checklist_titles, insert_item};
-use super::ordering::task_insert_position;
+use super::ordering::{placed, task_insert_position};
 use super::validation::optional_date;
 use super::*;
 
@@ -37,7 +37,7 @@ pub(super) fn create_task(
     let key = format!("{prefix}-{number:03}");
     let id = Uuid::now_v7().to_string();
     // A new task starts at the top of Planning, where every Board shows it.
-    let position = task_insert_position(tx, &input.project_id, "planning", &id, 0)?;
+    let (position, respaced) = task_insert_position(tx, &input.project_id, "planning", &id, 0)?;
     tx.execute(
         INSERT_TASK_SQL,
         params![
@@ -71,7 +71,7 @@ pub(super) fn create_task(
             field_key: None,
             before: None,
             after: Some(entity.clone()),
-            metadata: json!({"sourcePoolItemId":source_pool}),
+            metadata: placed(json!({"sourcePoolItemId":source_pool}), respaced),
             entity_revision: Some(1),
         },
         now,
@@ -358,7 +358,7 @@ pub(super) fn move_task(
             "task is already at that position",
         ));
     }
-    let stored_position =
+    let (stored_position, respaced) =
         task_insert_position(tx, &before.project_id, status, &input.task_id, position)?;
     tx.execute(
         MOVE_TASK_SQL,
@@ -402,7 +402,7 @@ pub(super) fn move_task(
             } else {
                 json!(status)
             }),
-            metadata: json!({"position":position}),
+            metadata: placed(json!({"position":position}), respaced),
             entity_revision: Some(revision),
         },
         now,
@@ -509,7 +509,7 @@ pub(super) fn restore_task(
         params![before.project_id, before.status, before.position],
         |row| row.get(0),
     )?;
-    let position = if taken {
+    let (position, respaced) = if taken {
         let index: i64 = tx.query_row(
             "SELECT COUNT(*) FROM tasks WHERE project_id=?1 AND status=?2 AND position<?3 AND deleted_at IS NULL",
             params![before.project_id, before.status, before.position],
@@ -517,7 +517,7 @@ pub(super) fn restore_task(
         )?;
         task_insert_position(tx, &before.project_id, &before.status, &input.id, index)?
     } else {
-        before.position
+        (before.position, false)
     };
     let revision = expected + 1;
     tx.execute(
@@ -560,7 +560,7 @@ pub(super) fn restore_task(
             field_key: None,
             before: None,
             after: Some(json!({"taskKey":before.task_key,"title":before.title})),
-            metadata: json!({}),
+            metadata: placed(json!({}), respaced),
             entity_revision: Some(revision),
         },
         now,

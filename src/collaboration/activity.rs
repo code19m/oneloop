@@ -139,6 +139,7 @@ fn record_activity_inner(
         "actorUserId": actor_user_id,
         "visibility": visibility,
         "ownerUserId": private_owner,
+        "respaced": input.metadata.get("respaced").and_then(Value::as_bool).unwrap_or_default(),
     });
     // Live updates go to a project's audience or to the acting person. An
     // event with neither, such as a system event whose project was deleted,

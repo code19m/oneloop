@@ -3,7 +3,7 @@ import test from 'node:test';
 import {createProjectionReload,createSignInLoad,routeScope} from '../../../src/app/projection-reload.js';
 import {createBootstrapController} from '../../../src/data/bootstrap-controller.js';
 import {createReadController} from '../../../src/data/read-controller.js';
-import {createLegacyData,hydrateLegacyData,mergeEpicTaskPage} from '../../../src/data/projection-store.js';
+import {createLegacyData,hydrateLegacyData,mergeEpicTaskPage,reconcileCommandResult} from '../../../src/data/projection-store.js';
 import {ApiError} from '../../../src/data/api-client.js';
 import {settle,useGlobals,waitFor} from '../../support/helpers.cjs';
 
@@ -154,6 +154,23 @@ test('a full refresh of the Board uses the cards its bootstrap carries, unless a
     assert.equal((await live).stale,false);
     assert.deepEqual(t.data.tasks.map(task=>task.internalId),deeper?['t1','t2']:['t1']);
   }
+});
+
+test('a hint that a column was re-spaced reads the Board again, and the cards take the server\'s order',async()=>{
+  const t=page({view:'board',projectId:'p1',board:{},hash:'#/board/p1'});
+  const card=(id,position)=>({...view(id),position});
+  const empty={items:[],nextCursor:null,total:0},board=planning=>({planning:{items:planning,nextCursor:null,total:planning.length},inProgress:empty,inReview:empty,done:empty,counts:{planning:planning.length}});
+  // The Board draws a column's cards in the order the projection holds them.
+  const order=()=>t.data.tasks.filter(task=>task.state==='planning').map(task=>task.internalId);
+  const read=t.reads.board('p1');await t.called(1);t.next('boardView').resolve(board([card('a',1),card('b',2)]));await read;
+  // The move put c between a and b, but found no room there: the server re-spaced the column.
+  reconcileCommandResult(t.data,{entities:[{entityType:'task',...card('c',1536),revision:2}]});
+  const live=t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'task',entityId:'c',entityRevision:2,respaced:true}]});
+  await t.called(2);
+  assert.equal(t.calls[1].name,'boardView');
+  t.next('boardView').resolve(board([card('a',1024),card('c',1536),card('b',2048)]));
+  assert.equal((await live).stale,false);
+  assert.deepEqual(order(),['a','c','b']);
 });
 
 /** A sign-in of `person` on a page that shows `context`; the bootstrap records each load and answers with `answer`. */

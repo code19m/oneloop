@@ -339,6 +339,8 @@ export function installCollaborationController({ transport, recovery, eventSourc
   }
 
   function hintIsCovered(hint){
+    // A re-spaced column moved cards that no tab read yet, the acting one included.
+    if(hint?.respaced)return false;
     const revision=hint?.entityRevision;if(!Number.isSafeInteger(revision)||revision<1)return false;
     const current=entityRevision(hint.entityType,hint.entityId);return current!==null&&current>=revision;
   }
@@ -351,7 +353,8 @@ export function installCollaborationController({ transport, recovery, eventSourc
   function scheduleProjectReconcile(projectId,{full=false,hint=/** @type {any} */({})}={}){
     if(projectReconcileProjectId&&projectReconcileProjectId!==projectId)clearProjectReconcile();
     projectReconcileProjectId=projectId;
-    const identity=hint.entityType&&hint.entityId?`${hint.entityType}:${hint.entityId}`:`${hint.kind??'reconcile'}:project`;
+    // A later hint of the same task never replaces the one that says its column was re-spaced.
+    const identity=hint.respaced?'respaced:column':hint.entityType&&hint.entityId?`${hint.entityType}:${hint.entityId}`:`${hint.kind??'reconcile'}:project`;
     const previous=pendingProjectHints.get(identity);
     const previousRevision=previous?.hint?.entityRevision,nextRevision=hint.entityRevision;
     if(!previous||previousRevision==null||nextRevision==null||nextRevision>=previousRevision){
