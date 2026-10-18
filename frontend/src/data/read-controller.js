@@ -1,7 +1,7 @@
 // @ts-check
 
 import {
-  appendBoardTasks, compareTaskOrder, mergeEpicActivityPage, mergeEpicTaskPage, replaceBoardTasks, replacePoolPage, replaceRoadmap, replaceTaskDetail,
+  appendBoardTasks, appendRoadmapPage, compareTaskOrder, mergeEpicActivityPage, mergeEpicTaskPage, replaceBoardTasks, replacePoolPage, replaceRoadmap, replaceTaskDetail,
   setBoardPageInfo, setPoolPageInfo, setProjectTaskCounts,
 } from './projection-store.js';
 import {byStatus, toLegacyScope, toLegacyStatus, toWireStatus} from './wire.js';
@@ -20,8 +20,8 @@ function boardFilters(filters={}){
 
 /**
  * Reads behind the open views. Every read has a slot named after what it
- * loads: the Board, one task, the epic drawer, or a project's counts, Roadmap
- * or Pool scope.
+ * loads: the Board, one task, the epic drawer, or a project's counts, Roadmap,
+ * next page of Roadmap tasks or Pool scope.
  * A newer read of a slot replaces an older one; when both asked for the same
  * thing, the older caller gets the newer result instead of nothing. Reads of
  * different slots never cancel each other. A background (live) read never
@@ -222,10 +222,46 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
     }
   }
 
+  /**
+   * A project's Roadmap, with as many pages of its dated plans and done tasks
+   * as its lanes showed, each read again after the new first page.
+   */
   async function roadmap(projectId,options={}){
     return read(`roadmap:${projectId}`,'',!!options.background,async token=>{
-      try{const projection=await answerOf(token,()=>api.roadmap(projectId,{signal:token.signal,background:options.background}));if(!current(token))return {stale:true};replaceRoadmap(data,projection);onRoadmap(projection);return {stale:false};}
-      catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
+      try{
+        const shown=data.roadmap?.projectId===projectId?data.roadmap:null,signal=token.signal,background=options.background;
+        const pages=async(/** @type {'plans'|'done'} */ kind,/** @type {string|null} */ cursor)=>{
+          const read=[];
+          while(cursor&&read.length+1<(shown?.[kind].depth??1)){const page=await api.roadmapTasks(projectId,cursor,{signal,background});read.push(page);cursor=page.nextCursor;}
+          return read;
+        };
+        const {projection,more}=await answerOf(token,async()=>{
+          const projection=await api.roadmap(projectId,{signal,background});
+          const [plans,done]=await Promise.all([pages('plans',projection.plans?.nextCursor),pages('done',projection.done?.nextCursor)]);
+          return {projection,more:{plans,done}};
+        });
+        if(!current(token))return {stale:true};
+        replaceRoadmap(data,projection,more);onRoadmap(projection);return {stale:false};
+      }catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
+    });
+  }
+
+  /**
+   * The next page of the Roadmap's dated plans or done tasks. A newer read of
+   * the Roadmap drops it, and a second call for the same page waits for it.
+   * @param {string} projectId @param {'plans'|'done'} kind
+   */
+  async function moreRoadmap(projectId,kind){
+    const lanes=data.roadmap,cursor=lanes?.projectId===projectId?lanes[kind].cursor:null;
+    if(!lanes||!cursor)return {done:true};
+    const slot=`roadmap:${projectId}:${kind}`,active=slots.get(slot);
+    if(active&&!active.done&&active.target===cursor)return active.promise;
+    return read(slot,cursor,false,async token=>{
+      try{
+        const page=await api.roadmapTasks(projectId,cursor,{signal:token.signal});
+        if(!current(token)||data.roadmap!==lanes)return {stale:true};
+        appendRoadmapPage(data,kind,page);onRoadmap(lanes);return {stale:false,done:!page.nextCursor};
+      }catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
     });
   }
 
@@ -335,7 +371,7 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
   function moreEpicActivity(epicId){const page=data.epicPageInfo[epicId];return page?.activityCursor?epic(epicId,{tasks:false,activity:true,appendActivity:true}):Promise.resolve({done:true});}
 
   return Object.freeze({
-    adoptBoard,board,patchBoard,invalidateBoard(){boardDirty=true;},counts,moreBoard,roadmap,pool,morePool,task,epic,moreEpicTasks,moreEpicActivity,
+    adoptBoard,board,patchBoard,invalidateBoard(){boardDirty=true;},counts,moreBoard,roadmap,moreRoadmap,pool,morePool,task,epic,moreEpicTasks,moreEpicActivity,
     /** Settles when the reads someone started before this call have finished. */
     idle(){return Promise.allSettled([...foreground]).then(()=>{});},
     /** Drop every read, for a new session. */

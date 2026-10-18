@@ -18,6 +18,7 @@ export function createLegacyData() {
     tasks: [], pool: [], notifications: [], browserSessions: [], appGrants: [], session: null,
     inboxUnreadCount: 0, boardPageInfo: null, projectTaskCounts: {}, poolPageInfo: {}, bootstrapView:null, bootstrapProjectId:null, syncCursor:null,
     epicPageInfo: {}, adminUsers: { ids: [], nextCursor: null, loaded: false },
+    roadmap: /** @type {RoadmapLanes|null} */ (null),
   };
 }
 
@@ -231,14 +232,69 @@ export function mergeAdminUsersPage(data, accounts, {append=false,nextCursor=nul
   return data.adminUsers;
 }
 
-export function replaceRoadmap(data, projection) {
+/**
+ * A project's tracks, epics and milestones, and its Roadmap's lanes when the
+ * read has them, with the `more` pages read after its first.
+ * @param {any} data @param {any} projection @param {Parameters<typeof replaceRoadmapLanes>[3]} [more]
+ */
+export function replaceRoadmap(data, projection, more) {
   const projectId=projection.projectId ?? projection.tracks?.[0]?.projectId ?? projection.epics?.[0]?.projectId ?? projection.milestones?.[0]?.projectId;
   if(!projectId)return data;
   replace(data.tracks,[...data.tracks.filter((item)=>item.projectId!==projectId),...(projection.tracks??[]).map(mapTrack)]);
   const history=new Map(data.epics.map((/** @type {ReturnType<typeof mapEpic>} */ item)=>[item.id,item.activity]));
   replace(data.epics,[...data.epics.filter((item)=>item.projectId!==projectId),...(projection.epics??[]).map((/** @type {{id:string}} */ view)=>({...mapEpic(view),activity:history.get(view.id)??[]}))]);
   replace(data.milestones,[...data.milestones.filter((item)=>item.projectId!==projectId),...(projection.milestones??[]).map(mapMilestone)]);
+  if(projection.trackCounts)replaceRoadmapLanes(data,projectId,projection,more);
   return data;
+}
+
+/**
+ * @typedef {{cursor:string|null,depth:number}} RoadmapPages
+ * @typedef {{projectId:string,taskIds:string[],trackCounts:Record<string,{planning:number,progress:number,review:number,done:number}>,overdue:number,plans:RoadmapPages,done:RoadmapPages}} RoadmapLanes
+ * The tasks the Roadmap's lanes draw, which `data.tasks` holds, and what
+ * they count. `plans` and `done` say where their pages go on and how many
+ * were read, so a live read reads as many again.
+ */
+
+/** Put a page's tasks among the projection's, each with the details it already had. */
+function mergeTasks(data, taskViews) {
+  const byId=new Map(data.tasks.map((item)=>[item.internalId,item]));
+  for(const view of taskViews)byId.set(view.id,retainTaskDetails(byId.get(view.id),mapTask(view)));
+  replace(data.tasks,[...byId.values()]);
+}
+
+/**
+ * The Roadmap's lanes from a Roadmap read, with the later pages it read.
+ * @param {any} data @param {string} projectId
+ * @param {{trackCounts:any[],overdue:number,open:any[],plans:{items:any[],nextCursor:string|null},done:{items:any[],nextCursor:string|null}}} timeline
+ * @param {{plans?:{items:any[],nextCursor:string|null}[],done?:{items:any[],nextCursor:string|null}[]}} [more]
+ */
+export function replaceRoadmapLanes(data, projectId, timeline, more = {}) {
+  const plans=[timeline.plans,...(more.plans??[])],done=[timeline.done,...(more.done??[])];
+  const views=[...timeline.open,...plans.flatMap((page)=>page.items),...done.flatMap((page)=>page.items)];
+  mergeTasks(data,views);
+  data.roadmap={
+    projectId,taskIds:[...new Set(views.map((view)=>view.id))],
+    trackCounts:Object.fromEntries(timeline.trackCounts.map((counts)=>[counts.trackId,{planning:counts.planning,progress:counts.inProgress,review:counts.inReview,done:counts.done}])),
+    overdue:timeline.overdue,
+    plans:{cursor:plans.at(-1)?.nextCursor??null,depth:plans.length},
+    done:{cursor:done.at(-1)?.nextCursor??null,depth:done.length},
+  };
+  return data.roadmap;
+}
+
+/**
+ * Add the next page of the Roadmap's dated plans or done tasks.
+ * @param {any} data @param {'plans'|'done'} kind @param {{items:any[],nextCursor:string|null}} page
+ */
+export function appendRoadmapPage(data, kind, page) {
+  const lanes=data.roadmap;
+  if(!lanes)return null;
+  mergeTasks(data,page.items);
+  const known=new Set(lanes.taskIds);
+  lanes.taskIds=[...lanes.taskIds,...page.items.map((view)=>view.id).filter((id)=>!known.has(id))];
+  lanes[kind]={cursor:page.nextCursor??null,depth:lanes[kind].depth+1};
+  return lanes;
 }
 
 export function replacePoolPage(data, projectId, scope, itemViews, append=false) {
@@ -316,6 +372,7 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
   replace(data.pool,data.pool.filter(item=>data.projects.some(project=>project.id===item.projectId)&&(item.scope!=='mine'||item.ownerId===(identity?.id??identity?.userId))));
   data.inboxUnreadCount=Number(bootstrap.inboxUnreadCount??0);
   data.boardPageInfo=null;
+  data.roadmap=null;
   data.projectTaskCounts={};
   data.poolPageInfo={};
   data.bootstrapView=bootstrap.view??null;data.syncCursor=bootstrap.syncCursor??null;
@@ -329,6 +386,7 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
     const {doneOrder,...filter}=bootstrap.boardFilter??{};
     setBoardPageInfo(data,projectId,{...filter,...(doneOrder==='completed'?{doneOrder}:{})},pages);
   }
+  if(projectId&&bootstrap.roadmap)replaceRoadmapLanes(data,projectId,bootstrap.roadmap);
   if(projectId&&bootstrap.poolCounts)for(const scope of ['personal','team']){
     const page=setPoolPageInfo(data,projectId,scope,{total:bootstrap.poolCounts[scope]??0});page.loaded=false;
   }

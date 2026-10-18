@@ -440,3 +440,37 @@ test('a live patch of a card that the tab is moving never puts the card back',as
   assert.equal((await patch).stale,false);
   assert.deepEqual(shown(),['progress',1]);
 });
+
+/** A Roadmap read of `p1`: its lanes with one task at hand and a page of done tasks that goes on at `cursor`. */
+const roadmapRead=(cursor)=>({projectId:'p1',tracks:[],epics:[],milestones:[],trackCounts:[],overdue:0,open:[task('open','in_progress')],plans:{items:[],nextCursor:null},done:{items:[task('done-1','done')],nextCursor:cursor}});
+
+test('a live Roadmap read reads again as many pages of done tasks as its lanes showed',async()=>{
+  const data=createLegacyData(),asked=[];
+  const api={
+    roadmap:async()=>roadmapRead('page-2'),
+    roadmapTasks:async(_project,cursor)=>{asked.push(cursor);return {items:[task(cursor,'done')],nextCursor:cursor==='page-2'?'page-3':null};},
+  };
+  const reads=createReadController({data,api});
+  await reads.roadmap('p1');
+  assert.deepEqual(data.roadmap.done,{cursor:'page-2',depth:1});
+  await reads.moreRoadmap('p1','done');
+  assert.deepEqual([asked,data.roadmap.done],[['page-2'],{cursor:'page-3',depth:2}]);
+  await reads.roadmap('p1',{background:true});
+  assert.deepEqual(asked,['page-2','page-2'],'the second page again, after the new first one');
+  assert.deepEqual(data.roadmap.done,{cursor:'page-3',depth:2});
+  assert.deepEqual(data.roadmap.taskIds,['open','done-1','page-2']);
+});
+
+test('the next page of the Roadmap is read once, and a newer read of the Roadmap drops it',async()=>{
+  const data=createLegacyData(),requests=held();
+  const reads=createReadController({data,api:{roadmap:async()=>roadmapRead('page-2'),roadmapTasks:requests.api('roadmapTasks')}});
+  await reads.roadmap('p1');
+  const first=reads.moreRoadmap('p1','done'),second=reads.moreRoadmap('p1','done');
+  assert.equal(requests.calls.length,1,'a second call waits for the page asked for');
+  await reads.roadmap('p1');
+  requests.calls[0].resolve({items:[task('late','done')],nextCursor:null});
+  assert.equal((await first).stale,true);assert.equal((await second).stale,true);
+  assert.deepEqual(data.roadmap.done,{cursor:'page-2',depth:1});
+  assert(!data.roadmap.taskIds.includes('late'));
+  assert.deepEqual(await reads.moreRoadmap('p2','done'),{done:true},'nothing to read for lanes of another project');
+});

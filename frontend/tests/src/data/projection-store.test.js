@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createLegacyData, hydrateLegacyData, mergeAdminUsersPage, mergeEpicActivityPage, mergeEpicTaskPage, reconcileCommandResult, appendBoardTasks, replacePoolPage, replaceTaskDetail, replaceBoardTasks, replaceRoadmap } from '../../../src/data/projection-store.js';
+import { createLegacyData, hydrateLegacyData, mergeAdminUsersPage, mergeEpicActivityPage, mergeEpicTaskPage, reconcileCommandResult, appendBoardTasks, appendRoadmapPage, replacePoolPage, replaceTaskDetail, replaceBoardTasks, replaceRoadmap } from '../../../src/data/projection-store.js';
 import { toWireStatus } from '../../../src/data/wire.js';
 
 const bootstrap = () => ({
@@ -330,4 +330,31 @@ test('an epic drawer keeps its loaded tasks through a Roadmap bootstrap, but Boa
   assert.deepEqual(data.tasks.map(item=>item.internalId).sort(),['epic-task-1','epic-task-2']);
   hydrateLegacyData(data,{...bootstrap(),view:'board',boardPages:{planning:{nextCursor:null,total:0},in_progress:{nextCursor:null,total:1},in_review:{nextCursor:null,total:0},done:{nextCursor:null,total:0}}});
   assert.deepEqual(data.tasks.map(item=>item.internalId),['opaque-task']);
+});
+
+/** The Roadmap's lanes as a read gives them: work at hand, a page of dated plans and one of done tasks. */
+const lanes = (task) => ({
+  trackCounts:[{ trackId:'tr1', planning:4, inProgress:1, inReview:0, done:7 }], overdue:1,
+  open:[task], plans:{ items:[{ ...task, id:'plan', taskKey:'BIR-002', status:'planning', deadline:'2026-10-02' }], nextCursor:null },
+  done:{ items:[{ ...task, id:'old', taskKey:'BIR-003', status:'done', completedAt:90 }], nextCursor:'older' },
+});
+
+test('a Roadmap bootstrap gives the lanes their tasks and counts, and another bootstrap forgets them', () => {
+  const data = createLegacyData(), value = { ...bootstrap(), view:'roadmap', selectedProjectId:'p1' };
+  value.roadmap = lanes(value.tasks[0]); value.tasks = [];
+  hydrateLegacyData(data, value);
+  assert.deepEqual(data.roadmap, { projectId:'p1', taskIds:['opaque-task', 'plan', 'old'], trackCounts:{ tr1:{ planning:4, progress:1, review:0, done:7 } }, overdue:1, plans:{ cursor:null, depth:1 }, done:{ cursor:'older', depth:1 } });
+  assert.deepEqual(data.tasks.map((task) => [task.id, task.state]), [['BIR-001', 'progress'], ['BIR-002', 'planning'], ['BIR-003', 'done']]);
+  hydrateLegacyData(data, { ...bootstrap(), selectedProjectId:'p1' });
+  assert.equal(data.roadmap, null);
+});
+
+test('the next page of done tasks joins the lanes and says where the one after it starts', () => {
+  const data = createLegacyData(), value = bootstrap();
+  hydrateLegacyData(data, value);
+  replaceRoadmap(data, { projectId:'p1', tracks:value.tracks, epics:value.epics, milestones:[], ...lanes(value.tasks[0]) });
+  appendRoadmapPage(data, 'done', { items:[{ ...value.tasks[0], id:'older', taskKey:'BIR-004', status:'done', completedAt:50 }], nextCursor:null });
+  assert.deepEqual(data.roadmap.taskIds, ['opaque-task', 'plan', 'old', 'older']);
+  assert.deepEqual(data.roadmap.done, { cursor:null, depth:2 });
+  assert.equal(data.tasks.find((task) => task.internalId === 'older').state, 'done');
 });

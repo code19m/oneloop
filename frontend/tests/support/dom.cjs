@@ -202,7 +202,7 @@ function wire(dom, { api: answers = {}, reads: readAnswers = {}, reloadBootstrap
     counts: () => app().refreshCounts(), roadmap: () => app().refreshRoadmap(),
     pool: () => app().refreshPool(), morePool: () => app().refreshPool(),
     epic: () => app().refreshEpic(), moreEpicTasks: () => app().refreshEpic(), moreEpicActivity: () => app().refreshEpic(),
-    task() {}, moreBoard() {},
+    task() {}, moreBoard() {}, moreRoadmap() {},
   };
   const reads = {
     calls: readCalls, cancel() {}, invalidateBoard() {}, idle: async () => {}, adoptBoard: () => false,
