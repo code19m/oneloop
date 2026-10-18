@@ -43,6 +43,15 @@ All notable changes to oneloop are recorded here. The format follows
   Planning.
 - **Undo** right after deleting an epic brings it back, with the tasks that
   are still on its track without an epic.
+- **New task**, and **Create task** from the Pool, ask for a **Track**, and
+  their **Epic** is optional. Track starts filled in when oneloop can tell
+  where the task goes: the project's only track, the track the Board is
+  filtered to, or the track of the last task you created in the project in
+  that tab. Epic offers the open epics of that track, and choosing an epic
+  also chooses its track. A project without tracks offers **Create track**.
+- A task's page shows its **Track** beside its **Epic**. Moving the task to
+  another track takes it out of its epic, and a note under **Epic** says why.
+  **No epic** takes a task out of its epic.
 
 ### Changed
 
@@ -51,8 +60,13 @@ All notable changes to oneloop are recorded here. The format follows
 - A track can be deleted only when it has no tasks and no epics, and the
   message says how many it has. Moving an epic to another track moves its
   tasks with it.
-- Choosing an epic on another track on a task's page moves the task to that
-  track. An epic on another track than the task's is refused, also in MCP.
+- A task's **Epic** offers the epics of the task's track. An epic on another
+  track than the task's is refused, also in MCP.
+- A new task no longer needs an epic. Before, **New task** asked for one.
+- A **Board** card names the task's epic, or its track when it has no epic.
+- The activity of a task says where it went: "moved the task to iOS", "added
+  the task to Payments v2" or "removed the task from Payments v2", instead of
+  "updated the epic".
 - Restoring a deleted task whose epic was deleted meanwhile brings it back on
   its track without the epic. Before, it couldn't be restored. A task whose
   track was deleted meanwhile can't be restored.
