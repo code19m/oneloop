@@ -37,18 +37,19 @@ planned with a date, on a timeline with one lane for each track. It is the
 first page you see after you sign in.
 
 - **Done work** shows as dots on the day it was finished. Dots too close to
-  tell apart become a number; click it to list them. Where a plan falls on a
-  day with done work, the two sit side by side.
+  tell apart become a number; click it to list them. A list shows up to 50
+  tasks and says how many more the **Board** has. Where a plan falls on a day
+  with done work, the two sit side by side.
 - **Work in progress**, in progress or in review, shows as one row per task: a
   thin bar from when work started to its deadline, or to today, fading out,
   without one. Each lane, and each epic, shows three at most: late work
   first, then blocked work, then the nearest deadline. **+2 in progress**
-  lists the rest. Blocked work is amber. Late work has a red error icon and a
-  red end past its deadline. The Roadmap draws 500 tasks in progress at most;
-  past that, **+N in progress** still counts them all, and its list says how
-  many more the **Board** has.
+  lists the rest, 50 at most, and says how many more the **Board** has.
+  Blocked work is amber. Late work has a red error icon and a red end past
+  its deadline.
 - **Plans with a deadline** show as dashed rings on their deadline, with their
-  title where it fits. Plans without a deadline stay on the **Board**.
+  title where it fits. Rings too close to tell apart become a number, as done
+  work does. Plans without a deadline stay on the **Board**.
 - A track's name says how many of its tasks are in progress and how many are
   planned, with a deadline or not. A lane without any of this says **No dated
   work**, or **No tasks yet** when its track has no tasks.
@@ -61,7 +62,8 @@ first page you see after you sign in.
   which lists them when you hover over it or focus it.
   **Today** is the thin line under its label. When tasks are late, **Overdue**
   and their number show next to the page's title; each click shows the next
-  late task, the longest overdue first.
+  late task, the longest overdue first, through the 20 longest overdue. One on
+  days the Roadmap hasn't loaded yet comes into view first.
 - Hover over a task, an epic or a milestone, or move the keyboard focus to it,
   to see its details. Click it, or press Enter, to open the task, the epic's
   progress, tasks and activity, or the milestone. Deadlines are set on the
@@ -77,11 +79,10 @@ first page you see after you sign in.
   and you can share the Roadmap at that scale as a link. After a free zoom,
   the address keeps the nearest scale. Changing the scale adds no step to the
   browser's history. Another project opens at the scale that fits its work.
-- Older done work and later plans load as you scroll to them, and changes
-  made elsewhere show as they happen. The Roadmap holds 2,000 done tasks and
-  2,000 plans with a deadline at a time. When the scale shows more done work
-  than that, as zoomed out on a busy project, it shows the latest, and the
-  header says **Zoom in to see done tasks before** a date.
+- The days around what you see load first, and more days load as you
+  scroll to them. Every day shows all of its done work and plans, at any
+  scale, however busy the project. Changes made elsewhere show as they
+  happen.
 - With the keyboard, Tab reaches each track's grip, its **⋮** menu and its
   timeline. In a timeline, the arrow keys, Home and End move between the
   lane's epics and tasks, Up and Down move to the next lane, and Esc closes a

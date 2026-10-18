@@ -245,9 +245,10 @@ Some emoji count as two characters.
 
 | Limit | Value |
 | --- | --- |
-| Tasks in progress drawn | 500 for each project; counts and **+N in progress** include the rest |
-| Done tasks and dated plans drawn | 2,000 of each at a time. Scrolling loads others in their place; a view with more done tasks shows the latest and says to zoom in |
-| Overdue | Steps through the late tasks the Roadmap draws |
+| Tasks in progress drawn | Three in each lane's own work and in each epic; **+N in progress** counts the rest |
+| Done tasks and dated plans | All of them, counted on their days at any scale. The page loads the days it shows with 60 days to spare on each side, at most 400 days in one request, and loads more days as you scroll; there is no limit message |
+| Lists | A number's list, and the list of **+N in progress**, show 50 tasks and say how many more the Board has |
+| Overdue | Steps through the 20 longest overdue tasks; its number counts them all |
 
 **Collaboration**
 
