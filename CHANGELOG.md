@@ -97,9 +97,11 @@ All notable changes to oneloop are recorded here. The format follows
 - On a task's page, a **Status** that couldn't be saved, such as while
   offline, now shows the saved status again. Before, it kept showing the
   status you chose until the page was drawn again.
-- On a task's page, choosing a **Status** after a change made elsewhere, such
-  as by a teammate, no longer says the task changed elsewhere when the page
-  already shows that change.
+- On a task's page, choosing a **Status** or **Assignees** after a change made
+  elsewhere, such as by a teammate, no longer says the task changed elsewhere
+  when the page already shows that change. When a status really did change
+  elsewhere, the question names it, such as "In Progress", instead of
+  "progress".
 - A change made elsewhere while a task's **Status** list was open now shows
   once the list closes. Before, it showed only after focus left the page.
 - On the **Roadmap**, today's date no longer shows over **+ Track** when you
