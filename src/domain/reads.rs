@@ -32,6 +32,16 @@ use super::{
 
 pub(super) use board::{checklist_item, task_view};
 
+/// How many tasks and epics a track has, not counting deleted ones. Reads of
+/// a track's tasks name its index, as the Board's track filter does: each
+/// deleted task has its own `deleted_at`, so the statistics make the tasks
+/// that aren't deleted look few, and SQLite would read the project's tasks
+/// through `tasks_project_status_idx` instead.
+pub(in crate::domain) const TRACK_CONTENTS_SQL: &str =
+    "SELECT (SELECT COUNT(*) FROM tasks INDEXED BY tasks_project_track_status_idx
+             WHERE project_id=?1 AND track_id=?2 AND deleted_at IS NULL),
+            (SELECT COUNT(*) FROM epics WHERE track_id=?2 AND deleted_at IS NULL)";
+
 #[derive(Clone, Debug, Default)]
 pub struct BootstrapQuery {
     pub project_id: Option<String>,

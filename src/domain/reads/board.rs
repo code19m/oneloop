@@ -124,9 +124,16 @@ pub(super) fn board_page_with_total(
         );
     }
     let predicate = conditions.join(" AND ");
+    // A track filter reads the tracks' tasks by their index, which the
+    // statistics would pass over (see `TRACK_CONTENTS_SQL`).
+    let tasks = if filter.track_ids.is_empty() {
+        "tasks t"
+    } else {
+        "tasks t INDEXED BY tasks_project_track_status_idx"
+    };
     let total = if total.is_none() && filter.is_empty() {
         Some(connection.query_row(
-            &format!("SELECT COUNT(*) FROM tasks t WHERE {predicate}"),
+            &format!("SELECT COUNT(*) FROM {tasks} WHERE {predicate}"),
             rusqlite::params_from_iter(values.iter()),
             |row| row.get(0),
         )?)
@@ -190,7 +197,7 @@ pub(super) fn board_page_with_total(
                 format!(" AND {after}")
             };
             let sql = format!(
-                "SELECT t.id FROM tasks t WHERE {predicate}{after} ORDER BY t.position,t.id LIMIT ?{limit_parameter}"
+                "SELECT t.id FROM {tasks} WHERE {predicate}{after} ORDER BY t.position,t.id LIMIT ?{limit_parameter}"
             );
             let mut statement = connection.prepare_cached(&sql)?;
             statement
@@ -217,7 +224,7 @@ pub(super) fn board_page_with_total(
         };
         let sql = format!(
             "WITH matches AS MATERIALIZED (
-            SELECT t.id,t.position,t.completed_at,t.completion_order FROM tasks t WHERE {predicate}
+            SELECT t.id,t.position,t.completed_at,t.completion_order FROM {tasks} WHERE {predicate}
         ), page AS (
             SELECT t.id,t.position,t.completed_at,t.completion_order FROM matches t{after}
             ORDER BY {order} LIMIT ?{limit_parameter}

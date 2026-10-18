@@ -188,8 +188,7 @@ pub(super) fn delete_track(
     // Only an empty track goes, so no task or epic is ever left without one.
     // Deleted tasks don't count: restoring one of them is refused instead.
     let (tasks, epics): (i64, i64) = tx.query_row(
-        "SELECT (SELECT COUNT(*) FROM tasks WHERE project_id=?1 AND track_id=?2 AND deleted_at IS NULL),
-                (SELECT COUNT(*) FROM epics WHERE track_id=?2 AND deleted_at IS NULL)",
+        super::super::reads::TRACK_CONTENTS_SQL,
         params![project_id, input.id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
