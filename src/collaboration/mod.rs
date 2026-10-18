@@ -12,6 +12,7 @@ mod notifications;
 mod runtime;
 mod service;
 
+pub(crate) use activity::record_follow_up_activity_tx;
 pub use activity::{ActivityInput, record_activity_tx, record_system_activity_tx};
 pub use models::*;
 pub use notifications::{NotificationInput, snapshot_notification_tx};

@@ -1665,7 +1665,7 @@ async fn a_restored_task_drops_assignees_who_left_the_project() {
 }
 
 #[tokio::test]
-async fn a_task_whose_epic_was_deleted_cannot_be_restored() {
+async fn a_task_whose_epic_was_deleted_comes_back_on_its_track_without_it() {
     let f = fixture().await;
     let epic = f
         .service
@@ -1687,7 +1687,7 @@ async fn a_task_whose_epic_was_deleted_cannot_be_restored() {
             &f.manager,
             command(
                 DomainOperation::CreateTask,
-                json!({"projectId":"p1","epicId":epic_id,"title":"Orphan"}),
+                json!({"projectId":"p1","epicId":epic_id,"title":"Loose"}),
                 "orphan-task",
                 None,
             ),
@@ -1712,7 +1712,7 @@ async fn a_task_whose_epic_was_deleted_cannot_be_restored() {
             .await
             .unwrap();
     }
-    let restore = f
+    let restored = f
         .service
         .execute(
             &f.manager,
@@ -1723,9 +1723,18 @@ async fn a_task_whose_epic_was_deleted_cannot_be_restored() {
                 Some(2),
             ),
         )
-        .await;
-    assert!(
-        matches!(&restore, Err(AppError::PreconditionFailed(message)) if message.contains("epic")),
-        "{restore:?}"
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            &restored.entities[0]["trackId"],
+            &restored.entities[0]["epicId"]
+        ),
+        (&json!("tr1"), &Value::Null)
+    );
+    let change = &restored.events[1];
+    assert_eq!(
+        (change.field_key.as_deref(), &change.before, &change.after),
+        (Some("epicId"), &Some(json!(epic_id)), &Some(Value::Null))
     );
 }

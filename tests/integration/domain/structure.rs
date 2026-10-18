@@ -993,26 +993,6 @@ async fn a_retry_needs_the_access_of_its_first_run() {
 }
 
 #[tokio::test]
-async fn structural_deletion_requires_empty_parents() {
-    let f = fixture().await;
-    seed_ordering_column(&f, 1).await;
-    for (operation, id) in [
-        (DomainOperation::DeleteTrack, "tr1"),
-        (DomainOperation::DeleteEpic, "e1"),
-    ] {
-        let error = f
-            .service
-            .execute(
-                &f.manager,
-                command(operation, json!({"id":id}), id, Some(1)),
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(error, AppError::PreconditionFailed(_)));
-    }
-}
-
-#[tokio::test]
 async fn track_noop_is_rejected_and_reorders_stay_only_in_raw_audit() {
     let f = fixture().await;
     let error = f

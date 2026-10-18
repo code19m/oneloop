@@ -51,7 +51,7 @@ pub fn record_activity_tx(
     input: ActivityInput<'_>,
     now: i64,
 ) -> AppResult<ActivityEvent> {
-    record_activity_inner(tx, Some(actor), input, now)
+    record_activity_inner(tx, Some(actor), input, now, true)
 }
 
 pub fn record_system_activity_tx(
@@ -59,7 +59,19 @@ pub fn record_system_activity_tx(
     input: ActivityInput<'_>,
     now: i64,
 ) -> AppResult<ActivityEvent> {
-    record_activity_inner(tx, None, input, now)
+    record_activity_inner(tx, None, input, now, true)
+}
+
+/// Records activity that another event of the same command announces, such
+/// as each task that moved with its epic. It sends no live update of its
+/// own, so a change to many tasks sends one.
+pub(crate) fn record_follow_up_activity_tx(
+    tx: &Transaction<'_>,
+    actor: &Actor,
+    input: ActivityInput<'_>,
+    now: i64,
+) -> AppResult<()> {
+    record_activity_inner(tx, Some(actor), input, now, false).map(drop)
 }
 
 fn record_activity_inner(
@@ -67,6 +79,7 @@ fn record_activity_inner(
     actor: Option<&Actor>,
     mut input: ActivityInput<'_>,
     now: i64,
+    announce: bool,
 ) -> AppResult<ActivityEvent> {
     let id = Uuid::now_v7().to_string();
     let actor_user_id = actor.map(|actor| actor.user_id.as_str());
@@ -147,7 +160,7 @@ fn record_activity_inner(
     // Live updates go to a project's audience or to the acting person. An
     // event with neither, such as a system event whose project was deleted,
     // stays in the audit trail only.
-    if input.project_id.is_some() || actor_user_id.is_some() {
+    if announce && (input.project_id.is_some() || actor_user_id.is_some()) {
         tx.execute(
             "INSERT INTO outbox_messages
              (id,topic,aggregate_type,aggregate_id,payload_json,available_at,created_at)

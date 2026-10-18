@@ -12,7 +12,7 @@ pub(super) fn create_task(
     source_pool: Option<&str>,
 ) -> AppResult<Mutation> {
     require_project(tx, actor, &input.project_id, Need::Board, false)?;
-    ensure_open_epic(tx, &input.epic_id, &input.project_id)?;
+    let (track_id, epic_id) = new_task_place(tx, &input.project_id, input.track_id, input.epic_id)?;
     let title = text::single_line(&input.title, "title", TASK_TITLE_MAX)?;
     let description = text::optional(&input.description, "description", TASK_DESCRIPTION_MAX)?;
     let deadline = optional_date(input.deadline, "deadline")?;
@@ -43,7 +43,8 @@ pub(super) fn create_task(
         params![
             id,
             input.project_id,
-            input.epic_id,
+            track_id,
+            epic_id,
             number,
             key,
             title,
@@ -105,9 +106,30 @@ pub(super) fn update_task(
     let before = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &before.project_id, Need::Board, false)?;
     check_revision(expected, before.revision)?;
-    let epic_id = input.epic_id.unwrap_or(before.epic_id.clone());
-    if epic_id != before.epic_id {
-        ensure_open_epic(tx, &epic_id, &before.project_id)?;
+    let track_id = input.track_id.unwrap_or_else(|| before.track_id.clone());
+    if track_id != before.track_id {
+        roadmap::ensure_track_project(tx, &track_id, &before.project_id)?;
+    }
+    let epic_id = match input.epic_id {
+        // An epic stays on its track, so a move to another track clears it.
+        None if track_id != before.track_id => None,
+        None => before.epic_id.clone(),
+        Some(epic_id) => epic_id,
+    };
+    if let Some(epic) = epic_id.as_deref()
+        && (epic_id != before.epic_id || track_id != before.track_id)
+    {
+        let epic_track = if epic_id == before.epic_id {
+            before.track_id.clone()
+        } else {
+            open_epic_track(tx, epic, &before.project_id)?
+        };
+        if epic_track != track_id {
+            return Err(AppError::validation(
+                "epicId",
+                "epic is on another track than the task; send the epic's trackId to move the task",
+            ));
+        }
     }
     let title = input
         .title
@@ -145,7 +167,8 @@ pub(super) fn update_task(
     };
     let old_set: HashSet<_> = old_assignees.iter().cloned().collect();
     let new_set: HashSet<_> = assignees.iter().cloned().collect();
-    if epic_id == before.epic_id
+    if track_id == before.track_id
+        && epic_id == before.epic_id
         && title == before.title
         && description == before.description
         && deadline == before.deadline
@@ -155,9 +178,10 @@ pub(super) fn update_task(
     }
     let revision = expected + 1;
     tx.execute(
-        "UPDATE tasks SET epic_id=?1,track_id=(SELECT track_id FROM epics WHERE id=?1),title=?2,\
-                     description=?3,deadline=?4,updated_at=?5,revision=?6 WHERE id=?7 AND revision=?8",
+        "UPDATE tasks SET track_id=?1,epic_id=?2,title=?3,description=?4,deadline=?5,updated_at=?6,\
+                     revision=?7 WHERE id=?8 AND revision=?9",
         params![
+            track_id,
             epic_id,
             title,
             description,
@@ -178,6 +202,7 @@ pub(super) fn update_task(
     )?;
     let mut events = Vec::new();
     for (field, b, a) in [
+        ("trackId", json!(before.track_id), json!(track_id)),
         ("epicId", json!(before.epic_id), json!(epic_id)),
         ("title", json!(before.title), json!(title)),
         ("description", json!(before.description), json!(description)),
@@ -265,8 +290,9 @@ pub(super) fn update_task(
     )?;
     let mut entities = vec![task_entity(tx, &input.task_id)?];
     if epic_id != before.epic_id
+        && let Some(epic_id) = epic_id.as_deref()
         && matches!(before.status.as_str(), "in_progress" | "in_review")
-        && let Some(event) = activate_epic_for_work(tx, actor, &before.project_id, &epic_id, now)?
+        && let Some(event) = activate_epic_for_work(tx, actor, &before.project_id, epic_id, now)?
     {
         entities.push(activated_epic_entity(&before.project_id, &event));
         events.push(event);
@@ -371,10 +397,11 @@ pub(super) fn move_task(
             expected
         ],
     )?;
-    let activated = if matches!(input.status, TaskStatus::InProgress | TaskStatus::InReview) {
-        activate_epic_for_work(tx, actor, &before.project_id, &before.epic_id, now)?
-    } else {
-        None
+    let activated = match before.epic_id.as_deref() {
+        Some(epic_id) if matches!(input.status, TaskStatus::InProgress | TaskStatus::InReview) => {
+            activate_epic_for_work(tx, actor, &before.project_id, epic_id, now)?
+        }
+        _ => None,
     };
     let revision = expected + 1;
     let entity = task_entity(tx, &input.task_id)?;
@@ -465,10 +492,9 @@ pub(super) fn restore_task(
 ) -> AppResult<Mutation> {
     let (before, deleted_at) = tx
         .query_row(
-            "SELECT project_id,epic_id,task_key,title,description,status,deadline,revision,position,deleted_at
-             FROM tasks WHERE id=?1",
+            &format!("SELECT {TASK_ROW_COLUMNS},deleted_at FROM tasks WHERE id=?1"),
             [&input.id],
-            |row| Ok((TaskRow::from_row(row)?, row.get::<_, Option<i64>>(9)?)),
+            |row| Ok((TaskRow::from_row(row)?, row.get::<_, Option<i64>>(10)?)),
         )
         .optional()?
         .ok_or(AppError::NotFound { resource: "task" })?;
@@ -491,16 +517,29 @@ pub(super) fn restore_task(
             "the task's files are being removed, so it can no longer be restored".into(),
         ));
     }
-    let epic: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM epics WHERE id=?1 AND project_id=?2 AND deleted_at IS NULL)",
-        params![before.epic_id, before.project_id],
+    // A track whose only tasks are deleted counts as empty, so it may have
+    // been deleted meanwhile; the task then stays deleted.
+    let track: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM tracks WHERE id=?1 AND deleted_at IS NULL)",
+        [&before.track_id],
         |row| row.get(0),
     )?;
-    if !epic {
+    if !track {
         return Err(AppError::PreconditionFailed(
-            "the task's epic was deleted, so the task can't be restored".into(),
+            "the task's track was deleted, so the task can't be restored".into(),
         ));
     }
+    // An epic deleted meanwhile leaves the task on its track without one.
+    let epic_id = match before.epic_id.as_deref() {
+        Some(epic_id) => tx
+            .query_row(
+                "SELECT id FROM epics WHERE id=?1 AND track_id=?2 AND deleted_at IS NULL",
+                params![epic_id, before.track_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?,
+        None => None,
+    };
     // The task returns to its position. When another card took it, as a top
     // insert takes a deleted top card's, the task goes back to the same place
     // among the cards around it: below as many cards as were above it.
@@ -521,9 +560,9 @@ pub(super) fn restore_task(
     };
     let revision = expected + 1;
     tx.execute(
-        "UPDATE tasks SET deleted_at=NULL,position=?1,updated_at=?2,revision=?3
-         WHERE id=?4 AND revision=?5 AND deleted_at IS NOT NULL",
-        params![position, now, revision, input.id, expected],
+        "UPDATE tasks SET deleted_at=NULL,epic_id=?1,position=?2,updated_at=?3,revision=?4
+         WHERE id=?5 AND revision=?6 AND deleted_at IS NOT NULL",
+        params![epic_id, position, now, revision, input.id, expected],
     )?;
     // Removing a member needs their unfinished tasks reassigned first, which
     // skips deleted tasks. So people who left meanwhile come off an
@@ -565,6 +604,25 @@ pub(super) fn restore_task(
         },
         now,
     )?);
+    if epic_id != before.epic_id {
+        events.push(record_activity_tx(
+            tx,
+            actor,
+            ActivityInput {
+                project_id: Some(&before.project_id),
+                entity_type: "task",
+                entity_id: &input.id,
+                task_id: Some(&input.id),
+                event_type: "task.updated",
+                field_key: Some("epicId"),
+                before: Some(json!(before.epic_id)),
+                after: Some(Value::Null),
+                metadata: json!({}),
+                entity_revision: Some(revision),
+            },
+            now,
+        )?);
+    }
     for user_id in departed {
         let field_key = format!("assignee:{user_id}");
         events.push(record_activity_tx(
@@ -587,8 +645,8 @@ pub(super) fn restore_task(
     }
     let mut entities = vec![task_entity(tx, &input.id)?];
     if matches!(before.status.as_str(), "in_progress" | "in_review")
-        && let Some(event) =
-            activate_epic_for_work(tx, actor, &before.project_id, &before.epic_id, now)?
+        && let Some(epic_id) = epic_id.as_deref()
+        && let Some(event) = activate_epic_for_work(tx, actor, &before.project_id, epic_id, now)?
     {
         entities.push(activated_epic_entity(&before.project_id, &event));
         events.push(event);
