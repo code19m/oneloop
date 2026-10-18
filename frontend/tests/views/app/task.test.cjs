@@ -156,13 +156,16 @@ test('another track takes the task out of its epic and says why under Epic, unti
   assert.equal(shown(t, 'tpEpic'), 'No epic'); assert.equal(note(), null, 'the note told of the track change only');
 });
 
-test('a track change that does not go through shows the saved track and epic again', async () => {
+test('a status or track change that does not go through shows the saved status, track and epic again', async () => {
   const t = taskPage();
   pick(t, 'tpTrack', 'Mobile experience');
   assert.equal(shown(t, 'tpTrack'), 'Mobile experience');
   t.commands.at(-1).reject(new t.w.TestApiError('invalid trackId: track not found', { status: 422, code: 'validation_failed' })); await settle();
   assert.deepEqual([shown(t, 'tpTrack'), shown(t, 'tpEpic')], ['Backend & API', 'Reading summaries']);
   assert.equal(t.d.getElementById('tpEpic-note'), null);
+  pick(t, 'tpState', 'In Progress');
+  t.commands.at(-1).reject(new t.w.TestApiError('invalid status', { status: 422, code: 'validation_failed' })); await settle();
+  assert.equal(shown(t, 'tpState'), 'Planning');
 });
 
 test('a track change that lands after the person left the task leaves no note on it', async () => {

@@ -188,7 +188,7 @@ document.addEventListener('focusout', (event) => {
   if (showsDescriptionEditor(t, canBoard())) placeEditButton(t); else paintDescription(t);
 });
 
-// ---------- track and epic ----------
+// ---------- status, track and epic ----------
 // An epic stays on its track, so moving a task to another track takes it out
 // of its epic. The person who moved it sees why under Epic until they leave
 // the task, or until it has an epic again or moves on.
@@ -199,11 +199,11 @@ function epicNote(t) {
   return clearedEpic?.text ?? '';
 }
 /**
- * Save the task's `field`, its track or epic, as picked. Track and Epic show
- * the saved values again afterwards, so a save that didn't go through, such
- * as offline, doesn't leave the pick showing.
+ * Save the task's status, track or epic as picked in its select. The
+ * selects show the saved values again once the save settles, so a pick that
+ * didn't save, such as offline, doesn't stay on screen.
  */
-function savePlace(id, field, value) {
+function saveProperty(id, field, value) {
   const t = taskById(id), epic = epicById(t?.epicId), from = trackById(t?.trackId);
   Promise.resolve(App.updTask(id, field, value)).then((saved) => {
     const moved = taskById(id), to = field === 'trackId' && trackById(value);
@@ -219,8 +219,8 @@ const trackOptions = () => tracks().map((x) => ({ v: x.id, l: x.name }));
 /** The task's Track and Epic, with the Epic cleared note. */
 function trackEpicHtml(t, canEdit) {
   const note = epicNote(t);
-  return `<div class="task-property"><dt>Track</dt><dd>${selectHtml('tpTrack', { label: 'Track', cls: 'prop', disabled: !canEdit, icon: I.track, value: t.trackId, options: trackOptions(), pick: (v) => savePlace(t.id, 'trackId', v) })}</dd></div>
-        <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: t.epicId ?? '', search: true, describedBy: note ? 'tpEpic-note' : '', options: epicOptions(t.trackId, t.epicId), pick: (v) => savePlace(t.id, 'epicId', v) })}${note ? `<p class="task-property-note" id="tpEpic-note">${esc(note)}</p>` : ''}</dd></div>`;
+  return `<div class="task-property"><dt>Track</dt><dd>${selectHtml('tpTrack', { label: 'Track', cls: 'prop', disabled: !canEdit, icon: I.track, value: t.trackId, options: trackOptions(), pick: (v) => saveProperty(t.id, 'trackId', v) })}</dd></div>
+        <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: t.epicId ?? '', search: true, describedBy: note ? 'tpEpic-note' : '', options: epicOptions(t.trackId, t.epicId), pick: (v) => saveProperty(t.id, 'epicId', v) })}${note ? `<p class="task-property-note" id="tpEpic-note">${esc(note)}</p>` : ''}</dd></div>`;
 }
 /** Show the open task's track and epic in place: their choices, values and the Epic cleared note. */
 function paintTrackEpic(t, page) {
@@ -253,7 +253,7 @@ export function renderTask() {
     <aside class="tp-rail" aria-labelledby="task-properties-heading">
       ${taskPropertiesHeadingHtml(t, canEdit)}
       <dl class="task-properties">
-        <div class="task-property"><dt>Status</dt><dd>${selectHtml('tpState', { label: 'Status', cls: 'prop', disabled: !canEdit, icon: stIcon(t.state), value: t.state, options: Object.entries(STATUS).map(([v, l]) => ({ v, l, icon: stIcon(v) })), pick: (v) => App.updTask(t.id, 'state', v) })}</dd></div>
+        <div class="task-property"><dt>Status</dt><dd>${selectHtml('tpState', { label: 'Status', cls: 'prop', disabled: !canEdit, icon: stIcon(t.state), value: t.state, options: Object.entries(STATUS).map(([v, l]) => ({ v, l, icon: stIcon(v) })), pick: (v) => saveProperty(t.id, 'state', v) })}</dd></div>
         ${trackEpicHtml(t, canEdit)}
         <div class="task-property"><dt>Assignees</dt><dd>${msHtml('tpAssign', t.id, !canEdit)}</dd></div>
         <div class="task-property task-property-date prop-row${late ? ' late' : ''}"><dt>Deadline</dt><dd>${dateHtml('tpDl', { hideLabel: true, cls: 'prop', disabled: !canEdit, icon: I.clock, name: '_dl', value: t.deadline || '', clearable: true, autosave: true, pick: (v) => App.updTask(t.id, 'deadline', v) })}<span class="task-overdue" ${late ? '' : 'hidden'}>Overdue</span></dd></div>
