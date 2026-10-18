@@ -35,21 +35,23 @@ const EPIC_GAP = 24;
 export const roadmapLanes = () => (D.roadmap?.projectId === state.projectId ? D.roadmap : null);
 
 const instantDays = new Map();
+/** The date and the share of its day of an instant, in the instance time zone. */
+function instantDay(ms) {
+  let parts = instantDays.get(ms);
+  if (!parts) {
+    const text = formatInstant(ms);
+    const [h, m, s] = text.slice(11).split(':').map(Number);
+    parts = { date: text.slice(0, 10), fraction: (h * 3600 + m * 60 + s) / 86400 };
+    if (instantDays.size > 5000) instantDays.clear();
+    instantDays.set(ms, parts);
+  }
+  return parts;
+}
 /** Day offsets from `start`: whole days for dates, fractions for times in the instance time zone. */
 export function dayScale(start) {
   const base = +start;
   const ofDate = (date) => Math.round((d(date) - base) / DAY);
-  const ofInstant = (ms) => {
-    let parts = instantDays.get(ms);
-    if (!parts) {
-      const text = formatInstant(ms);
-      const [h, m, s] = text.slice(11).split(':').map(Number);
-      parts = { date: text.slice(0, 10), fraction: (h * 3600 + m * 60 + s) / 86400 };
-      if (instantDays.size > 5000) instantDays.clear();
-      instantDays.set(ms, parts);
-    }
-    return ofDate(parts.date) + parts.fraction;
-  };
+  const ofInstant = (ms) => { const { date, fraction } = instantDay(ms); return ofDate(date) + fraction; };
   return { ofDate, ofInstant };
 }
 
@@ -76,6 +78,24 @@ function taskItem(task, scale, now) {
 /** An epic with an end date sits on the time scale; one without is drawn from its work. */
 export const epicDated = (epic) => !!epic?.end;
 
+/** The tasks of the project on screen that its lanes draw. */
+function laneTasks() {
+  const lanes = roadmapLanes(), ids = new Set(lanes?.taskIds), tracked = new Set(tracks().map((track) => track.id));
+  return lanes ? D.tasks.filter((task) => ids.has(task.internalId) && tracked.has(task.trackId)) : [];
+}
+
+/** The first and last dates the lanes' tasks reach: when work finished or started, and deadlines; null without any. */
+export function laneDates() {
+  let min = null, max = null;
+  const take = (date) => { if (!min || date < min) min = date; if (!max || date > max) max = date; };
+  for (const task of laneTasks()) {
+    if (task.state === 'done') { if (task.completedAt) take(instantDay(task.completedAt).date); continue; }
+    if (task.state !== 'planning') take(instantDay(startOf(task)).date);
+    if (task.deadline) take(task.deadline);
+  }
+  return min && { min: d(min), max: d(max) };
+}
+
 /**
  * Each track's lane: its own work (tasks without an epic), then its epics by
  * start date, with their tasks. A track's head counts its work in progress
@@ -83,9 +103,8 @@ export const epicDated = (epic) => !!epic?.end;
  */
 export function laneModels(start) {
   const scale = dayScale(start), now = scale.ofInstant(instanceNow()), lanes = roadmapLanes();
-  const byId = new Map(D.tasks.map((task) => [task.internalId, task]));
   const byTrack = new Map(tracks().map((track) => [track.id, []]));
-  for (const id of lanes?.taskIds ?? []) { const task = byId.get(id); if (task) byTrack.get(task.trackId)?.push(task); }
+  for (const task of laneTasks()) byTrack.get(task.trackId).push(task);
   const all = epics();
   return {
     now, ready: !!lanes,
@@ -107,28 +126,21 @@ export function laneModels(start) {
   };
 }
 
-/** The days the lanes' work spans, to stretch the axis over; null until the lanes load. */
-export function laneExtent(model) {
-  let min = Infinity, max = -Infinity;
-  for (const lane of model.lanes) for (const section of lane.sections) for (const item of section.items) {
-    const from = item.kind === 'flight' ? item.from : item.at, to = item.kind === 'flight' ? item.to : item.at;
-    if (from < min) min = from; if (to > max) max = to;
-  }
-  return min <= max ? { min, max } : null;
-}
-
 // ---------- layout at one zoom level ----------
-let measureContext = null;
+let measureContext = null, fontFamily = '';
 const widths = new Map();
-/** The width of `text` in `font` (such as "500 13px") in the app's sans-serif. */
+/** The width of `text` in `font` (such as "500 13px") in the app's sans-serif, measured once per text. */
 export function textWidth(text, font) {
   const key = font + '|' + text;
   let width = widths.get(key);
   if (width === undefined) {
-    if (measureContext === null) measureContext = typeof OffscreenCanvas === 'function' ? new OffscreenCanvas(1, 1).getContext('2d') || false : false;
+    if (measureContext === null) {
+      measureContext = typeof OffscreenCanvas === 'function' ? new OffscreenCanvas(1, 1).getContext('2d') || false : false;
+      // Read once: reading a style during a zoom would make the browser work out styles again.
+      fontFamily = measureContext ? getComputedStyle(document.documentElement).getPropertyValue('--font-sans').trim() || 'sans-serif' : '';
+    }
     if (measureContext) {
-      const family = getComputedStyle(document.documentElement).getPropertyValue('--font-sans').trim() || 'sans-serif';
-      measureContext.font = `${font} ${family}`;
+      measureContext.font = `${font} ${fontFamily}`;
       width = Math.ceil(measureContext.measureText(text).width);
     } else {
       // Without a canvas, as in tests, a close estimate: about 0.55 em a character.

@@ -21,7 +21,7 @@ import {
 } from './overlays.js';
 import { announce } from './toasts.js';
 import {
-  closeTimelineList, epicDated, epicStatus, focusTask, headFigure, isLate, laneBodyHtml, laneEntry, laneExtent, laneFocus, laneModels,
+  closeTimelineList, epicDated, epicStatus, focusTask, headFigure, isLate, laneBodyHtml, laneDates, laneEntry, laneFocus, laneModels,
   layoutLane, mountLanes, numbers, roadmapLanes, roomAfterNow, syncLaneEdges, textWidth,
 } from './timeline.js';
 
@@ -90,26 +90,19 @@ function fitScale(model, room, reserve) {
  * date it must reach. It runs from seven weeks back to two months ahead, and
  * further for dated epics, milestones and the lanes' work.
  */
-function rmRange(extent) {
+function rmRange() {
   let min = new Date(today.getTime() - 50 * DAY), max = new Date(today.getTime() + 60 * DAY);
   const take = (date) => { if (date < min) min = date; if (date > max) max = date; };
   epics().forEach((e) => { if (epicDated(e)) { take(d(e.start)); take(d(e.end)); } });
   milestones().forEach((m) => take(d(m.date)));
-  if (extent) { take(new Date(+extent.start + extent.min * DAY)); take(new Date(+extent.start + extent.max * DAY)); }
+  const work = laneDates();
+  if (work) { take(work.min); take(work.max); }
   return { start: new Date(min.getTime() - 10 * DAY), end: new Date(max.getTime() + 45 * DAY) };
 }
 
 /** The Roadmap's lanes and milestones as day offsets; nothing here depends on the zoom level. */
 function roadmapModel() {
-  // The lanes' work can stretch the range, which moves day 0, so they are read twice only when it does.
-  let range = rmRange(null), timeline = laneModels(range.start);
-  const extent = laneExtent(timeline);
-  if (extent) {
-    const stretched = rmRange({ ...extent, start: range.start });
-    if (+stretched.start !== +range.start) timeline = laneModels(stretched.start);
-    range = stretched;
-  }
-  const { start, end } = range;
+  const { start, end } = rmRange(), timeline = laneModels(start);
   const day = (dt) => Math.round((dt - start) / DAY);
   const goals = milestones().slice().sort((a, b) => d(a.date) - d(b.date)).map((m) => {
     const date = d(m.date), days = Math.round((date - today) / DAY);
@@ -962,7 +955,10 @@ Object.assign(App, {
     else if(nav)([...content.querySelectorAll('.rt-body [data-nav][tabindex="0"]')].find((el)=>el.dataset.nav===nav)||[...content.querySelectorAll('.rt-body [data-nav]')].find((el)=>el.dataset.nav===nav))?.focus({preventScroll:true});
     else if(focus)restoreOpener(focus);
     App.updateDocumentTitle();
-    if(before)UIMotion.layout(before,'.lane');
+    // Lanes slide up or down to their new places. Every lane shares its left edge, which a new scroll
+    // position moves sideways at once, so that is no motion.
+    const shift=(content.querySelector('.lane')?.getBoundingClientRect().left??0)-([...before.values()][0]?.left??0);
+    UIMotion.layout(new Map([...before].map(([track,box])=>[track,{left:box.left+shift,top:box.top}])),'.lane');
     App.refreshCounts();
   },
   /** "Overdue N": focus the next late task on the timeline and show its card. */

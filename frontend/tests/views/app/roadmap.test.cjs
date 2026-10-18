@@ -188,6 +188,23 @@ test('lanes show skeletons until the Roadmap\'s read lands, then their tasks', (
   assert(mark(d, 'BIR-064'));
 });
 
+test('lanes drawn again at a new scroll position slide only up or down, never sideways', () => {
+  const slides = [];
+  const t = boot('roadmap/p1', { media: () => false, prepare: D => { D.roadmapLoaded = D.roadmap; D.roadmap = null; }, setup: w => {
+    // A lane starts where the scroller shows the timeline's start.
+    w.Element.prototype.getBoundingClientRect = function () {
+      const left = this.matches('.lane') ? -this.ownerDocument.getElementById('rmScroll').scrollLeft : 0, top = this.matches('.lane') ? 100 : 0;
+      return { left, top, right: left + 3000, bottom: top + 100, x: left, y: top, width: 3000, height: 100 };
+    };
+    w.Element.prototype.animate = function (frames) { if (this.matches('.lane')) slides.push(frames[0].transform); return { finished: Promise.resolve(), cancel() {} }; };
+  } });
+  // The lanes' read lands, and the Roadmap opens at the scale that fits the work, scrolled to it.
+  const before = t.d.getElementById('rmScroll').scrollLeft;
+  t.D.roadmap = t.D.roadmapLoaded; t.A.refreshRoadmap();
+  assert.notEqual(t.d.getElementById('rmScroll').scrollLeft, before);
+  assert.deepEqual(slides, []);
+});
+
 test('a track with tasks but nothing dated says No dated work, and one without tasks says No tasks yet', () => {
   const { d } = boot('roadmap/p1?scale=months', { prepare: D => {
     D.tracks.push({ id: 't6', projectId: 'p1', name: 'Docs', order: 6, revision: 1 });
