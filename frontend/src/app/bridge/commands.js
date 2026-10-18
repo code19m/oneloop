@@ -244,6 +244,10 @@ export function createCommands(ctx) {
         if(current.view==='board'&&data.projects.some((item)=>item.id===current.projectId)&&!reads.adoptBoard(current.projectId,current.board)){
           if((await reads.board(current.projectId,current.board))?.stale)return stale(result);
         }
+      } else if(context().view==='roadmap'&&/^(?:task\.|pool\.promote$)/.test(operation)&&data.projects.some((item)=>item.id===context().projectId)){
+        // The Roadmap's lanes and their counts come with its own read, which a hint of this tab's change skips.
+        const projectId=context().projectId,reread=await Promise.all([reads.roadmap(projectId),reads.counts(projectId)]);
+        if(reread.some((read)=>read?.stale))return stale(result);
       } else if(/^task\.(?:block|unblock)/.test(operation)&&data.projects.some((item)=>item.id===context().projectId)){
         if((await reads.counts(context().projectId))?.stale)return stale(result);
       }

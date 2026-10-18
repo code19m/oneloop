@@ -20,7 +20,7 @@ for(const replacement of [null,'modal','drawer'])test(`epic reopening updates it
   assert.equal(input.value,'Next draft');assert.equal(t.d.activeElement,input);assert.equal(input.selectionStart,2);assert.equal(input.selectionEnd,5);
  }else{
   assert.equal(t.d.querySelector('.peek .chip').textContent,'Planning');
-  assert.equal(t.d.querySelector('.peek-actions button').textContent,'Mark as done');
+  assert([...t.d.querySelectorAll('.peek-actions button')].some(button=>button.textContent==='Mark as done'));
  }
 });
 

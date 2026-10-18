@@ -33,7 +33,7 @@ import {
   syncSidebar,
 } from './app/overlays.js';
 import {
-  mountRoadmap, renderPeek, renderRoadmap, resetRoadmapScale, roadmapAddressScale, roadmapHeight, roadmapMovePending,
+  mountRoadmap, renderPeek, renderRoadmap, resetRoadmapScale, roadmapAddressScale, roadmapMovePending,
   roadmapTopbarHtml, showRoadmapScale,
 } from './app/roadmap.js';
 import { storageHtml } from './app/storage.js';
@@ -185,7 +185,6 @@ function render(){
     // An unanswered conflict prompt goes back beside its redrawn field before focus is restored.
     recovery.keepPrompts();
     const board=document.querySelector('.board');if(board){boardSnapshots.set(board,boardSnapshot());rememberBoardRows(board);}
-    if(document.getElementById('rmScroll')&&document.querySelector('.content')?.clientHeight!==roadmapHeight)App.refreshRoadmap();
     if (paintedPage !== pageScope() && document.activeElement === document.body && !document.querySelector('.modal,.peek') && !document.getElementById('app').inert) {
       const target = document.querySelector('.topbar h1') || document.querySelector('.auth-card [autofocus]') || document.querySelector('.auth-card h1');
       target?.focus({preventScroll:true});
@@ -452,8 +451,8 @@ window.App = App;
 export { App };
 
 // ---------- routing ----------
-/** Show project `id` as someone switches to it: an unfiltered Board and the Roadmap at today. This person's new tabs in this browser open it. */
-function switchTo(id){state.projectId=id;state.rmScrollLeft=null;resetBoardFilters();rememberSwitch(me().id,id);}
+/** Show project `id` as someone switches to it: an unfiltered Board and the Roadmap fitted to its work. This person's new tabs in this browser open it. */
+function switchTo(id){state.projectId=id;state.rmScrollLeft=null;resetBoardFilters();resetRoadmapScale();rememberSwitch(me().id,id);}
 /** The page a switch to project `id` shows; see `selectProject`. */
 function pageAfterSwitch(id){
   if(!['notfound','forbidden'].includes(state.view))return state.view==='task'&&state.projectId!==id?'board':state.view;
@@ -465,11 +464,11 @@ const defaultProject=()=>[state.projectId,D.bootstrapProjectId].find(id=>visible
 /**
  * Show the project an address names. One this person can't open is not
  * found, once their data says so; another project starts with an unfiltered
- * Board and the Roadmap at today.
+ * Board and the Roadmap fitted to its work.
  */
 function showProject(id){
   if(id&&D.session&&!visibleProjects().some(project=>project.id===id)){state.view='notfound';return false;}
-  if(id&&id!==state.projectId){state.projectId=id;state.rmScrollLeft=null;resetBoardFilters();}
+  if(id&&id!==state.projectId){state.projectId=id;state.rmScrollLeft=null;resetBoardFilters();resetRoadmapScale();}
   return true;
 }
 function resolveRoute() {
@@ -492,7 +491,7 @@ function resolveRoute() {
     if(place.page==='roadmap')showRoadmapScale(place.scale);
   }else{state.view=place.page;return;}
   // An older address, such as `#/board`, gets the project in place, and a
-  // Roadmap's names the scale that shows, or none at Months.
+  // Roadmap's names the scale that was picked, or none while it fits the work.
   if(!place.projectId||place.page==='roadmap')replaceAddress();
 }
 /** The address of a page of the project on screen; the Board's carries its filters, the Roadmap's its scale. Other pages keep theirs. */

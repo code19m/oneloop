@@ -407,10 +407,24 @@
   ],
   "bootstrapProjectId": "p1",
   "boardPageInfo": { "projectId": "p1", "filters": {}, "pages": {} },
+  "roadmap": {
+    "projectId": "p1",
+    "taskIds": ["bir-064", "bir-072", "bir-080", "bir-075", "bir-066", "bir-071", "bir-079", "bir-081", "bir-069", "bir-076", "bir-077", "bir-061", "bir-058", "bir-057", "bir-056", "bir-055", "bir-052"],
+    "trackCounts": {
+      "t1": { "planning": 1, "progress": 0, "review": 0, "done": 0 },
+      "t2": { "planning": 1, "progress": 2, "review": 1, "done": 6 },
+      "t3": { "planning": 2, "progress": 1, "review": 1, "done": 0 },
+      "t4": { "planning": 1, "progress": 1, "review": 0, "done": 0 }
+    },
+    "overdue": 4,
+    "plans": { "cursor": null, "depth": 1 },
+    "done": { "cursor": null, "depth": 1 }
+  },
   "tasks": [
     {
       "id": "BIR-064",
       "internalId": "bir-064",
+      "startedAt": 1787652000000,
       "projectId": "p1",
       "created": 1789935829835,
       "epicId": "e5",
@@ -477,6 +491,7 @@
     {
       "id": "BIR-072",
       "internalId": "bir-072",
+      "startedAt": 1788343200000,
       "projectId": "p1",
       "created": 1789763029835,
       "epicId": "e6",
@@ -495,6 +510,7 @@
     {
       "id": "BIR-080",
       "internalId": "bir-080",
+      "startedAt": 1787220000000,
       "projectId": "p1",
       "created": 1790367829835,
       "epicId": "e5",
@@ -513,6 +529,7 @@
     {
       "id": "BIR-075",
       "internalId": "bir-075",
+      "startedAt": 1789466400000,
       "projectId": "p1",
       "created": 1790454229835,
       "epicId": "e9",
@@ -528,6 +545,7 @@
     {
       "id": "BIR-066",
       "internalId": "bir-066",
+      "startedAt": 1787911200000,
       "projectId": "p1",
       "created": 1790022229835,
       "epicId": "e5",
@@ -559,6 +577,7 @@
     {
       "id": "BIR-071",
       "internalId": "bir-071",
+      "startedAt": 1789034400000,
       "projectId": "p1",
       "created": 1790108629835,
       "epicId": "e6",
@@ -621,6 +640,7 @@
     {
       "id": "BIR-076",
       "internalId": "bir-076",
+      "deadline": "2026-10-20",
       "projectId": "p1",
       "created": 1789503829835,
       "epicId": "e10",
@@ -636,6 +656,7 @@
     {
       "id": "BIR-077",
       "internalId": "bir-077",
+      "deadline": "2026-10-06",
       "projectId": "p1",
       "created": 1789676629835,
       "epicId": "e7",
@@ -651,6 +672,8 @@
     {
       "id": "BIR-061",
       "internalId": "bir-061",
+      "startedAt": 1790064000000,
+      "completedAt": 1790330400000,
       "projectId": "p1",
       "created": 1788812629835,
       "epicId": "e5",
@@ -666,6 +689,8 @@
     {
       "id": "BIR-058",
       "internalId": "bir-058",
+      "startedAt": 1789977600000,
+      "completedAt": 1790244000000,
       "projectId": "p1",
       "created": 1788899029835,
       "epicId": "e5",
@@ -681,6 +706,8 @@
     {
       "id": "BIR-057",
       "internalId": "bir-057",
+      "startedAt": 1789804800000,
+      "completedAt": 1790071200000,
       "projectId": "p1",
       "created": 1788985429835,
       "epicId": "e5",
@@ -696,6 +723,8 @@
     {
       "id": "BIR-056",
       "internalId": "bir-056",
+      "startedAt": 1789804800000,
+      "completedAt": 1790071200000,
       "projectId": "p1",
       "created": 1789158229835,
       "epicId": "e5",
@@ -711,6 +740,8 @@
     {
       "id": "BIR-055",
       "internalId": "bir-055",
+      "startedAt": 1789459200000,
+      "completedAt": 1789725600000,
       "projectId": "p1",
       "created": 1789244629835,
       "epicId": "e5",
@@ -726,6 +757,8 @@
     {
       "id": "BIR-052",
       "internalId": "bir-052",
+      "startedAt": 1788768000000,
+      "completedAt": 1789034400000,
       "projectId": "p1",
       "created": 1788639829835,
       "epicId": "e5",

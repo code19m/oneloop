@@ -11,12 +11,6 @@
   --accent-hover: #ffffff;
   --accent-pressed: #d4d4d4;
   --surface-backdrop: #282828;
-  --surface-axis: #181818;
-  --surface-epic-active: #2d2d2d;
-  --surface-epic-planning: #242424;
-  --surface-epic-done: #262a27;
-  --epic-active-border: rgba(255,255,255,.18);
-  --epic-hover-tint: 6%;
   --surface-message: rgb(var(--tone-rgb) / 0.025);
   --surface-code: rgb(var(--tone-rgb) / 0.05);
   --segment-track: rgba(0,0,0,0.12);
@@ -57,7 +51,6 @@
   --glass-1: rgb(var(--tone-rgb) / 0.025);
   --glass-2: var(--fill-hover);
   --glass-3: var(--fill-selected);
-  --rail: #1a1a1a;
   --panel: var(--surface-glass);
   --line-soft: rgb(var(--tone-rgb) / 0.045);
   --line: rgb(var(--tone-rgb) / 0.055);
@@ -70,7 +63,6 @@
   --review: #b5a0da;
   --warn: #d5b578;
 
-  --shadow-bar: none;
   --shadow-card: none;
   --shadow-modal: inset 0 1px 0 rgb(var(--tone-rgb) / 0.12), 0 16px 64px rgba(0,0,0,0.36), 0 2px 8px rgba(0,0,0,0.18);
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -98,12 +90,6 @@
   --surface-backdrop: #f2f2f2;
   --surface-glass: rgba(255,255,255,0.9);
   --surface-glass-sidebar: url("grain.svg"), linear-gradient(180deg, rgba(246,246,246,0.91) 0%, rgba(241,241,241,0.95) 100%);
-  --surface-axis: #fff;
-  --surface-epic-active: #f1f2f3;
-  --surface-epic-planning: #fafafa;
-  --surface-epic-done: #f1f6f2;
-  --epic-active-border: rgba(0,0,0,.17);
-  --epic-hover-tint: 3%;
   --surface-message: #f3f3f3;
   --surface-code: #f5f5f5;
   --text-primary: #202020;
@@ -114,7 +100,6 @@
   --fill-hover: rgba(0,0,0,0.045);
   --fill-selected: rgba(0,0,0,0.075);
   --glass-1: rgba(0,0,0,0.02);
-  --rail: #f7f7f7;
   --line-soft: rgba(0,0,0,0.045);
   --line: rgba(0,0,0,0.075);
   --line-strong: rgba(0,0,0,0.12);
@@ -356,155 +341,247 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .ctl.invalid { border-color: color-mix(in srgb, var(--err) 55.0%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--err) 15.0%, transparent); }
 
 /* ---------- roadmap ---------- */
+/* Each track is a lane on a time axis. One 32 px row builds every lane: an
+   epic's header; the line, with done work as quiet dots and counts and dated
+   plans as rings; one thin bar per task in progress. Three type sizes: 15
+   for names, 13 for titles, 12 for the rest. One surface family: every box
+   and card shares the hairline, the radius and the tint below; only
+   floating layers cast a shadow, and the milestone's diamond is the one
+   accent. Color means status only. */
+:root {
+  --rt-hairline: rgb(var(--tone-rgb) / 0.12);
+  --rt-radius: var(--radius-sm);
+  /* Cards are a faint tint of the page; the epic box is the same tint, translucent, so lines pass through it. */
+  --rt-surface: color-mix(in srgb, rgb(var(--tone-rgb)) 3.5%, var(--surface-canvas));
+  --rt-tint: rgb(var(--tone-rgb) / 0.035);
+}
 .rm-scroll { flex: 1; min-height: 0; overflow: auto; touch-action: pan-x pan-y; }  /* two fingers belong to the roadmap, not the browser */
 .rm-canvas { position: relative; min-width: 100%; }
 .rm-empty { position: sticky; left: 0; width: 100%; padding: 60px 0; text-align: center; color: var(--ink-ghost); font-size: var(--text-body); }
-.rm-axis { position: sticky; top: 0; display: flex; height: 90px; border-bottom-color: rgb(var(--tone-rgb) / 0.12); z-index: 10; background: var(--surface-axis); }
+.rm-axis { position: sticky; top: 0; z-index: 10; display: flex; border-bottom: 1px solid var(--line); background: var(--surface-canvas); }
 .rm-axis-labels { position: relative; flex: 1; }
-.rm-month-row { position:sticky;bottom:0;display:flex;z-index:11;background:var(--surface-canvas);border-top:1px solid rgb(var(--tone-rgb) / .12);border-bottom:1px solid rgb(var(--tone-rgb) / .12); }
-.rm-month-grid { position:relative;flex:1; }
-/* Month cells are day offsets (--d) and lengths (--n) times --ppd, the pixels
-   per day that the zoom sets on their containers. */
-.rm-axis-divider { position:absolute;top:0;bottom:0;left:calc(var(--d) * var(--ppd) * 1px);width:1px;background:var(--line-soft);pointer-events:none; }
-.rm-month-line { position:absolute;left:calc(var(--rm-rail) + var(--d) * var(--ppd) * 1px);top:var(--rm-axis-h);bottom:var(--rm-month-h);width:1px;background:var(--line-soft);pointer-events:none; }
-.rm-month { line-height: 16px; position: absolute; top: 7px; left: calc(var(--d) * var(--ppd) * 1px); width: calc(var(--n) * var(--ppd) * 1px); text-align: center; font-family: var(--font-sans); font-size: var(--text-sm); letter-spacing: 0; color: var(--ink-ghost); }
-/* From the zoom where weeks show, week lines are dashed so month lines stand out. */
-.rm-week-line { position:absolute;left:calc(var(--rm-rail) + var(--d) * var(--ppd) * 1px);top:var(--rm-axis-h);bottom:var(--rm-month-h);width:0;border-left:1px dashed var(--line);pointer-events:none; }
-.rm-week { line-height:16px;position:absolute;top:7px;left:calc(var(--d) * var(--ppd) * 1px);padding-left:8px;white-space:nowrap;font-family:var(--font-sans);font-size:var(--text-sm);color:var(--ink-ghost); }
-.roadmap-scale button { white-space:nowrap; }
+.roadmap-scale button { white-space: nowrap; }
+.roadmap-meta, .rt-count, .rt-more, .lane-figure, .rt-pop-when, .rt-epic-count, .rt-today, .rt-axis-dates, .rt-tip-line, .goal-date { font-variant-numeric: tabular-nums; }
 
-.rail-cell { position: sticky; left: 0; z-index: 5; width: 208px; flex-shrink: 0; border-right: 1px solid rgb(var(--tone-rgb) / 0.12); background: var(--rail); box-shadow: none; }
+/* The rail: each lane's head, on the page's color, which the timeline scrolls under. */
+.rail-cell { position: sticky; left: 0; z-index: 5; flex-shrink: 0; border-right: 1px solid var(--line); background: var(--surface-canvas); }
 /* Each row is a rail cell, then its part of the timeline. That part stacks its
-   own marks, such as the today pill, so none of them can rise above the rail. */
-.rm-axis-labels, .lane-body, .rm-month-grid { isolation: isolate; }
+   own marks, so none of them can rise above the rail. */
+.rm-axis-labels, .lane-body { isolation: isolate; }
 
-/* Lanes far outside the view skip style, layout and paint, so a zoom step
-   costs what is near the view. That makes a lane a stacking context, so it
-   sits above the milestone and today lines (z-index 1), as its bars did. */
-.lane { position: relative; z-index: 2; display: flex; border-bottom-color: rgb(var(--tone-rgb) / 0.12); content-visibility: auto; }
-/* Each cell of a row draws the row's line in the row's color. The rail cell
-   draws it on its solid background, so the lines under the rail can't show
-   through it. */
-.rm-axis > *, .lane > * { border-bottom: 1px solid; border-bottom-color: inherit; }
-/* Safari skips a lane's contents for a moment when focus leaves it, so a click
-   on a button there landed on the lane. A lane under the pointer always renders. */
-.lane:hover { content-visibility: visible; }
-.lane-head { padding: 20px 16px; display: flex; flex-direction: column; gap: 6px; justify-content: center; transition:background 140ms var(--ease-out); }
-.lane-head .name { font-size: var(--text-ui); font-weight: 600; color: var(--ink); }
-/* A name takes two lines at most, then ends with an ellipsis; its tip shows
-   all of it. It keeps clear of the grip and ⋮: they take 53 px, or 65 px with
-   touch targets, from 6 px inside the rail's edge, which is 47 px or 59 px
-   past the name's own 16 px, with a 4 px gap. */
-.lane-head .name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-.lane-head:has(.head-ctl) .name { padding-right: 47px; }
-@media (pointer: coarse) { .lane-head:has(.head-ctl) .name { padding-right: 59px; } }
-.lane-head .sub { font-family: var(--font-sans); font-size: var(--text-sm); color: var(--ink-faint); }
-.head-ctl { position: absolute; top: 13px; right: 6px; display: flex; align-items: center; gap: 1px; }
+/* The axis's dates: months, or Mondays at Weeks. Cells are day offsets (--d)
+   times --ppd, the pixels per day that the zoom sets on their container. The
+   month at the left edge stays named, pinned there. */
+.rt-axis-dates { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; height: 24px; }
+.rm-axis-divider { position: absolute; top: 6px; bottom: 6px; left: calc(var(--d) * var(--ppd) * 1px); width: 1px; background: var(--line); pointer-events: none; }
+.rm-month, .rm-week { position: absolute; top: 4px; left: calc(var(--d) * var(--ppd) * 1px); margin-left: 6px; padding: 0 4px 0 2px; background: var(--surface-canvas); font-size: var(--text-xs); font-weight: 500; line-height: 16px; color: var(--ink-faint); white-space: nowrap; transition: opacity var(--motion-fast) var(--ease-out); }
+.rm-month, .rm-week.rt-month-start { color: var(--ink-muted); }
+.rt-axis-pin { position: absolute; bottom: 0; z-index: 3; height: 24px; padding: 4px 12px 0 8px; background: linear-gradient(90deg, var(--surface-canvas) calc(100% - 8px), transparent); font-size: var(--text-xs); font-weight: 500; line-height: 16px; color: var(--ink-muted); white-space: nowrap; pointer-events: none; }
+/* Month lines, Today and milestones run through the lanes and stop at the last one. */
+.rt-lanes { position: relative; }
+.rm-month-line { position: absolute; top: 0; bottom: 0; left: calc(var(--rm-rail) + var(--d) * var(--ppd) * 1px); width: 1px; background: var(--line); pointer-events: none; }
+
+/* Today: a thin line and a small label in the axis. */
+.today-line { position: absolute; top: 0; bottom: 0; z-index: 1; width: 1px; background: color-mix(in srgb, var(--ink) 40%, transparent); pointer-events: none; }
+.rt-today { position: absolute; z-index: 7; height: 20px; padding: 0 6px; transform: translateX(-50%); border-radius: var(--radius-xs); background: var(--surface-canvas); color: var(--ink); font-size: var(--text-xs); font-weight: 600; line-height: 20px; white-space: nowrap; }
+
+/* A milestone: a card of the family with the app's shiny diamond, its name
+   (13/600) and "Oct 26 · 9d away" (12). Its line is a 1 px line like
+   Today's, dropping from the diamond. */
+:root {
+ --goal-diamond: linear-gradient(135deg, #fff, #d1d1d1 48%, #858585);
+ --goal-diamond-border: #eee;
+ --goal-diamond-shadow: 0 0 8px #ffffff40;
+ --goal-past-diamond: linear-gradient(135deg, #aaa, #6d6d6d);
+}
+:root[data-theme=light] {
+ --goal-diamond: #282828;
+ --goal-diamond-border: #282828;
+ --goal-diamond-shadow: 0 0 5px #28282880, 0 0 13px #28282859, 0 0 22px #2828282e;
+ --goal-past-diamond: #b8b8b8;
+}
+.ms-line { position: absolute; z-index: 1; width: 1px; transform: translateX(-50%); background: color-mix(in srgb, var(--ink) 32%, transparent); pointer-events: none; }
+.rt-lanes > .ms-line { top: 0; bottom: 0; }
+.ms-line.past { background: color-mix(in srgb, var(--ink) 16%, transparent); }
+.ms-label { position: absolute; z-index: 2; display: flex; align-items: center; gap: 10px; height: 44px; margin: 0; padding: 0 12px; overflow: hidden; border: 1px solid var(--rt-hairline); border-radius: var(--rt-radius); background: var(--rt-surface); font-family: var(--font-sans); text-align: left; white-space: nowrap; cursor: pointer; transition: opacity var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out); }
+.ms-label:hover, .ms-label:focus-visible { border-color: rgb(var(--tone-rgb) / 0.24); }
+.ms-label .ms-diamond { width: 14px; height: 14px; margin: 0; border: 1px solid var(--goal-diamond-border); border-radius: 3px; background: var(--goal-diamond); box-shadow: var(--goal-diamond-shadow); }
+.ms-label .txt { display: flex; flex-direction: column; min-width: 0; line-height: 18px; }
+.ms-label .goal-name, .ms-label .goal-date { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.goal-name { font-size: var(--text-sm); font-weight: 600; color: var(--ink); }
+.goal-date { font-size: var(--text-xs); font-weight: 500; line-height: 16px; color: var(--ink-faint); }
+.ms-label.past .goal-name { color: var(--ink-muted); }
+.ms-label.past .ms-diamond { border-color: var(--ink-ghost); background: var(--goal-past-diamond); box-shadow: none; }
+/* At the right edge the card ends at its line, its diamond on the line at the card's right. */
+.ms-label.rt-card-end { flex-direction: row-reverse; }
+/* With no room clear, the diamond alone; it opens to the full card on hover and focus. */
+.ms-label.rt-card-compact { justify-content: center; }
+.ms-label.rt-card-compact .txt { display: none; }
+.ms-label.rt-card-compact:hover, .ms-label.rt-card-compact:focus-visible { z-index: 8; width: auto !important; justify-content: flex-start; }
+.ms-label.rt-card-compact:hover .txt, .ms-label.rt-card-compact:focus-visible .txt { display: flex; }
+/* The next milestone, off screen: its card waits at the right edge, an arrow saying it is further on. */
+.ms-label.rt-card-edge::after { content: '→'; margin-left: auto; font-size: var(--text-sm); color: var(--ink-faint); }
+.ms-diamond { width: 7px; height: 7px; flex-shrink: 0; border: 1.5px solid var(--ink-muted); transform: rotate(45deg); }
+
+/* What the view's edges would cut is hidden instead. */
+.rt-cut { opacity: 0; pointer-events: none; }
+
+/* A track's head: its name, on the lane's first row, and its figures. Its
+   grip and menu end the name's row and show where the pointer or focus is. */
+.lane { position: relative; z-index: 2; display: flex; border-bottom: 1px solid var(--line); }
+.lane-head { display: flex; flex-direction: column; padding: 12px 16px; }
+.lane-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; height: 24px; }
+.lane-head .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 600; line-height: 24px; color: var(--ink); }
+.lane-figure { margin: 0; font-size: var(--text-xs); line-height: 20px; color: var(--ink-faint); }
+.rt-figure-skeleton { display: inline-block; width: 72px; height: 10px; vertical-align: middle; }
+.head-ctl { display: flex; flex-shrink: 0; align-items: center; gap: 1px; margin-left: auto; opacity: 0; transition: opacity var(--motion-fast) var(--ease-out); }
+.lane:hover .head-ctl, .lane:focus-within .head-ctl { opacity: 1; }
 .grip, .kebab { opacity: 0.45; padding: 3px 4px; border-radius: 5px; transition: opacity 0.12s, background 0.12s; }
 .grip:hover, .kebab:hover { opacity: 1; background: var(--glass-2); }
 .grip { cursor: grab; }
 .grip:active { cursor: grabbing; }
 .kebab { cursor: pointer; }
-.lane-body { position: relative; flex: 1; }
-@media (hover:hover) and (pointer:fine) {
-  .lane:not(.is-sorting):hover { background:rgb(var(--tone-rgb) / 0.025);border-bottom-color:rgb(var(--tone-rgb) / 0.2); }
-  .lane:not(.is-sorting):hover .lane-head { background:color-mix(in srgb,var(--rail) 95%,var(--ink) 5%); }
-  .lane:hover .head-ctl .grip, .lane:hover .head-ctl .kebab { opacity:0.8; }
-}
-.lane:focus-within { background:rgb(var(--tone-rgb) / 0.025); }
-.lane:focus-within .lane-head { background:color-mix(in srgb,var(--rail) 95%,var(--ink) 5%); }
+/* "Overdue N": a quiet button that steps through the late tasks. */
+.roadmap-meta { display: flex; flex-shrink: 0; align-items: center; gap: 16px; font-size: var(--text-sm); line-height: 18px; color: var(--ink-muted); white-space: nowrap; }
+.roadmap-stat { display: inline-flex; align-items: baseline; gap: 6px; }
+.rt-stat-late { margin: 0; padding: 2px 6px; border: 0; border-radius: var(--radius-xs); background: none; font: inherit; color: inherit; cursor: pointer; }
+.rt-stat-late strong { font-size: var(--text-label); font-weight: 500; color: var(--err); }
+.rt-stat-late:hover { background: var(--fill-hover); }
+/* The lanes end with a quiet way to add one more. */
+.rt-add-track { display: flex; height: 40px; }
+.rt-add-track .rail-cell { display: flex; align-items: center; padding: 0 8px; border-right: 0; }
+.rt-add-track .btn { color: var(--ink-faint); }
+.rt-add-track .btn:hover { color: var(--ink); }
 
-.bar { position: absolute; z-index:2; min-height: 58px; border-radius: 10px; padding: 9px 12px; overflow: hidden; cursor: pointer; backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: var(--shadow-bar); transition: background-color 0.14s var(--ease-out), border-color 0.14s var(--ease-out); }
-.bar:hover { transform:none;filter:none; }
-.bar:active { transform: translateY(0); transition-duration: 0.06s; }
-.bar .t { line-height: 20px; display: flex; align-items: center; gap: 8px; font-size: var(--text-body); font-weight: 500; color: var(--ink); white-space: nowrap; }
-.bar .t span.txt { overflow: hidden; text-overflow: ellipsis; }
-.bar .m { line-height: 16px; margin-top: 3px; font-family: var(--font-sans); font-size: var(--text-sm); color: var(--ink-faint); white-space: nowrap; }
-/* open-ended bars are viewport-wide, so their labels stick to the visible edge */
-.bar.ongoing { overflow: visible; right: 0; min-width: 60px; }
-.bar.ongoing .t, .bar.ongoing .m { position: sticky; left: 222px; width: fit-content; max-width: 96%; }
-.bar .prog { position: absolute; left: 0; bottom: 0; height: 3px; background: rgb(var(--tone-rgb) / 0.09); width: 100%; }
-.bar .prog i { position: absolute; left: 0; top: 0; bottom: 0; display: block; }
-.bar.active { --epic-surface:var(--surface-epic-active);--epic-edge:var(--epic-active-border);background:var(--epic-surface);border:1px solid var(--epic-edge); }
-.bar.running { border-color: color-mix(in srgb, var(--run) 30.0%, transparent); }
-.bar.planning { --epic-surface:var(--surface-epic-planning);--epic-edge:var(--line);background:var(--epic-surface);border:1px solid var(--epic-edge); }
-.bar.planning .t { color: var(--ink-soft); font-weight: 500; }
-.bar.done { --epic-surface:var(--surface-epic-done);--epic-edge:color-mix(in srgb,var(--ok) 15%,transparent);background:var(--epic-surface);border:1px solid var(--epic-edge); }
-.bar.done .t { color: var(--ink-soft); }
-.bar.ongoing {border-right:0;border-radius:var(--radius-sm) 0 0 var(--radius-sm)}
-.bar.ongoing::after {content:'';position:absolute;right:0;top:0;bottom:0;width:50px;background:linear-gradient(90deg,transparent,var(--bg));pointer-events:none}
+/* ---------- a lane's timeline ---------- */
+.rt-body { position: relative; flex: 1; --rt-bg: var(--surface-canvas); }
+.rt-mark, .rt-count, .rt-bar, .rt-epic-label, .rt-more { margin: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.rt-empty-lane { position: sticky; left: calc(var(--rm-rail) + 16px); display: inline-flex; align-items: center; height: 32px; margin: 8px 0 0 16px; font-size: var(--text-sm); color: var(--ink-faint); white-space: nowrap; }
+.rt-loading { position: sticky; left: calc(var(--rm-rail) + 16px); display: flex; flex-direction: column; gap: 8px; width: min(400px, 60vw); margin: 16px 0 0 16px; }
+.rt-loading .skeleton { width: 100%; height: 12px; }
+.rt-loading .skeleton:last-child { width: 56%; }
 
-.bar.quiet:not(.done) { --epic-edge:rgb(var(--tone-rgb) / 0.06);border-color:var(--epic-edge); }
-.bar.quiet .t { color: var(--ink-soft); }
-@media(hover:hover) {
-  .bar:hover { background:color-mix(in srgb,var(--epic-surface),var(--ink) var(--epic-hover-tint));border-color:color-mix(in srgb,var(--epic-edge),var(--ink) 16%); }
+/* The line: done work before now, dotted after it to the dated plans. */
+.rt-spine { position: absolute; z-index: 1; height: 1px; background: rgb(var(--tone-rgb) / 0.14); pointer-events: none; }
+.rt-spine-ahead { background: repeating-linear-gradient(90deg, rgb(var(--tone-rgb) / 0.22) 0 2px, transparent 2px 6px); }
+.rt-mark { position: absolute; z-index: 3; display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; }
+.rt-dot { width: 6px; height: 6px; border-radius: 50%; background: color-mix(in srgb, var(--ok) 65%, var(--surface-canvas)); transition: transform var(--motion-fast) var(--ease-out); }
+.rt-done:hover .rt-dot, .rt-done:focus-visible .rt-dot { transform: scale(1.5); }
+.rt-mark:focus-visible { outline: none; }
+.rt-mark:focus-visible .rt-dot, .rt-mark:focus-visible .rt-ring, .rt-mark:focus-visible .rt-late-icon { border-radius: 50%; box-shadow: 0 0 0 2px var(--surface-canvas), 0 0 0 4px var(--focus-ring); }
+/* A count: marks too close to draw, as one small number on the line. */
+.rt-count { position: absolute; z-index: 3; height: 18px; border-radius: 9px; font-size: var(--text-xs); font-weight: 600; line-height: 18px; text-align: center; transition: background var(--motion-fast) var(--ease-out); }
+.rt-count-done { color: color-mix(in srgb, var(--ok) 75%, var(--ink)); background: color-mix(in srgb, var(--ok) 14%, var(--surface-canvas)); }
+.rt-count-done:hover, .rt-count-done[aria-expanded="true"] { background: color-mix(in srgb, var(--ok) 24%, var(--surface-canvas)); }
+/* A count of dated plans: dashed, like a ring; amber with a blocked plan, red with a late one. */
+.rt-count-planned { border: 1px dashed var(--ink-ghost); line-height: 16px; color: var(--ink-muted); background: var(--rt-bg); }
+.rt-count-planned.rt-late { border-color: var(--err); color: var(--err); }
+.rt-count-planned.rt-blocked { border-color: var(--warn); color: color-mix(in srgb, var(--warn) 85%, var(--ink)); }
+.rt-count:focus-visible { outline-offset: 2px; }
+/* A dated plan: a small dashed ring at its deadline, its title beside it on one line. */
+.rt-ring { flex-shrink: 0; border-radius: 50%; background: var(--rt-bg); color: var(--ink-faint); }
+.rt-planned:hover .rt-ring, .rt-planned:focus-visible .rt-ring { color: var(--ink); }
+.rt-blocked .rt-ring { color: color-mix(in srgb, var(--warn) 85%, var(--ink)); }
+.rt-late .rt-ring, .rt-late-icon, .rt-icon-late { color: var(--err); }
+
+/* Text on a lane sits on its own backing, so lines pass behind it, never through it. */
+.rt-tag { position: absolute; top: 0; z-index: 0; height: 20px; overflow: hidden; font-size: var(--text-sm); font-weight: 500; line-height: 20px; color: var(--ink-soft); white-space: nowrap; text-overflow: ellipsis; transition: opacity var(--motion-fast) var(--ease-out); }
+.rt-tag::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: 4px; background: var(--rt-bg); }
+.rt-planned:hover .rt-tag, .rt-planned:focus-visible .rt-tag { color: var(--ink); }
+.rt-late .rt-tag { color: var(--err); }
+
+/* Work in progress: one thin bar per task, led by its icon and title. A
+   firm end at its deadline, solid red past it when late; a fade at now
+   without one. Its tone, mixed 75% with the page, says its status. */
+.rt-bar { position: absolute; z-index: 3; display: block; height: 20px; overflow: visible; --tone: var(--run); }
+.rt-bar.rt-review { --tone: var(--review); }
+.rt-bar.rt-blocked { --tone: var(--warn); }
+.rt-fill, .rt-slip, .rt-tail { position: absolute; top: 8px; height: 4px; }
+.rt-fill { left: 0; width: var(--solid); border-radius: 2px; background: color-mix(in srgb, var(--tone) 75%, var(--surface-canvas)); transition: background var(--motion-fast) var(--ease-out); }
+.rt-open .rt-fill, .rt-late .rt-fill { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.rt-slip { left: var(--solid); width: var(--slip); border-radius: 0 2px 2px 0; background: var(--err); }
+.rt-tail { left: calc(var(--solid) + var(--slip)); width: var(--fade); border-radius: 0 2px 2px 0; background: linear-gradient(90deg, color-mix(in srgb, var(--tone) 75%, var(--surface-canvas)), transparent); }
+.rt-bar:hover .rt-fill, .rt-bar:focus-visible .rt-fill { background: var(--tone); }
+.rt-bar:focus-visible { outline-offset: 2px; border-radius: 4px; }
+.rt-tag.rt-lead { display: flex; align-items: center; gap: 6px; overflow: visible; color: var(--ink); }
+/* Pinned at the left edge, its backing covers the line up to the edge, so the bar reads as running on behind it. */
+.rt-tag.rt-pinned::before { left: -8px; }
+.rt-icon { display: flex; flex-shrink: 0; }
+.rt-icon svg { width: 13px; height: 13px; }
+.rt-icon-blocked { color: color-mix(in srgb, var(--warn) 85%, var(--ink)); }
+.rt-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--text-sm); font-weight: 500; line-height: 20px; color: var(--ink); }
+
+/* "+N in progress": the rest, one press away. */
+.rt-more { position: absolute; z-index: 3; height: 20px; padding: 0 2px; border-radius: var(--radius-xs); color: var(--ink-faint); font-size: var(--text-xs); font-weight: 500; line-height: 20px; white-space: nowrap; transition: color var(--motion-fast) var(--ease-out); }
+.rt-more:hover, .rt-more[aria-expanded="true"] { color: var(--ink); }
+
+/* An epic: a softly tinted box with a hairline border around its work, dashed
+   while it plans and green-edged when done. Its header: title, dates when it
+   has an end date, "0/3" and a short progress bar. Text in it sits on its color. */
+.rt-in-box { --rt-bg: var(--rt-surface); }
+.rt-epic { position: absolute; z-index: 1; border: 1px solid var(--rt-hairline); border-radius: var(--rt-radius); background: var(--rt-tint); pointer-events: none; }
+.rt-epic-planning { border-style: dashed; }
+.rt-epic-done { border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+.rt-epic-label { position: absolute; top: 6px; left: var(--head-x, 12px); display: inline-flex; align-items: center; gap: 8px; height: 20px; padding: 0 6px 0 0; border-radius: var(--radius-xs); background: var(--rt-surface); white-space: nowrap; pointer-events: auto; transition: opacity var(--motion-fast) var(--ease-out); }
+.rt-epic-title { font-size: var(--text-sm); font-weight: 600; line-height: 20px; color: var(--ink); }
+.rt-epic-dates, .rt-epic-count { font-size: var(--text-xs); font-weight: 500; color: var(--ink-faint); }
+.rt-epic-count { color: var(--ink-muted); }
+.rt-epic-prog { flex-shrink: 0; width: 32px; height: 4px; overflow: hidden; border-radius: 2px; background: rgb(var(--tone-rgb) / 0.12); }
+.rt-epic-prog i { display: block; height: 100%; background: var(--ok); }
+.rt-epic-label:hover .rt-epic-title, .rt-epic-label:focus-visible .rt-epic-title { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, var(--ink) 30%, transparent); }
+.rt-epic-label svg { width: 12px; height: 12px; color: var(--ok); }
+/* Where it doesn't fit, the header drops its dates and bar. With the box off screen, a compact header at the edge points to it. */
+.rt-epic-short .rt-epic-dates, .rt-epic-short .rt-epic-prog { display: none; }
+.rt-epic-label[data-side] { padding: 0 6px; box-shadow: inset 0 0 0 1px var(--rt-hairline); }
+.rt-epic-label[data-side="before"]::before { content: '←'; font-size: var(--text-xs); color: var(--ink-faint); }
+.rt-epic-label[data-side="after"]::after { content: '→'; font-size: var(--text-xs); color: var(--ink-faint); }
+
+/* ---------- cards and lists: the same few lines for every task, epic and milestone ---------- */
+.epic-tooltip { position: fixed; z-index: 94; width: 340px; max-width: calc(100vw - 16px); max-height: min(420px, calc(100dvh - 16px)); overflow: auto; padding: 16px; border: 1px solid var(--rt-hairline); border-radius: var(--rt-radius); background: var(--rt-surface); box-shadow: var(--shadow-modal); color: var(--ink); overflow-wrap: anywhere; }
+.epic-tip-title { font-size: var(--text-body); font-weight: 600; line-height: 1.4; }
+.epic-tip-track { margin-top: 4px; font-size: var(--text-sm); color: var(--ink-muted); }
+.epic-tip-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; margin: 14px 0 0; }
+.epic-tip-facts dt { margin-bottom: 3px; font-size: var(--text-xs); color: var(--ink-ghost); }
+.epic-tip-facts dd { margin: 0; font-size: var(--text-label); font-variant-numeric: tabular-nums; }
+.epic-tip-description { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); font-size: var(--text-label); line-height: 1.5; white-space: pre-wrap; }
+.epic-tooltip.rt-tip { width: 280px; padding: 12px 14px; }
+.rt-tip-status { display: flex; align-items: center; gap: 6px; font-size: var(--text-xs); font-weight: 500; line-height: 20px; color: var(--ink-muted); }
+.rt-tip-title { margin: 2px 0 4px; font-size: var(--text-sm); font-weight: 600; line-height: 20px; color: var(--ink); }
+.rt-tip-line { font-size: var(--text-xs); line-height: 20px; color: var(--ink-muted); }
+.rt-tip-late { color: var(--err); }
+.epic-tooltip.rt-pop { width: 440px; padding: 8px; }
+.rt-pop-head { padding: 8px 8px 4px; font-size: var(--text-xs); font-weight: 500; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.rt-pop-list { max-height: 320px; margin: 0; padding: 0; overflow: auto; list-style: none; }
+.rt-pop-row { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 6px 8px; border: 0; border-radius: var(--radius-sm); background: none; font: inherit; font-size: var(--text-sm); color: var(--ink-soft); text-align: left; cursor: pointer; }
+.rt-pop-row:hover, .rt-pop-row:focus-visible { background: var(--fill-hover); color: var(--ink); }
+.rt-pop-row:focus-visible { outline-offset: -2px; }
+.rt-pop-row .tid { width: auto; min-width: 56px; }
+.rt-pop-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rt-pop-when { flex-shrink: 0; min-width: 56px; font-size: var(--text-xs); text-align: right; color: var(--ink-faint); }
+.rt-pop-who { flex-shrink: 0; width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); color: var(--ink-faint); }
+.rt-pop-when.rt-late-text { color: var(--err); }
+
+/* ---------- phones and narrow windows: each track's head sits above its lane ---------- */
+.rt-stacked .lane { flex-direction: column; }
+.rt-stacked .lane-head { position: sticky; left: 0; padding: 8px 16px 0; border-right: 0; }
+.rt-stacked .lane-title-row { height: 32px; }
+/* The grip and menu are 32 px targets, and titles wrap to two lines rather than shorten. */
+.rt-stacked .head-ctl { opacity: 1; }
+.rt-stacked .head-ctl .grip, .rt-stacked .head-ctl .kebab { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; }
+.rt-stacked .rt-tag.rt-lead { top: -6px; height: 32px; }
+.rt-stacked .rt-lead .rt-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; line-height: 14px; overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .epic-tooltip.rt-pop { width: min(440px, calc(100vw - 16px)); }
 }
+@media (hover: none) {
+  .head-ctl { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rt-dot, .rt-fill, .rt-count, .rt-tag, .rt-more, .rt-epic-label, .head-ctl, .ms-label, .rm-month, .rm-week { transition: none; }
+}
+
 /* The tooltip for data-tip details: hover, keyboard focus and tap all reach it. */
 .app-tip { position:fixed;z-index:150;max-width:min(320px,calc(100vw - 16px));padding:6px 9px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);background:var(--surface-raised);box-shadow:var(--shadow-modal);color:var(--ink);font-family:var(--font-sans);font-size:var(--text-sm);line-height:1.45;white-space:pre-line;overflow-wrap:anywhere;animation:fade-in var(--motion-fast) var(--ease-out); }
-.epic-tooltip { position:fixed;z-index:94;width:340px;max-width:calc(100vw - 16px);max-height:min(420px,calc(100dvh - 16px));overflow:auto;padding:16px;border:1px solid var(--line-strong);border-radius:14px;background:var(--surface-glass);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);box-shadow:var(--shadow-modal);color:var(--ink);overflow-wrap:anywhere; }
-.epic-tip-title { font-size:var(--text-body);font-weight:600;line-height:1.4; }
-.epic-tip-track { margin-top:4px;font-size:var(--text-sm);color:var(--ink-muted); }
-.epic-tip-facts { display:grid;grid-template-columns:1fr 1fr;gap:12px 20px;margin:14px 0 0; }
-.epic-tip-facts dt { font-size:var(--text-xs);color:var(--ink-ghost);margin-bottom:3px; }
-.epic-tip-facts dd { margin:0;font-size:var(--text-label);font-variant-numeric:tabular-nums; }
-.epic-tip-description { margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:var(--text-label);line-height:1.5;white-space:pre-wrap; }
-
-/* Neutral goal material: illumination on dark, a defined edge on light. */
-:root {
- --goal-surface:linear-gradient(135deg,#424242,#292929);
- --goal-border:#ffffff38;
- --goal-shadow:inset 0 1px 0 #ffffff30,0 3px 14px #0003;
- --goal-diamond:linear-gradient(135deg,#fff,#d1d1d1 48%,#858585);
- --goal-diamond-border:#eee;
- --goal-diamond-shadow:0 0 8px #ffffff40;
- --goal-past-surface:linear-gradient(135deg,#2d2d2d,#252525);
- --goal-past-diamond:linear-gradient(135deg,#aaa,#6d6d6d);
-}
-:root[data-theme=light] {
- --goal-surface:#fff;
- --goal-border:#b8b8b8;
- --goal-shadow:0 2px 5px #0000000d;
- --goal-diamond:#282828;
- --goal-diamond-border:#282828;
- --goal-diamond-shadow:0 0 5px #28282880,0 0 13px #28282859,0 0 22px #2828282e;
- --goal-past-surface:#f8f8f8;
- --goal-past-diamond:#b8b8b8;
-}
-/* Axis connectors and canvas lines meet flush; rounded end caps create a bead at the grid seam. */
-.ms-line {position:absolute;z-index:1;pointer-events:none;width:4px;opacity:1;border-radius:0;background:#e4e4e4;transform:translateX(-50%);box-shadow:0 0 5px #ffffff50;filter:none}
-.ms-line::before {content:'';position:absolute;inset:0 -9px;background:#ffffff45;filter:blur(7px);pointer-events:none}
-.ms-line.past {background:#929292;box-shadow:none;opacity:.7}
-.ms-line.past::before {opacity:.35}
-:root[data-theme=light] .ms-line {background:transparent;box-shadow:none}
-:root[data-theme=light] .ms-line::before {inset:0 -12px;background:#28282866;filter:blur(8px)}
-:root[data-theme=light] .ms-line::after {content:'';position:absolute;inset:0;border-radius:inherit;background:#282828;box-shadow:0 0 5px #28282873,0 0 12px #28282833;pointer-events:none}
-:root[data-theme=light] .ms-line.past::after {background:#bcbcbc;box-shadow:none}
-/* A milestone's line in the axis ends at the axis line, glow included, so none of it shows on the rail below. */
-.goal-connector {clip-path:inset(-40px -40px 0)}
-.ms-label {position:absolute;display:flex;align-items:center;z-index:2;cursor:pointer;font-family:var(--font-sans);text-align:left;white-space:nowrap;top:32px;transform:translateX(-50%);margin:0;padding:8px 12px;gap:10px;border-radius:12px;border:1px solid var(--goal-border);background:var(--goal-surface);box-shadow:var(--goal-shadow);height:54px;min-height:54px}
-.ms-label .ms-diamond {width:14px;height:14px;border:1px solid var(--goal-diamond-border);background:var(--goal-diamond);box-shadow:var(--goal-diamond-shadow);border-radius:3px}
-.ms-label .txt {font-size:14px;font-weight:650;color:var(--ink);display:flex;flex-direction:column;gap:2px;line-height:18px}
-.goal-date {font-size:12px;font-weight:400;color:var(--ink-muted);line-height:15px}
-.ms-label.past {border-color:var(--line-strong);background:var(--goal-past-surface);box-shadow:none}
-.ms-label.past .txt {color:var(--ink-muted)}
-.ms-label.past .goal-date {color:var(--ink-ghost)}
-.ms-label.past .ms-diamond {border-color:var(--ink-ghost);background:var(--goal-past-diamond);box-shadow:none}
-/* Put the visual emphasis on the destination, keeping its date precisely anchored. */
-.ms-label:not(.past) {padding:8px 15px;gap:12px;border-color:rgb(var(--tone-rgb) / .28);box-shadow:var(--goal-shadow),0 0 20px rgb(var(--tone-rgb) / .035)}
-.ms-label:not(.past) .goal-name {font-size:16px;line-height:20px;font-weight:650}
-.ms-label:not(.past) .ms-diamond {width:18px;height:18px}
-
-.ms-label .txt {min-width:0}
-.ms-label .goal-name, .ms-label .goal-date {overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ms-label:hover {filter:brightness(1.06)}
-div.ms-label {cursor:default}
-.ms-diamond {width:7px;height:7px;border:1.5px solid var(--ink-muted);transform:rotate(45deg);flex-shrink:0}
-.today-line {position:absolute;width:1px;background:var(--ink-ghost);opacity:.55;z-index:1;pointer-events:none}
-.today-pill {line-height:16px;position:absolute;transform:translateX(-50%);padding:1px 6px;background:var(--surface-control);border:1px solid var(--line-strong);border-radius:5px;font-family:var(--font-sans);font-size:var(--text-xs);font-weight:500;color:var(--ink-muted);z-index:7}
-
-.rm-track-head { display:flex;align-items:center;padding:0 16px; }
-.rm-track-title { font-size:var(--text-label);font-weight:500;color:var(--ink-muted); }
-
 
 /* ---------- board ---------- */
 .board { --board-column-gap:8px; width: 100%; max-width: var(--board-width); margin-inline:auto; flex: 1; min-height: 0; display: flex; gap: var(--board-column-gap); padding: 20px 24px; overflow-x: auto; }
@@ -709,17 +786,11 @@ div.ms-label {cursor:default}
   .col { scroll-snap-align: start; }
   .peek { width: min(420px, 100vw); }
   .auth-card { width: calc(100vw - 32px); max-width: 360px; }
-  .lane-head { padding: 12px 10px; }
-  .lane-head .name { font-size: var(--text-label); }
-  /* The rail is narrow here: the grip and ⋮ get their own row above the
-     name, instead of covering the end of a long name in a short lane. */
-  .head-ctl { position: static; order: -1; align-self: flex-end; margin: -6px -6px -6px 0; }
-  .lane-head:has(.head-ctl) .name { padding-right: 0; }
 }
 /* touch-primary devices (phones, wall boards): no hover exists, so nothing may depend on it */
 @media (hover: none) {
   .grip, .kebab, .row-x { opacity: 0.8; }
-  .bar:hover, .card:hover, .btn:hover { transform: none; filter: none; }
+  .card:hover, .btn:hover { transform: none; filter: none; }
 }
 
 /* ---------- settings ---------- */
@@ -758,8 +829,8 @@ div.ms-label {cursor:default}
 
 @media (prefers-reduced-motion: reduce) {
   html::before, body::before { animation: none; }
-  .bar, .card, .btn, .nav-item { transition: none; }
-  .bar:hover, .card:hover, .btn:hover { transform: none; }
+  .card, .btn, .nav-item { transition: none; }
+  .card:hover, .btn:hover { transform: none; }
 }
 
 /* ---------- shared visual refinements ---------- */
@@ -812,7 +883,6 @@ div.ms-label {cursor:default}
 .auth-wrap { overflow-y: auto; padding: 16px; }
 .auth-card { flex-shrink: 0; max-height: calc(100dvh - 32px); overflow-y: auto; }
 .menu { max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow-y: auto; }
-.lane-head .name, .lane-head .sub { overflow-wrap: anywhere; }
 @container (max-width: 640px) {
   .member-access-row { align-items: flex-start; flex-wrap: wrap; }
   .member-person { width: 100%; }
@@ -897,11 +967,6 @@ div.ms-label {cursor:default}
   #app.rail .project-identity { overflow:visible;justify-content:center; }
 }
 
-.roadmap-meta { display:flex;align-items:center;gap:16px;flex-shrink:0;font-size:var(--text-sm);color:var(--ink-muted);white-space:nowrap;line-height:18px; }
-.roadmap-structure-stats { display:inline-flex;align-items:center;gap:16px; }
-.roadmap-stat { display:inline-flex;align-items:baseline;gap:6px; }
-.roadmap-stat strong { color:var(--ink);font-size:var(--text-label);font-weight:500;font-variant-numeric:tabular-nums; }
-.roadmap-stat .skeleton { display:inline-block;width:16px;height:12px;border-radius:var(--radius-xs); }
 @media (max-width:900px) {
   .roadmap-meta { display:none; }
 }
