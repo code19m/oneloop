@@ -314,7 +314,7 @@ test('a count whose tasks the lanes hold lists them at once, and a list that fai
   delete d.defaultView.DATA.roadmap.marks['bir-055'];
   d.defaultView.App.refreshRoadmap();
   const blank = lane(d, 't2').querySelector('.rt-done[data-list]');
-  assert.equal(blank.getAttribute('aria-label'), '1 done task, Sep 18');
+  assert.equal(blank.getAttribute('aria-label'), '1 done task, Sep 18, loading');
   blank.click();
   await tick();
   assert.equal(d.querySelector('#roadmap-list .rt-pop-note').textContent, 'Couldn’t load these tasks.');
@@ -584,8 +584,8 @@ test('a view that reaches before the days the lanes hold reads only the days nex
   await settle();
   const [read, ...others] = asked;
   assert.deepEqual(others, []);
-  assert.deepEqual([read.projectId, read.to, read.marks], ['p1', '2026-09-09', 400], 'up to the day before the ones held');
-  assert(read.from < read.to && read.anchor > read.to, 'the days the view shows, with some to spare, and the task of a day nearest the view first');
+  assert.deepEqual([read.projectId, read.to, read.marks], ['p1', '2026-09-09', undefined], 'up to the day before the ones held, as counts alone');
+  assert(read.from < read.to, 'the days the lanes draw');
   await scrollBy(t, -50);
   assert.equal(asked.length, 1, 'the read that failed waits for the next read of the Roadmap');
   assert.match(t.d.getElementById('toast-region').textContent, /could not be completed|offline/i);
@@ -598,11 +598,11 @@ test('a view that reaches past the days the lanes hold reads the later days, wit
 });
 
 test('a view wholly outside the days the lanes hold reads the days around it in their place', async () => {
-  const t = boot('roadmap/p1?scale=months', { prepare: D => { D.roadmap.window = { from: '2027-01-01', to: '2027-01-26' }; } });
+  const t = boot('roadmap/p1?scale=months', { prepare: D => { D.roadmap.window = { from: '2027-03-01', to: '2027-03-26' }; } });
   await settle();
   const reads = dayReads(t);
   assert.equal(reads.length, 1);
-  assert(reads[0].from <= '2026-09-28' && '2026-09-28' <= reads[0].to && reads[0].to < '2026-12-31', JSON.stringify(reads[0]));
+  assert(reads[0].from <= '2026-09-28' && '2026-09-28' <= reads[0].to && reads[0].to < '2027-02-28', JSON.stringify(reads[0]));
 });
 
 test('a read still loading is asked for once as the view scrolls, and says once when it fails', async () => {
@@ -616,15 +616,21 @@ test('a read still loading is asked for once as the view scrolls, and says once 
   assert.equal(t.d.querySelectorAll('#toast-region .toast').length, 1, t.d.getElementById('toast-region').innerHTML);
 });
 
-test('a day with one task the lanes count but don\'t hold shows a blank mark, and the view reads the tasks of such days it shows', async () => {
-  const t = boot('roadmap/p1?scale=months', { prepare: D => { delete D.roadmap.marks['bir-055']; delete D.roadmap.marks['bir-052']; } });
+test('a day with one task the lanes don\'t hold yet shows a mark that says so, with a bar for a plan\'s title, and the view reads the tasks of the days it draws', async () => {
+  const t = boot('roadmap/p1?scale=months', { prepare: D => { for (const id of ['bir-055', 'bir-052', 'bir-076']) delete D.roadmap.marks[id]; } });
   await settle();
-  const web = lane(t.d, 't2');
-  assert.equal(web.querySelectorAll('.rt-done[data-list]:not([data-task])').length, 2);
-  assert.deepEqual(dayReads(t).map(({ from, to, marks }) => [from, to, marks]), [['2026-09-10', '2026-09-18', 400]]);
+  const web = lane(t.d, 't2'), plan = lane(t.d, 't4').querySelector('.rt-planned.rt-pending');
+  assert.equal(web.querySelectorAll('.rt-done.rt-pending[data-list]:not([data-task])').length, 2);
+  assert.deepEqual([plan.getAttribute('aria-label'), !!plan.querySelector('.rt-tag-pending')], ['1 planned task, due Oct 20, loading', true]);
+  // One read for every day the lanes draw with one task, with how far apart days must be to be drawn on their own.
+  const [read, ...others] = dayReads(t);
+  assert.deepEqual([read.from <= '2026-09-10', read.to >= '2026-10-20', read.marks, Math.round(read.apart * 100), others], [true, true, 400, Math.round(2200 / 8.5), []]);
   // Those days' tasks were read: a scroll asks for them no more, even if the read gave none.
   for (const by of [10, -10]) await scrollBy(t, by);
   assert.equal(dayReads(t).length, 1);
+  // At Weeks more days are drawn on their own: their tasks are read again.
+  t.A.setRoadmapScale('weeks'); await settle();
+  assert.equal(dayReads(t).length, 2);
 });
 
 test('once a read of days lands, the view reads what it still lacks without a scroll', async () => {
@@ -634,7 +640,7 @@ test('once a read of days lands, the view reads what it still lacks without a sc
   const roadmapDays = async (_projectId, days) => { asked.push({ ...days }); if (days.from < data.roadmap.window.from) data.roadmap.window.from = days.from; return { stale: false }; };
   boot('roadmap/p1?scale=months', { reads: { roadmapDays }, prepare: D => { data = D; heldFromSep10(D); delete D.roadmap.marks['bir-055']; } });
   await settle(); await settle();
-  assert.deepEqual(asked.map(({ from, to }) => [from < '2026-09-10' ? 'before' : from, to]), [['before', '2026-09-09'], ['2026-09-18', '2026-09-18']]);
+  assert.deepEqual(asked.map(({ from, to }) => [from < '2026-09-10' ? 'before' : 'tasks', to < '2026-09-10' ? to : to >= '2026-09-18']), [['before', '2026-09-09'], ['tasks', true]]);
 });
 
 test('days a change made elsewhere overtook are asked for again', async () => {

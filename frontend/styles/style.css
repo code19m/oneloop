@@ -489,6 +489,9 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 /* Text on a lane sits on its own backing, so lines pass behind it, never through it. */
 .rt-tag { position: absolute; top: 0; z-index: 0; height: 20px; overflow: hidden; font-size: var(--text-sm); font-weight: 500; line-height: 20px; color: var(--ink-soft); white-space: nowrap; text-overflow: ellipsis; transition: opacity var(--motion-fast) var(--ease-out); }
 .rt-tag::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: 4px; background: var(--rt-bg); }
+/* A plan's title still loading: a short bar in its place. */
+.rt-tag-pending::after { content: ''; position: absolute; top: 6px; left: 0; right: 0; height: 8px; border-radius: 4px; background: var(--fill-hover); animation: pulse 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .rt-tag-pending::after { animation: none; } }
 .rt-planned:hover .rt-tag, .rt-planned:focus-visible .rt-tag { color: var(--ink); }
 .rt-late .rt-tag { color: var(--err); }
 

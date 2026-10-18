@@ -23,7 +23,7 @@ const PAD = 8, SECTION_GAP = 8;
 const BOX_PAD = 12, BOX_FOOT = 4;
 const DOT = 6, RING = 12, HIT = 20, BAR_HIT = 20;
 /** Titles stop at this width; a title shortened below LABEL_MIN is left out (its card has it). */
-const TITLE_MAX = 240, LABEL_MIN = 100;
+const TITLE_MAX = 240, LABEL_MIN = 100, PENDING_TITLE = 64;
 /** Bars a section shows before "+N in progress". */
 const MAX_BARS = 3;
 /** A bar is never shorter than this; without a deadline it fades out over OPEN_FADE; a late end is at least LATE_MIN. */
@@ -193,12 +193,17 @@ function countSpan(items) {
   return first === last ? humanShort(d(first)) : `${humanShort(d(first))} – ${humanShort(d(last))}`;
 }
 
+/** How close, in pixels, two marks of `size` may be before they merge. */
+const mergeGap = (size) => Math.max(size, 18) + 4;
+/** How many days apart two days' marks must be at `ppd` to be drawn on their own, done or planned. */
+export const markApart = (ppd) => Math.max(mergeGap(DOT), mergeGap(RING)) / ppd;
+
 /** Marks closer than they can be drawn merge into a count: one small number, as wide as its digits, in the middle of what it holds. */
 function cluster(items, ppd, size) {
   const groups = [];
   for (const item of items.slice().sort((a, b) => a.at - b.at)) {
     const x = item.at * ppd, group = groups[groups.length - 1];
-    if (group && x - group.last < Math.max(size, 18) + 4) { group.items.push(item); group.count += item.count; group.last = x; continue; }
+    if (group && x - group.last < mergeGap(size)) { group.items.push(item); group.count += item.count; group.last = x; continue; }
     groups.push({ items: [item], count: item.count, first: x, last: x });
   }
   for (const group of groups) {
@@ -300,12 +305,14 @@ function layoutSection(section, ppd, now) {
   }
   spread(marks);
   const line = marks.length > 0, first = line ? 1 : 0;
-  // A dated plan's title, where it fits before the next mark on the line.
+  // A dated plan's title, where it fits before the next mark on the line; for a plan whose task is still
+  // loading, a short bar in its place.
   const onLine = marks.slice().sort((a, b) => a.box[0] - b.box[0]);
   onLine.forEach((mark, index) => {
-    if (mark.type !== 'planned') return;
+    const pending = mark.type === 'plannedCount' && mark.group.count === 1;
+    if (mark.type !== 'planned' && !pending) return;
     const room = (onLine[index + 1]?.box[0] ?? Infinity) - 8 - (mark.box[1] + 8);
-    const width = titleWidth(mark.item.task);
+    const width = pending ? PENDING_TITLE : titleWidth(mark.item.task);
     if (room >= Math.min(width, LABEL_MIN)) mark.title = Math.min(width, room);
   });
   // Work in progress: a row each.
@@ -414,15 +421,17 @@ function markHtml(laid, mark) {
     const late = !done && items.some((item) => item.late), blocked = !done && items.some((item) => item.blocked);
     const list = `data-list="${esc(done ? 'done' : 'plans')}" data-section="${esc(laid.section.key)}" data-from="${esc(items[0].day)}" data-to="${esc(items[items.length - 1].day)}" data-count="${esc(String(count))}"${held}`;
     const spoken = count === 1 ? (done ? `1 done task, ${span}` : `1 planned task, due ${span}`) : `${count} ${done ? 'done' : 'planned'} tasks, ${span}`;
-    const name = `${count} ${done ? 'done' : 'due'} · ${span}`, opens = `data-span="${esc(name)}" data-nav="${esc(key)}" ${TAB} aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(spoken)}"`;
-    // One task the lanes don't hold yet: its dot or ring, which lists it.
+    const name = `${count} ${done ? 'done' : 'due'} · ${span}`, opens = (label) => `data-span="${esc(name)}" data-nav="${esc(key)}" ${TAB} aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(label)}"`;
+    // One task the lanes don't hold yet: its dot or ring, with a bar where a plan's title goes, until it
+    // loads; meanwhile it lists its task.
     if (count === 1) {
-      const cls = ['rt-mark', done ? 'rt-done' : 'rt-planned', blocked ? 'rt-blocked' : '', late ? 'rt-late' : ''].filter(Boolean).join(' ') + boxed;
+      const cls = ['rt-mark', 'rt-pending', done ? 'rt-done' : 'rt-planned', blocked ? 'rt-blocked' : '', late ? 'rt-late' : ''].filter(Boolean).join(' ') + boxed;
       const face = done ? '<span class="rt-dot" aria-hidden="true"></span>' : late ? lateIcon(RING) : blocked ? BLOCKED_SVG : RING_SVG;
-      return `<button type="button" class="${cls}" ${list} ${opens} style="left:${px(mark.x - HIT / 2)};top:${px(y - HIT / 2)}">${face}</button>`;
+      const title = mark.title ? `<span class="rt-tag rt-tag-pending" data-tag="${esc(numbers(extent[1] + 8, extent[1] + 8 + mark.title, mark.x))}" data-least="${esc(numbers(mark.title))}" style="left:${px(extent[1] + 8 - (mark.x - HIT / 2))};width:${px(mark.title)}" aria-hidden="true"></span>` : '';
+      return `<button type="button" class="${cls}" ${list} ${opens(`${spoken}, loading`)} style="left:${px(mark.x - HIT / 2)};top:${px(y - HIT / 2)}">${face}${title}</button>`;
     }
     const tone = late ? ' rt-late' : blocked ? ' rt-blocked' : '';
-    return `<button type="button" class="rt-count ${done ? 'rt-count-done' : 'rt-count-planned'}${tone}${boxed}" ${list} ${opens} style="left:${px(extent[0])};top:${px(y - 9)};width:${px(extent[1] - extent[0])}">${count}</button>`;
+    return `<button type="button" class="rt-count ${done ? 'rt-count-done' : 'rt-count-planned'}${tone}${boxed}" ${list} ${opens(spoken)} style="left:${px(extent[0])};top:${px(y - 9)};width:${px(extent[1] - extent[0])}">${count}</button>`;
   }
   if (mark.type === 'more') {
     // The rest of the work in progress, past the bars: listed from the lanes when they hold it all, else read.

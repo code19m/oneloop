@@ -265,7 +265,7 @@ export const NAMED_TASKS_LIMIT = 50;
  * @typedef {{planning:number,progress:number,review:number,done:number}} StatusCounts
  * @typedef {{done:number,plans:number,blocked:number}} DayCounts
  * @typedef {{internalId:string,id:string,projectId:string,trackId:string,epicId:string|null,title:string,state:string,deadline:string|null,startedAt:number|null,completedAt:number|null,assignees:string[],block:{}|null,day:string|null}} RoadmapMark
- * @typedef {{from:string,to:string,anchor?:string}} RoadmapDaysWanted
+ * @typedef {{from:string,to:string,anchor?:string,apart?:number}} RoadmapDaysWanted
  * @typedef {{projectId:string,window:{from:string,to:string},shown:RoadmapDaysWanted|null,sections:Record<string,StatusCounts>,trackCounts:Record<string,StatusCounts>,overdue:number,firstDay:string|null,lastDay:string|null,open:string[],late:RoadmapMark[],days:Record<string,Record<string,DayCounts>>,marks:Record<string,RoadmapMark>}} RoadmapLanes
  * What the Roadmap's lanes draw and count. `open` is the work in progress
  * they draw, which `data.tasks` holds. `days` counts each section's done

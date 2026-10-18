@@ -22,7 +22,7 @@ import {
 import { announce } from './toasts.js';
 import {
   closeTimelineList, epicDated, epicStatus, focusTask, headFigure, lanePieces, laneDates, laneEntry, laneFocus, laneModels, refocus,
-  layoutLane, listAnchor, mountLanes, numbers, placeOfKey, roadmapLanes, roomAfterNow, setStyle, setTabStop, syncLaneEdges, textWidth,
+  layoutLane, listAnchor, markApart, mountLanes, numbers, placeOfKey, roadmapLanes, roomAfterNow, setStyle, setTabStop, syncLaneEdges, textWidth,
 } from './timeline.js';
 
 // ---------- roadmap geometry ----------
@@ -934,37 +934,38 @@ function windowScroll(sc, { from, to }, ppd, { reserve, ahead }, now) {
  * Roadmap, so a scroll on a failing network sends no stream of reads.
  */
 const askedReads = new WeakMap();
-/** The days loaded beyond each edge of the view, at most, so a scroll seldom shows days still loading. */
-const SPARE_DAYS = 60;
 /** The most days one read covers, and the most tasks of days with one it gives. */
 const READ_DAYS = 400, READ_MARKS = 400;
 
 /**
- * Load what the view, with some days to spare, shows and the lanes don't
- * hold yet, in place and one read at a time: first the days they lack, as
- * counts, next to the days they hold, or in their place after a jump; then
- * the tasks the view draws as single marks, on days with one task. The days
- * the view shows are the ones reads of the lanes ask for again.
+ * Load what the lanes draw around the view and don't hold yet, in place and
+ * one read at a time: first the days they lack, as counts, next to the days
+ * they hold, or in their place after a jump; then the tasks of the days they
+ * draw on their own, a stretch at a time. The days the view shows are the
+ * ones reads of the lanes ask for again.
  */
 function loadMore(view) {
   const lanes = roadmapLanes();
   if (!lanes || !view.model.ready || !view.sc.isConnected) return;
-  const { sc, model, ppd } = view, room = (sc.clientWidth - RAIL) / ppd, spare = Math.min(room / 2, SPARE_DAYS);
+  const { sc, model, ppd, drawn } = view, room = (sc.clientWidth - RAIL) / ppd, apart = markApart(ppd);
   const left = sc.scrollLeft / ppd, right = left + room;
   const date = (day) => iso(new Date(+model.start + day * DAY)), offset = (key) => Math.round((d(key) - model.start) / DAY);
-  // Days outside the timeline's span hold no work.
-  const from = Math.max(0, Math.floor(left - spare)), to = Math.max(from, Math.min(model.span, Math.ceil(right + spare)));
+  // The days drawn, and the few after them that can merge their marks; days outside the timeline's span hold no work.
+  const near = Math.ceil(apart) + 1;
+  const from = Math.max(0, Math.floor(drawn.from / ppd) - near), to = Math.max(from, Math.min(model.span, Math.ceil(drawn.to / ppd) + near));
   const middle = Math.round((left + right) / 2), anchor = date(middle);
-  // What a read of the lanes asks for again: these days, as many as one read covers.
-  lanes.shown = { from: date(Math.max(from, middle - READ_DAYS / 2)), to: date(Math.min(to, middle + READ_DAYS / 2 - 1)), anchor };
+  // What a read of the lanes asks for again: these days, as many as one read covers, with the tasks of
+  // the days drawn on their own at this zoom.
+  lanes.shown = { from: date(Math.max(from, middle - READ_DAYS / 2)), to: date(Math.min(to, middle + READ_DAYS / 2 - 1)), anchor, apart };
   const asked = askedReads.get(lanes) ?? { busy: false, days: new Set(), marked: [] };
   askedReads.set(lanes, asked);
   if (asked.busy) return;
-  const ask = (first, last, marks = false) => {
-    const days = { from: date(first), to: date(last), anchor, marks: READ_MARKS }, key = `${days.from}/${days.to}`;
+  // A read of days gives their counts; one of a stretch's tasks, the tasks of the days drawn on their own there.
+  const ask = (first, last, marks = null) => {
+    const days = { from: date(first), to: date(last), ...(marks ? { anchor: marks, marks: READ_MARKS, apart } : {}) }, key = `${days.from}/${days.to}`;
     if (!marks && asked.days.has(key)) return;
     asked.busy = true;
-    const range = [days.from, days.to];
+    const range = { from: days.from, to: days.to, apart };
     if (marks) asked.marked.push(range); else asked.days.add(key);
     // Once it lands, the view goes on with what it still lacks; days a change made elsewhere overtook come again.
     runtime().roadmapDays(days).then((result) => {
@@ -985,11 +986,40 @@ function loadMore(view) {
   const after = to > held.to ? [held.to + 1, Math.min(to, held.to + READ_DAYS)] : null;
   const next = before && after ? (held.from - left > right - held.to ? before : after) : before ?? after;
   if (next) { ask(...next); return; }
-  // Single tasks the view draws whose task the lanes don't hold, on days whose tasks weren't read yet.
-  const days = view.layout.lanes.flatMap((lane) => lane.sections).flatMap((laid) => laid.marks)
-    .filter((mark) => mark.group?.count === 1 && !mark.group.items[0].task && mark.x >= left * ppd && mark.x <= right * ppd)
-    .map((mark) => mark.group.items[0].day).filter((day) => !asked.marked.some(([first, last]) => first <= day && day <= last)).sort();
-  if (days.length) ask(offset(days[0]), offset(days[days.length - 1]), true);
+  const stretch = blankStretch(view, asked.marked, apart);
+  if (stretch) ask(offset(stretch.from), offset(stretch.to), stretch.near);
+}
+
+/**
+ * The next days to read the tasks of: the drawn days with one task that the
+ * lanes don't hold yet, from the one nearest the view's middle outwards, as
+ * long as the days drawn on their own there are no more than one read gives.
+ * Days already read at this zoom or a closer one are done.
+ */
+function blankStretch(view, marked, apart) {
+  const { drawn, sc } = view, middle = sc.scrollLeft + viewRoom(view) / 2;
+  const singles = view.layout.lanes.flatMap((lane) => lane.sections).flatMap((laid) => laid.marks)
+    .filter((mark) => (mark.type === 'done' || mark.type === 'planned' || mark.group?.count === 1) && mark.x >= drawn.from && mark.x <= drawn.to)
+    .map((mark) => ({ day: (mark.item ?? mark.group.items[0]).day, x: mark.x, blank: !mark.item?.task && !mark.group.items[0].task }));
+  // Days read at this zoom, or a closer one, which draws more days on their own.
+  const clear = (from, to) => !marked.some((range) => range.apart <= apart * 1.001 && range.from <= to && range.to >= from);
+  const read = (day) => !clear(day, day);
+  const wanted = singles.filter((single) => single.blank && !read(single.day)).sort((a, b) => Math.abs(a.x - middle) - Math.abs(b.x - middle))[0];
+  if (!wanted) return null;
+  const perDay = new Map();
+  for (const { day } of singles) if (!read(day)) perDay.set(day, (perDay.get(day) ?? 0) + 1);
+  const days = [...perDay.keys()].sort(), away = (day) => Math.abs(d(day) - d(wanted.day));
+  let low = days.indexOf(wanted.day), high = low, total = perDay.get(wanted.day);
+  // Outwards over the days not read yet, up to the read ones on either side; a tenth to spare, for the few
+  // days the server counts as apart that the lanes draw merged.
+  const open = (index) => index >= 0 && index < days.length && clear(days[Math.min(index, low)], days[Math.max(index, high)]);
+  for (;;) {
+    const side = open(low - 1) && (!open(high + 1) || away(days[low - 1]) <= away(days[high + 1])) ? low - 1 : open(high + 1) ? high + 1 : -1;
+    if (side < 0 || total + perDay.get(days[side]) > READ_MARKS * 0.9) break;
+    total += perDay.get(days[side]);
+    if (side < low) low = side; else high = side;
+  }
+  return { from: days[low], to: days[high], near: wanted.day };
 }
 
 export function mountRoadmap() {
