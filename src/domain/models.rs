@@ -61,7 +61,6 @@ pub struct TrackView {
     pub id: String,
     pub project_id: String,
     pub name: String,
-    pub description: String,
     pub position: i64,
     pub revision: i64,
 }

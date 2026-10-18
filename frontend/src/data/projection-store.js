@@ -56,7 +56,7 @@ const millisecondsOrNull = (value) => secondsToMilliseconds(value) ?? null;
  */
 const FIELDS = {
   project: [['name'], ['taskPrefix', 'key'], ['taskPrefix'], ['earlierPrefixes', 'earlierPrefixes', (prefixes) => [...(prefixes ?? [])]]],
-  track: [['projectId'], ['name'], ['description', 'desc', text], ['position', 'order']],
+  track: [['projectId'], ['name'], ['position', 'order']],
   epic: [
     ['projectId'], ['trackId'], ['title'], ['description', 'desc', text], ['startDate', 'start'], ['endDate', 'end', orNull], ['state'], ['position', 'order'],
     // Only Roadmap reads carry the task counts.

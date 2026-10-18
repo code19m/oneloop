@@ -63,7 +63,6 @@ const NAME_MAX: usize = 60;
 const EPIC_TITLE_MAX: usize = 120;
 const TASK_TITLE_MAX: usize = 140;
 const EPIC_DESCRIPTION_MAX: usize = 2_000;
-const TRACK_DESCRIPTION_MAX: usize = 2_000;
 const POOL_DESCRIPTION_MAX: usize = 2_000;
 const BLOCK_REASON_MAX: usize = 500;
 const BLOCK_RESOLUTION_MAX: usize = 500;
@@ -518,7 +517,6 @@ const POOL_ITEM_SQL: &str = "SELECT project_id,scope,owner_user_id,title,descrip
 struct TrackRow {
     project_id: String,
     name: String,
-    description: String,
     position: i64,
     revision: i64,
 }
@@ -527,9 +525,8 @@ impl TrackRow {
         Ok(Self {
             project_id: row.get(0)?,
             name: row.get(1)?,
-            description: row.get(2)?,
-            position: row.get(3)?,
-            revision: row.get(4)?,
+            position: row.get(2)?,
+            revision: row.get(3)?,
         })
     }
 }

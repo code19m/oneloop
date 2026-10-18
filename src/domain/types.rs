@@ -229,18 +229,13 @@ pub struct MembershipDelete {
 pub struct TrackCreate {
     pub project_id: String,
     pub name: String,
-    #[serde(default)]
-    pub description: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TrackUpdate {
     pub track_id: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
+    pub name: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]

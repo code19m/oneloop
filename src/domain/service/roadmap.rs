@@ -11,29 +11,19 @@ pub(super) fn create_track(
 ) -> AppResult<Mutation> {
     require_project(tx, actor, &input.project_id, Need::Roadmap, false)?;
     let name = text::single_line(&input.name, "name", NAME_MAX)?;
-    let description = text::optional(&input.description, "description", TRACK_DESCRIPTION_MAX)?;
     let position: i64 = tx.query_row(NEXT_TRACK_POSITION_SQL, [&input.project_id], |row| {
         row.get(0)
     })?;
     let id = Uuid::now_v7().to_string();
     tx.execute(
-        "INSERT INTO tracks (id,project_id,name,description,position,created_by,created_at,\
-                     updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?7)",
-        params![
-            id,
-            input.project_id,
-            name,
-            description,
-            position,
-            actor.user_id,
-            now
-        ],
+        "INSERT INTO tracks (id,project_id,name,position,created_by,created_at,updated_at) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?6)",
+        params![id, input.project_id, name, position, actor.user_id, now],
     )?;
     let entity = Entity::Track(TrackView {
         id: id.clone(),
         project_id: input.project_id.clone(),
         name,
-        description,
         position,
         revision: 1,
     })
@@ -67,8 +57,7 @@ pub(super) fn update_track(
 ) -> AppResult<Mutation> {
     let before = tx
         .query_row(
-            "SELECT project_id,name,description,position,revision FROM tracks WHERE id=?1 AND \
-                     deleted_at IS NULL",
+            "SELECT project_id,name,position,revision FROM tracks WHERE id=?1 AND deleted_at IS NULL",
             [&input.track_id],
             TrackRow::from_row,
         )
@@ -76,23 +65,15 @@ pub(super) fn update_track(
         .ok_or(AppError::NotFound { resource: "track" })?;
     require_project(tx, actor, &before.project_id, Need::Roadmap, false)?;
     check_revision(expected, before.revision)?;
-    let name = input
-        .name
-        .as_deref()
-        .map(|v| text::single_line(v, "name", NAME_MAX))
-        .transpose()?
-        .unwrap_or(before.name.clone());
-    let description = input
-        .description
-        .as_deref()
-        .map(|v| text::optional(v, "description", TRACK_DESCRIPTION_MAX))
-        .transpose()?
-        .unwrap_or(before.description.clone());
-    if name == before.name && description == before.description {
+    let name = text::single_line(&input.name, "name", NAME_MAX)?;
+    if name == before.name {
         return Err(AppError::validation("payload", "no track fields changed"));
     }
     let revision = expected + 1;
-    tx.execute("UPDATE tracks SET name=?1,description=?2,updated_at=?3,revision=?4 WHERE id=?5 AND revision=?6",params![name,description,now,revision,input.track_id,expected])?;
+    tx.execute(
+        "UPDATE tracks SET name=?1,updated_at=?2,revision=?3 WHERE id=?4 AND revision=?5",
+        params![name, now, revision, input.track_id, expected],
+    )?;
     let event = record_activity_tx(
         tx,
         actor,
@@ -103,8 +84,8 @@ pub(super) fn update_track(
             task_id: None,
             event_type: "track.updated",
             field_key: None,
-            before: Some(json!({"name":before.name,"description":before.description})),
-            after: Some(json!({"name":name,"description":description})),
+            before: Some(json!({"name":before.name})),
+            after: Some(json!({"name":name})),
             metadata: json!({}),
             entity_revision: Some(revision),
         },
@@ -114,7 +95,6 @@ pub(super) fn update_track(
         id: input.track_id.clone(),
         project_id: before.project_id,
         name,
-        description,
         position: before.position,
         revision,
     })

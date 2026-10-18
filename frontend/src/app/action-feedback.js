@@ -34,8 +34,7 @@ export function commandIsUnchanged(operation, payload, entity) {
         && payload.manageBoard === permissions.has('manage_board');
     }
     case 'track.update':
-      return (!has('name') || payload.name === entity.name)
-        && (!has('description') || payload.description === (entity.desc ?? entity.description ?? ''));
+      return payload.name === entity.name;
     case 'track.reorder':
       return Number(payload.position) === Number(entity.order ?? entity.position);
     case 'epic.update':

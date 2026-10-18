@@ -218,7 +218,7 @@ and MCP replies include `"partial": true`.
 | --- | --- |
 | Project name | 60 characters |
 | Task prefix | 2 to 4 uppercase letters or digits, never reused |
-| Track | Name 60 characters, description 2,000 |
+| Track name | 60 characters |
 | Epic | Title 120 characters, description 2,000 |
 | Milestone | Title 60 characters, description 500 |
 | Task | Title 140 characters, description 4,000 |
