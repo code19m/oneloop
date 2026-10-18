@@ -554,6 +554,18 @@ test('a change made elsewhere while the Status, Track or Epic list is open shows
   }
 });
 
+test('a pick after a change made elsewhere builds on the revision the page shows, so it meets no false conflict', async () => {
+  for (const [key, label, operation] of [['tpState', 'In Review', 'task.move'], ['tpTrack', 'Mobile experience', 'task.update'], ['tpEpic', 'Search relevance', 'task.update']]) {
+    const t = changedElsewhere(), select = t.d.getElementById(`select-${key}`);
+    select.focus(); t.A.popSelect({ currentTarget: select, preventDefault() {} }, key);
+    t.change(['task'], { title: 'Renamed elsewhere' });
+    await waitFor(() => t.D.tasks.find(item => item.id === 'BIR-079').revision === 2, `the change arrives (${key})`);
+    t.d.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    pick(t, key, label);
+    assert.deepEqual([t.commands.at(-1).operation, t.commands.at(-1).expectedRevision], [operation, 2], key);
+  }
+});
+
 test('a description changed elsewhere shows at once while focus is elsewhere on the page, and once focus leaves its text', async () => {
   for (const hints of hintsOfAChange) {
     const t = changedElsewhere({ prepare: D => { D.tasks.find(item => item.id === 'BIR-079').desc = 'The first text'; } });

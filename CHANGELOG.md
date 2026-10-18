@@ -95,6 +95,9 @@ All notable changes to oneloop are recorded here. The format follows
 - On a task's page, a **Status** that couldn't be saved, such as while
   offline, now shows the saved status again. Before, it kept showing the
   status you chose until the page was drawn again.
+- On a task's page, choosing a **Status** after a change made elsewhere, such
+  as by a teammate, no longer says the task changed elsewhere when the page
+  already shows that change.
 - On the **Roadmap**, today's date no longer shows over **+ Track** when you
   scroll past today, as on a phone. Milestone lines and today's line no longer
   leave small marks on the column of track names either.

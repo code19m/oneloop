@@ -71,7 +71,11 @@ export function installTasks(ctx) {
     // Status shows the saved status again behind the dialog, which opens once
     // the Status menu has returned focus, so it takes focus and gives it back.
     if(field==='state'&&value==='done'&&item.block){app.refresh();queueMicrotask(()=>app.openModal('completeBlocked',item.id));return false;}
-    if(field==='state')return accepted(execute('task.move',{taskId:item.internalId,status:toWireStatus(value)},item,null,{reload:true,coalesce:true}).then((result)=>noteTaskSaved(result,item.id)));
+    // Status, Track and Epic show the task as it is now, also after a change
+    // made elsewhere, so a pick builds on that revision. Typed text builds on
+    // the revision the page had when the person started typing.
+    const shown=['state','trackId','epicId'].includes(field)?item.revision:undefined;
+    if(field==='state')return accepted(execute('task.move',{taskId:item.internalId,status:toWireStatus(value)},item,null,{reload:true,coalesce:true,expectedRevision:shown}).then((result)=>noteTaskSaved(result,item.id)));
     const names={title:'title',desc:'description',deadline:'deadline',trackId:'trackId',epicId:'epicId'};
     if(!names[field])return false;
     // No deadline and No epic are null.
@@ -95,7 +99,7 @@ export function installTasks(ctx) {
     // takes the task out of its epic, which the server does.
     const payload={taskId:item.internalId,[names[field]]:next,...(chosenEpic&&chosenEpic.trackId!==item.trackId?{trackId:chosenEpic.trackId}:{})};
     const control={desc:'#task-description',title:'.task-title-field textarea',trackId:'#select-tpTrack',epicId:'#select-tpEpic'}[field]??`[name="${field}"]`;
-    return accepted(execute('task.update',payload,item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>document.querySelector(control)}).then((result)=>noteTaskSaved(result,item.id)));
+    return accepted(execute('task.update',payload,item,null,{form,coalesce:true,expectedRevision:base??shown,draft,draftValue:next,conflictElement:()=>document.querySelector(control)}).then((result)=>noteTaskSaved(result,item.id)));
   }
   function retryDrafts(){
     for(const draft of [...drafts.values()]){
