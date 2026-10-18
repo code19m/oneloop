@@ -712,6 +712,38 @@ test('milestone cards a week apart don\'t overlap: the first ends at its line, t
   assert.deepEqual(cards.map(([, , className]) => className), ['ms-label rt-card rt-card-end', 'ms-label rt-card']);
 });
 
+test('milestones too close for two cards share one, which lists them on focus, and no card overlaps another', () => {
+  // The Reading festival is on Oct 22; a release the next day.
+  const t = boot('roadmap/p1?scale=months', { prepare: D => { D.milestones.push({ id: 'm3', projectId: 'p1', date: '2026-10-23', name: 'Release', desc: '', revision: 1 }); } });
+  const shared = t.d.querySelector('.rt-cards [data-milestones]');
+  assert.equal(shared.dataset.milestones, 'm2 m3');
+  assert.equal(shared.getAttribute('aria-label'), '2 milestones: Reading festival, Oct 22 · 24d away; Release, Oct 23 · 25d away');
+  assert.equal(t.d.querySelectorAll('.goal-connector').length, 3, 'each keeps its line');
+  const boxes = [...t.d.querySelectorAll('.rt-cards .ms-label:not(.rt-cut)')].map(card => [parseFloat(card.style.left), parseFloat(card.style.left) + parseFloat(card.style.width)]).sort((a, b) => a[0] - b[0]);
+  for (let index = 1; index < boxes.length; index++) assert(boxes[index - 1][1] + 8 <= boxes[index][0], JSON.stringify(boxes));
+  t.A.milestoneHover({ currentTarget: shared }, shared.dataset.milestones, true);
+  const tip = t.d.getElementById('milestone-tooltip');
+  assert(tip.textContent.includes('Reading festival') && tip.textContent.includes('Release'), tip.textContent);
+  // At Quarters, three in a week share one.
+  const q = boot('roadmap/p1?scale=quarters', { prepare: D => { for (const [id, date] of [['m3', '2026-10-26'], ['m4', '2026-10-28']]) D.milestones.push({ id, projectId: 'p1', date, name: id, desc: '', revision: 1 }); } });
+  assert.equal(q.d.querySelector('.rt-cards [data-milestones]').dataset.milestones, 'm2 m3 m4');
+});
+
+test('a milestone card at an edge of the view stays whole: at the right edge it points on, at the left its diamond moves inside', async () => {
+  const t = boot('roadmap/p1?scale=months');
+  const sc = t.d.getElementById('rmScroll'), card = () => t.d.querySelector('[data-milestone="m2"]');
+  const x = JSON.parse(`[${card().dataset.flag}]`)[0], room = 1000 - RAIL;
+  const scrollTo = async left => { sc.scrollLeft = left; sc.dispatchEvent(new t.w.Event('scroll')); await nextFrame(t.w); };
+  // Its line 10 px inside the right edge.
+  await scrollTo(x - room + 10);
+  assert(card().classList.contains('rt-card-edge'), card().className);
+  assert.equal(parseFloat(card().style.left) + parseFloat(card().style.width), sc.scrollLeft + room - 2);
+  // Its line 10 px inside the left edge.
+  await scrollTo(x - 10);
+  assert(card().classList.contains('rt-card-compact') && !card().classList.contains('rt-cut'), card().className);
+  assert.equal(parseFloat(card().style.left), sc.scrollLeft + 2);
+});
+
 test('extreme calendar spans keep Roadmap cells bounded at every zoom and records editable', ctx => {
  const t=boot('roadmap/p1?scale=months',{prepare:D=>{D.epics[0].start='0000-01-01';D.milestones[0].date='9999-12-31';}});
  const bounded=zoom=>{const labels=t.d.querySelectorAll('.rm-month,.rm-week').length;assert(labels>0&&labels<100,`${labels} month or week labels at ${zoom}`);assert(t.d.querySelectorAll('.rm-axis-divider').length<200,`dividers at ${zoom}`);assert(t.d.querySelectorAll('.rm-month-line').length<200,`lines at ${zoom}`);};

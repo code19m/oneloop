@@ -39,6 +39,14 @@ let RAIL = 216;
 const AXIS = 56, CARD_ROW = 52;
 /** A milestone's card: the app's shiny diamond, its name and "Oct 26 · 9d away"; its line drops from the card. */
 const CARD_TOP = 8, CARD_H = 44, LABEL_H = 20;
+/** A card's border and padding, its diamond and the gap after it; and the card as the diamond alone. */
+const CARD_PAD = 12, DIAMOND = 14, CARD_GAP = 10, COMPACT = 2 + 2 * CARD_PAD + DIAMOND;
+/** Where the diamond's middle sits in a card, from its edge. */
+const POLE = 1 + CARD_PAD + DIAMOND / 2;
+/** The room between two cards. */
+const CARDS_APART = 8;
+/** A card wide enough for its longer line, with a little room. */
+const cardWidth = (name, dateLabel) => Math.ceil(2 + 2 * CARD_PAD + DIAMOND + CARD_GAP + Math.max(textWidth(name, '600 13px'), textWidth(dateLabel, '500 12px') * 1.06) + 6);
 const axisHeight = (model) => AXIS + (model.goals.length ? CARD_ROW : 0);
 const labelTop = (model) => CARD_TOP + (model.goals.length ? CARD_ROW : 0);
 const ZOOM_MIN = 2.2, ZOOM_MAX = 42;
@@ -107,17 +115,12 @@ function rmRange() {
 function roadmapModel() {
   const { start, end } = rmRange(), timeline = laneModels(start);
   const day = (dt) => Math.round((dt - start) / DAY);
-  const goals = milestones().slice().sort((a, b) => d(a.date) - d(b.date)).map((m) => {
+  const goals = milestones().slice().sort((a, b) => d(a.date) - d(b.date) || a.id.localeCompare(b.id)).map((m) => {
     const date = d(m.date), days = Math.round((date - today) / DAY);
     const name = m.name.charAt(0).toUpperCase() + m.name.slice(1);
     const dateLabel = humanShort(date) + (days > 0 ? ` · ${days}d away` : days === 0 ? ' · Today' : '');
-    // The card: border, padding, diamond and gap, then the longer of its two lines, with a little room.
-    const pad = 12, diamond = 14, gap = 10;
-    const width = Math.ceil(2 + 2 * pad + diamond + gap + Math.max(textWidth(name, '600 13px'), textWidth(dateLabel, '500 12px') * 1.06) + 6);
-    // Where the diamond's middle sits in the card, and the card as the diamond alone.
-    const pole = 1 + pad + diamond / 2, compact = 2 + 2 * pad + diamond;
     // A milestone marks its whole day: the line runs through the middle of it.
-    return { m, past: days < 0, name, dateLabel, width, pole, compact, at: day(date) + 0.5 };
+    return { m, date, past: days < 0, name, dateLabel, at: day(date) + 0.5 };
   });
   return { start, span: day(end), today: timeline.now, lanes: timeline.lanes, ready: timeline.ready, goals, ...heldDays(day) };
 }
@@ -170,16 +173,68 @@ const clampZoom = (ppd) => Math.round(Math.min(Math.max(ppd, ZOOM_MIN), ZOOM_MAX
 // Horizontal places at a zoom level, in whole pixels so text stays on the pixel grid.
 const dayX = (days, ppd) => Math.round(days * ppd);
 /** A milestone card's left edge: its diamond on the date. Where that card has no room it ends at its line, or shows its diamond alone (placeCards). */
-const cardLeft = (goal, ppd) => dayX(goal.at, ppd) - goal.pole;
+const cardLeft = (card, ppd) => dayX(card.at, ppd) - card.pole;
 
-function showMilestoneTip(anchor, id) {
-  const milestone = milestones().find(m => m.id === id);
-  if (!milestone) return;
+/**
+ * The milestones' cards at a zoom: one each, but milestones so close that no
+ * two cards could stand apart, even as diamonds, share one, "2 milestones",
+ * which lists them on hover and focus. Each keeps its own line.
+ */
+function goalCards(goals, ppd) {
+  const card = (run) => {
+    if (run.length === 1) {
+      const [goal] = run;
+      return { ...goal, ids: goal.m.id, goals: run, width: cardWidth(goal.name, goal.dateLabel), pole: POLE, compact: COMPACT, label: `Milestone ${goal.name}, ${goal.dateLabel}` };
+    }
+    const first = run[0], last = run[run.length - 1], name = `${run.length} milestones`, count = String(run.length);
+    const dateLabel = +first.date === +last.date ? humanShort(first.date) : `${humanShort(first.date)} – ${humanShort(last.date)}`;
+    return {
+      ids: run.map((goal) => goal.m.id).join(' '), goals: run, past: run.every((goal) => goal.past), name, dateLabel, count,
+      width: cardWidth(name, dateLabel), pole: POLE, compact: COMPACT + CARD_GAP + textWidth(count, '600 12px'), at: (first.at + last.at) / 2,
+      label: `${name}: ${run.map((goal) => `${goal.name}, ${goal.dateLabel}`).join('; ')}`,
+    };
+  };
+  let runs = goals.map((goal) => [goal]), cards = runs.map(card);
+  // Two neighbours whose diamonds would touch become one card, until none do.
+  for (let index = 1; index < cards.length;) {
+    const [a, b] = [cards[index - 1], cards[index]];
+    if ((b.at - a.at) * ppd >= (a.compact + b.compact) / 2 + CARDS_APART) { index++; continue; }
+    runs.splice(index - 1, 2, [...runs[index - 1], ...runs[index]]);
+    cards.splice(index - 1, 2, card(runs[index - 1]));
+    index = Math.max(1, index - 1);
+  }
+  return cards;
+}
+
+/** The cards' markup, each placed with its diamond on its date; placeCards fits them to the view. */
+function cardsHtml(cards, ppd) {
+  return cards.map((card) => {
+    const x = dayX(card.at, ppd), group = card.goals.length > 1;
+    return `<button type="button" class="ms-label rt-card${card.past ? ' past' : ''}${group ? ' rt-card-group' : ''}" ${group ? `data-milestones="${esc(card.ids)}"${canRoadmap() ? ' aria-haspopup="menu" aria-expanded="false"' : ''}` : `data-milestone="${esc(card.ids)}"`} data-flag="${esc(numbers(x, card.width, card.pole, card.compact))}" aria-label="${esc(card.label)}" style="left:${cardLeft(card, ppd)}px;top:${CARD_TOP}px;width:${card.width}px" ${UIAction('milestoneClick', UIAction.event, card.ids)} ${UIAction.on('mouseenter', 'milestoneHover', UIAction.event, card.ids)} ${UIAction.on('mouseleave', 'epicLeave')} ${UIAction.on('focus', 'milestoneHover', UIAction.event, card.ids, true)} ${UIAction.on('blur', 'epicLeave')} ${UIAction.on('keydown', 'roadmapTipKey', UIAction.event)}>
+      ${I.diamond}${group ? `<span class="goal-count" aria-hidden="true">${esc(card.count)}</span>` : ''}<span class="txt"><span class="goal-name">${esc(card.name)}</span><span class="goal-date">${esc(card.dateLabel)}</span></span></button>`;
+  }).join('');
+}
+
+/** How a milestone stands from today, in words. */
+function timing(milestone) {
   const days = Math.round((d(milestone.date) - today) / DAY);
-  const timing = days === 0 ? 'Today' : `${Math.abs(days)} ${Math.abs(days) === 1 ? 'day' : 'days'} ${days > 0 ? 'away' : 'ago'}`;
+  return days === 0 ? 'Today' : `${Math.abs(days)} ${Math.abs(days) === 1 ? 'day' : 'days'} ${days > 0 ? 'away' : 'ago'}`;
+}
+
+/** The card of one milestone, or the list of the milestones a card holds; `ids` names them, separated by spaces. */
+function showMilestoneTip(anchor, ids) {
+  const list = ids.split(' ').map((id) => milestones().find((m) => m.id === id)).filter(Boolean);
+  if (!list.length) return;
+  if (list.length > 1) {
+    mountRoadmapTip(anchor, 'milestone-tooltip', `<div class="epic-tip-title">${esc(`${list.length} milestones`)}</div>
+      <div class="epic-tip-track">${esc(project().name)}</div>
+      <dl class="epic-tip-facts">${list.map((milestone) => `<div><dt>${esc(milestone.name)}</dt><dd>${esc(`${humanShort(d(milestone.date))} · ${timing(milestone)}`)}</dd></div>`).join('')}</dl>`);
+    return;
+  }
+  const [milestone] = list;
   mountRoadmapTip(anchor, 'milestone-tooltip', `<div class="epic-tip-title">${esc(milestone.name)}</div>
     <div class="epic-tip-track">Milestone · ${esc(project().name)}</div>
-    <dl class="epic-tip-facts"><div><dt>Date</dt><dd>${esc(milestone.date)}</dd></div><div><dt>Timing</dt><dd>${timing}</dd></div></dl>
+    <dl class="epic-tip-facts"><div><dt>Date</dt><dd>${esc(milestone.date)}</dd></div><div><dt>Timing</dt><dd>${timing(milestone)}</dd></div></dl>
     <div class="epic-tip-description">${milestone.desc ? esc(milestone.desc) : '<span class="tone-ghost">No description</span>'}</div>`);
 }
 
@@ -218,14 +273,13 @@ export function renderRoadmap() {
   const lanes = model.lanes.map((lane, i) => laneHtml(lane, layout.lanes[i], bodies[i], model, stacked, width)).join('');
 
   // Milestones: a card with the shiny diamond above the lanes, and a line from the card down through them.
-  let lines = '', cards = '';
-  model.goals.forEach((goal) => {
-    const { m, past, name, dateLabel, width: cardWidth, pole, compact, at } = goal, x = dayX(at, ppd);
+  let lines = '', connectors = '';
+  model.goals.forEach(({ past, at }) => {
+    const x = dayX(at, ppd);
     lines += `<div class="ms-line${past ? ' past' : ''}" aria-hidden="true" style="left:${RAIL + x}px"></div>`;
-    cards += `<div class="ms-line goal-connector${past ? ' past' : ''}" aria-hidden="true" style="left:${x}px;top:${CARD_TOP + CARD_H}px;bottom:0"></div>`;
-    cards += `<button type="button" class="ms-label rt-card${past ? ' past' : ''}" data-milestone="${esc(m.id)}" data-flag="${esc(numbers(x, cardWidth, pole, compact))}" aria-label="${esc(`Milestone ${name}, ${dateLabel}`)}" style="left:${cardLeft(goal, ppd)}px;top:${CARD_TOP}px;width:${cardWidth}px" ${UIAction('milestoneClick', UIAction.event, m.id)} ${UIAction.on('mouseenter', 'milestoneHover', UIAction.event, m.id)} ${UIAction.on('mouseleave', 'epicLeave')} ${UIAction.on('focus', 'milestoneHover', UIAction.event, m.id, true)} ${UIAction.on('blur', 'epicLeave')} ${UIAction.on('keydown', 'roadmapTipKey', UIAction.event)}>
-      ${I.diamond}<span class="txt"><span class="goal-name">${esc(name)}</span><span class="goal-date">${esc(dateLabel)}</span></span></button>`;
+    connectors += `<div class="ms-line goal-connector${past ? ' past' : ''}" aria-hidden="true" style="left:${x}px;top:${CARD_TOP + CARD_H}px;bottom:0"></div>`;
   });
+  const cards = `${connectors}<div class="rt-cards">${cardsHtml(goalCards(model.goals, ppd), ppd)}</div>`;
   const todayX = dayX(model.today, ppd), top = labelTop(model);
   const todayLine = `<div class="today-line" aria-hidden="true" style="left:${RAIL + todayX}px"></div>`;
   const todayLabel = `<div class="today-line today-connector" aria-hidden="true" style="left:${todayX}px;top:${top + LABEL_H}px;bottom:0"></div><div class="rt-today" style="left:${todayX}px;top:${top}px" title="${esc(human(today))}">Today<span class="sr-only">, ${esc(human(today))}</span></div>`;
@@ -429,12 +483,13 @@ export function roadmapTopbarHtml() {
  */
 function bindRoadmap(sc, rendered) {
   const all = (selector) => [...sc.querySelectorAll(selector)];
-  const lines = all('.rt-lanes > .ms-line'), connectors = all('.goal-connector'), labels = all('.ms-label');
+  const lines = all('.rt-lanes > .ms-line'), connectors = all('.goal-connector');
   const laneEls = all('.lane');
   return {
     sc, canvas: sc.querySelector('.rm-canvas'), ...rendered, ppd: rendered.layout.ppd, calendar: null, zoomLeft: NaN, shape: roadmapShape(rendered.model),
     lanes: rendered.model.lanes.map((lane, i) => ({ lane: laneEls[i], body: laneEls[i]?.querySelector('.rt-body'), data: lane, html: rendered.bodies[i] })),
-    goals: rendered.model.goals.map((goal, i) => ({ goal, line: lines[i], connector: connectors[i], label: labels[i] })).filter((goal) => goal.line && goal.connector && goal.label),
+    goals: rendered.model.goals.map((goal, i) => ({ goal, line: lines[i], connector: connectors[i] })).filter((goal) => goal.line && goal.connector),
+    cards: { el: sc.querySelector('.rt-cards'), ids: goalCards(rendered.model.goals, rendered.layout.ppd).map((card) => card.ids).join('|') },
     today: [sc.querySelector('.rt-lanes > .today-line'), sc.querySelector('.today-connector'), sc.querySelector(".rt-today")],
     cells: { lines: sc.querySelector('.rm-calendar-lines'), months: sc.querySelector('.rm-month-grid') },
   };
@@ -515,13 +570,12 @@ function zoomRoadmap(view, ppd, day, cx) {
   if (ppd !== view.ppd) {
     view.ppd = state.pxPerDay = ppd;
     view.canvas.style.width = `${RAIL + dayX(model.span, ppd)}px`;
-    for (const { goal, line, connector, label } of view.goals) {
+    for (const { goal, line, connector } of view.goals) {
       const x = dayX(goal.at, ppd);
       line.style.left = `${RAIL + x}px`;
       connector.style.left = `${x}px`;
-      label.style.left = `${cardLeft(goal, ppd)}px`;
-      label.dataset.flag = numbers(x, goal.width, goal.pole, goal.compact);
     }
+    moveCards(view, ppd);
     const [line, connector, pill] = view.today, todayX = dayX(model.today, ppd);
     if (line) line.style.left = `${RAIL + todayX}px`;
     for (const el of [connector, pill]) if (el) el.style.left = `${todayX}px`;
@@ -534,6 +588,27 @@ function zoomRoadmap(view, ppd, day, cx) {
   if (Math.abs(sc.scrollLeft - left) >= 0.5) sc.scrollLeft = left;
   state.rmScrollLeft = view.zoomLeft = sc.scrollLeft;
   mountRoadmapCalendar(view);
+}
+
+/**
+ * The milestone cards at a new zoom: in place while they hold the same
+ * milestones, else drawn again, as when close ones come to share a card.
+ */
+function moveCards(view, ppd) {
+  const { el } = view.cards;
+  if (!el) return;
+  const cards = goalCards(view.model.goals, ppd), ids = cards.map((card) => card.ids).join('|');
+  if (ids !== view.cards.ids) {
+    if (el.contains(document.activeElement) || EPIC_TIP.anchor && el.contains(EPIC_TIP.anchor)) hideEpicTip();
+    setHTML(el, cardsHtml(cards, ppd));
+    view.cards.ids = ids;
+    return;
+  }
+  [...el.children].forEach((label, index) => {
+    const card = cards[index];
+    label.style.left = `${cardLeft(card, ppd)}px`;
+    label.dataset.flag = numbers(dayX(card.at, ppd), card.width, card.pole, card.compact);
+  });
 }
 
 /** The scale the header shows as pressed; after a free zoom, none. */
@@ -664,28 +739,35 @@ function mountRoadmapCalendar(view) {
 }
 
 /**
- * Milestone cards' places: each card's diamond always sits on its line, so
- * the line drops straight from it. From the best: the card starting at the
- * line, ending at it (the diamond at the card's right), or the diamond
- * alone, which opens to the full card on hover and focus.
+ * Milestone cards' places: each card's diamond sits on its line, so the line
+ * drops straight from it. From the best: the card starting at the line,
+ * ending at it (the diamond at the card's right), or the diamond alone, which
+ * opens to the full card on hover and focus. A card the view's edge would cut
+ * stays whole instead: at the right edge it ends there and points on with
+ * "→"; at the left edge its diamond moves just inside.
  */
 const CARD_PLACES = [['start', 0], ['end', 1], ['compact', 10]];
+const EDGE_COST = 50, HIDDEN_COST = 1000;
 
 /**
  * Milestone cards, in their own row above Today: each takes its best place
- * clear of the others and the view's edges, and never hides; where nothing
- * is clear it shows its diamond alone. With none in view, the next one waits
- * at the right edge and points to it.
+ * clear of the others and inside the view. Close milestones share a card
+ * (goalCards), so each has a place; only a card that an edge pushes onto its
+ * neighbour hides. With none in view, the next one waits at the right edge
+ * and points to it.
  */
 function placeCards(sc, from, to) {
   const pairs = (value) => value.split(',').map(Number);
-  const cards = [...sc.querySelectorAll('[data-flag]')].map((flag) => {
+  const cards = [...sc.querySelectorAll('.rt-cards [data-flag]')].map((flag) => {
     const [x, width, pole, compact] = pairs(flag.dataset.flag);
     const places = CARD_PLACES.map(([form, cost]) => {
       const size = form === 'compact' ? compact : width;
       const left = form === 'start' ? x - pole : form === 'end' ? x + pole - size : x - size / 2;
       return { form, cost, width: size, left, right: left + size };
     });
+    // Too near an edge for any of those: whole at the edge instead.
+    if (x + compact / 2 > to) places.push({ form: 'edge', cost: EDGE_COST, width: width + 20, left: to - width - 20, right: to });
+    if (x - compact / 2 < from) places.push({ form: 'compact', cost: EDGE_COST, width: compact, left: from, right: from + compact });
     return { flag, x, places };
   }).sort((a, b) => a.x - b.x);
   const shown = cards.map(({ x }) => x >= from && x <= to);
@@ -696,26 +778,29 @@ function placeCards(sc, from, to) {
   const search = (index, taken, chosen, score) => {
     if (best && score >= best.score) return;
     if (index === cards.length) { best = { score, chosen: chosen.slice() }; return; }
-    const free = shown[index] ? cards[index].places.filter((option) => option.left >= from && option.right <= to && taken.every(([a, b]) => option.right + 8 <= a || option.left - 8 >= b)) : [];
+    const free = shown[index] ? cards[index].places.filter((option) => option.left >= from && option.right <= to && taken.every(([a, b]) => option.right + CARDS_APART <= a || option.left - CARDS_APART >= b)).sort((a, b) => a.cost - b.cost) : [];
     for (const option of greedy ? free.slice(0, 1) : free) {
       chosen.push(option); taken.push([option.left, option.right]);
       search(index + 1, taken, chosen, score + option.cost);
       chosen.pop(); taken.pop();
     }
     if (greedy && free.length) return;
-    chosen.push(shown[index] ? cards[index].places.find((option) => option.form === 'compact') : null);
-    search(index + 1, taken, chosen, score + (shown[index] ? 100 : 0)); chosen.pop();
+    // No place clear: the card hides rather than overlap or be cut.
+    chosen.push(null);
+    search(index + 1, taken, chosen, score + (shown[index] ? HIDDEN_COST : 0)); chosen.pop();
   };
   search(0, [], [], 0);
   const upcoming = shown.some(Boolean) ? -1 : cards.findIndex(({ flag, x }) => x > to && !flag.classList.contains('past'));
   cards.forEach(({ flag, places }, index) => {
-    const edge = index === upcoming, place = edge ? { form: 'edge', width: places[0].width + 20, left: to - places[0].width - 20 } : best.chosen[index] || places[0];
-    flag.classList.toggle('rt-card-end', place.form === 'end');
-    flag.classList.toggle('rt-card-compact', place.form === 'compact');
-    flag.classList.toggle('rt-card-edge', edge);
-    setStyle(flag, 'left', `${Math.round(place.left)}px`);
-    setStyle(flag, 'width', `${Math.round(place.width)}px`);
-    flag.classList.toggle('rt-cut', !shown[index] && !edge);
+    const place = index === upcoming ? { form: 'edge', width: places[0].width + 20, left: to - places[0].width - 20 } : best.chosen[index];
+    flag.classList.toggle('rt-card-end', place?.form === 'end');
+    flag.classList.toggle('rt-card-compact', place?.form === 'compact');
+    flag.classList.toggle('rt-card-edge', place?.form === 'edge');
+    if (place) {
+      setStyle(flag, 'left', `${Math.round(place.left)}px`);
+      setStyle(flag, 'width', `${Math.round(place.width)}px`);
+    }
+    flag.classList.toggle('rt-cut', !place);
   });
 }
 
@@ -1117,17 +1202,23 @@ Object.assign(App, {
     // Scroll the mounted Roadmap in place; drawing the page again would only repeat it.
     view.sc.scrollLeft = state.rmScrollLeft = todayScroll(view.sc, view.model.today, view.ppd, view.place);
   },
-  /** A milestone's card: at once on keyboard focus, after a short pause on hover. */
-  milestoneHover(ev, id, keyboard = false) {
+  /** A milestone's card, or the list of the milestones a card holds: at once on keyboard focus, after a short pause on hover. */
+  milestoneHover(ev, ids, keyboard = false) {
     if (!keyboard && !window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
     hideEpicTip();
     const anchor = ev.currentTarget;
-    if (keyboard) showMilestoneTip(anchor, id);
-    else EPIC_TIP.showTimer = setTimeout(() => showMilestoneTip(anchor, id), 220);
+    if (keyboard) showMilestoneTip(anchor, ids);
+    else EPIC_TIP.showTimer = setTimeout(() => showMilestoneTip(anchor, ids), 220);
   },
-  milestoneClick(ev, id) {
-    if (canRoadmap()) App.openModal('milestone', id);
-    else showMilestoneTip(ev.currentTarget, id);
+  /** Open the milestone, or choose one of the milestones a card holds. Without permission to change them, show them. */
+  milestoneClick(ev, ids) {
+    const list = ids.split(' ');
+    if (!canRoadmap()) { showMilestoneTip(ev.currentTarget, ids); return; }
+    if (list.length === 1) { App.openModal('milestone', ids); return; }
+    hideEpicTip();
+    openMenu(list.map((id) => milestones().find((m) => m.id === id)).filter(Boolean).map((milestone) => ({
+      label: `${milestone.name} · ${humanShort(d(milestone.date))}`, fn: () => App.openModal('milestone', milestone.id),
+    })), 0, 0, { trigger: ev.currentTarget });
   },
   roadmapTipKey(ev) {
     const tip = EPIC_TIP.el;

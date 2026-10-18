@@ -419,8 +419,12 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .ms-label.rt-card-compact .txt { display: none; }
 .ms-label.rt-card-compact:hover, .ms-label.rt-card-compact:focus-visible { z-index: 8; width: auto !important; justify-content: flex-start; }
 .ms-label.rt-card-compact:hover .txt, .ms-label.rt-card-compact:focus-visible .txt { display: flex; }
-/* The next milestone, off screen: its card waits at the right edge, an arrow saying it is further on. */
+/* The next milestone, off screen or too near the right edge for its card: the card waits at that edge, an arrow saying it is further on. */
 .ms-label.rt-card-edge::after { content: '→'; margin-left: auto; font-size: var(--text-sm); color: var(--ink-faint); }
+/* Close milestones share one card; as the diamond alone it says how many. */
+.ms-label .goal-count { display: none; font-size: var(--text-xs); font-weight: 600; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.ms-label.rt-card-compact .goal-count { display: inline; }
+.ms-label.rt-card-compact:hover .goal-count, .ms-label.rt-card-compact:focus-visible .goal-count { display: none; }
 .ms-diamond { width: 7px; height: 7px; flex-shrink: 0; border: 1.5px solid var(--ink-muted); transform: rotate(45deg); }
 
 /* What the view's edges would cut is hidden instead. */
