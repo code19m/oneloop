@@ -61,7 +61,6 @@ pub struct TrackView {
     pub id: String,
     pub project_id: String,
     pub name: String,
-    pub description: String,
     pub position: i64,
     pub revision: i64,
 }
@@ -111,7 +110,9 @@ pub struct MilestoneView {
 pub struct TaskView {
     pub id: String,
     pub project_id: String,
-    pub epic_id: String,
+    pub track_id: String,
+    /// An epic on the task's track, or null when the task has none.
+    pub epic_id: Option<String>,
     pub task_number: i64,
     pub task_key: String,
     pub title: String,
@@ -123,6 +124,9 @@ pub struct TaskView {
     pub deadline: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// When work on the task started: its first move into In Progress or In
+    /// Review since it was last in Planning. Null until then.
+    pub started_at: Option<i64>,
     /// When the task last moved to Done; null for open tasks.
     pub completed_at: Option<i64>,
     /// Orders tasks completed in the same second: a higher number moved to

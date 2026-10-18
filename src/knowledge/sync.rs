@@ -766,7 +766,7 @@ mod tests {
         db.run(|c| {
             c.execute_batch("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('track','p1','Track',0,1,1);
                 INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at) VALUES('epic','p1','track','Epic','2026-01-01',0,1,1);
-                INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('task','p1','epic',1,'ONE-001','Task','planning',0,1,1);")?;
+                INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('task','p1','track','epic',1,'ONE-001','Task','planning',0,1,1);")?;
             Ok(())
         }).await.unwrap();
         let second_url = url.clone();

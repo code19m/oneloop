@@ -122,7 +122,7 @@ export function installCollaborationController({ transport, recovery, eventSourc
       const replyCounts={...comments?.replyCounts,...target?.replyCounts};
       const mappedComments=[...commentRows.values()].map((item)=>({...mapComment(item),replyCount:replyCounts[item.rootId]}));
       const activityRows=new Map([...(activity?.items??[]),...(block?.items??[])].map((item)=>[item.id,item]));
-      const mappedActivity=[...activityRows.values()].map((item)=>mapActivity(item,data.users)).filter(Boolean);
+      const mappedActivity=[...activityRows.values()].map((item)=>mapActivity(item,data.users,data)).filter(Boolean);
       if(append){
         const commentsById=new Map((task.comments??[]).map((item)=>[item.id,item]));for(const item of mappedComments)commentsById.set(item.id,item);task.comments=[...commentsById.values()].sort(chronological);
         const eventsById=new Map((task.activity??[]).map((item)=>[item.id,item]));for(const item of mappedActivity)eventsById.set(item.id,item);task.activity=[...eventsById.values()].sort(chronological);
@@ -296,7 +296,7 @@ export function installCollaborationController({ transport, recovery, eventSourc
     try{
       const response=await transport.api.activity(task.projectId,{taskId:task.internalId,limit:50,background});
       if(currentTask(task.internalId)!==task)return;
-      task.activity=refreshPageWindow(task.activity??[],(response.items??[]).map((item)=>mapActivity(item,data.users)).filter(Boolean),!!response.nextCursor,item=>item.ts,Math.min(...(response.items??[]).map((/** @type {{createdAt:number}} */ item)=>secondsToMilliseconds(item.createdAt)))).sort(chronological);
+      task.activity=refreshPageWindow(task.activity??[],(response.items??[]).map((item)=>mapActivity(item,data.users,data)).filter(Boolean),!!response.nextCursor,item=>item.ts,Math.min(...(response.items??[]).map((/** @type {{createdAt:number}} */ item)=>secondsToMilliseconds(item.createdAt)))).sort(chronological);
       const page=taskPages.get(task.internalId)||{};if(!page.activityLoaded||!response.nextCursor)page.activityCursor=response.nextCursor??null;page.activityLoaded=true;taskPages.set(task.internalId,page);
     }catch(error){if(error?.code!=='aborted')report(error,false);}
   }

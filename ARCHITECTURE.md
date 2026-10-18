@@ -260,9 +260,9 @@ never contain passwords, tokens or request bodies.
 dates such as deadlines are `YYYY-MM-DD` strings in the instance time zone,
 `ONELOOP_TIMEZONE`, which also defines "today" and "this week".
 
-**Undo.** Deleting a task, comment or attachment hides it at once and keeps
-its content for `UNDO_WINDOW_SECONDS` (5 minutes), when a restore operation can
-bring it back. A restore puts the item back at its old position, or at the end
+**Undo.** Deleting a task, epic, comment or attachment hides it at once and
+keeps its content for `UNDO_WINDOW_SECONDS` (5 minutes), when a restore
+operation can bring it back. A restore puts the item back at its old position, or at the end
 of its list when that position was taken, and unassigns people who left the
 project from an unfinished task. After the window, file maintenance removes the
 files with deletion jobs, and database maintenance empties deleted comments;

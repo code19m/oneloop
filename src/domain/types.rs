@@ -51,6 +51,7 @@ crate::command::operations! {
         CompleteEpic = "epic.complete" => Existing,
         ReopenEpic = "epic.reopen" => Existing,
         DeleteEpic = "epic.delete" => Existing,
+        RestoreEpic = "epic.restore" => Existing,
         CreateMilestone = "milestone.create" => Create,
         UpdateMilestone = "milestone.update" => Existing,
         DeleteMilestone = "milestone.delete" => Existing,
@@ -108,7 +109,8 @@ impl DomainOperation {
             | Self::ReopenEpic
             | Self::CreateMilestone
             | Self::UpdateMilestone => project(Need::Roadmap, false),
-            Self::DeleteTrack | Self::DeleteEpic | Self::DeleteMilestone => {
+            // Restoring is the Undo of a deletion, so it needs what deleting needs.
+            Self::DeleteTrack | Self::DeleteEpic | Self::RestoreEpic | Self::DeleteMilestone => {
                 project(Need::Roadmap, true)
             }
             Self::CreateTask
@@ -140,7 +142,7 @@ impl DomainOperation {
             | Self::AddMembership
             | Self::UpdateMembership
             | Self::RemoveMembership => McpRoute::Administration,
-            Self::RestoreTask => McpRoute::Undo,
+            Self::RestoreTask | Self::RestoreEpic => McpRoute::Undo,
             Self::DeleteTrack
             | Self::DeleteEpic
             | Self::DeleteMilestone
@@ -229,18 +231,13 @@ pub struct MembershipDelete {
 pub struct TrackCreate {
     pub project_id: String,
     pub name: String,
-    #[serde(default)]
-    pub description: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TrackUpdate {
     pub track_id: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
+    pub name: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -341,11 +338,17 @@ pub enum DoneOrder {
     Completed,
 }
 
+/// Creates a task at the top of Planning, on the track that `trackId` names
+/// or, without one, on the track of the epic that `epicId` names.
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskCreate {
     pub project_id: String,
-    pub epic_id: String,
+    #[serde(default)]
+    pub track_id: Option<String>,
+    /// An open epic on the task's track; omit it for a task without an epic.
+    #[serde(default)]
+    pub epic_id: Option<String>,
     pub title: String,
     #[serde(default)]
     pub description: String,
@@ -363,8 +366,17 @@ pub struct TaskCreate {
 pub struct TaskUpdate {
     /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
+    /// Moves the task to another track of its project. Its epic, which is on
+    /// the old track, is cleared unless `epicId` names one on the new track.
     #[serde(default)]
-    pub epic_id: Option<String>,
+    pub track_id: Option<String>,
+    /// An open epic on the task's track, or null for no epic.
+    #[serde(
+        default,
+        deserialize_with = "nullable_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub epic_id: Option<Option<String>>,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
@@ -503,7 +515,12 @@ pub struct PoolItemUpdate {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PoolItemPromote {
     pub pool_item_id: String,
-    pub epic_id: String,
+    /// The new task's track, as in `task.create`.
+    #[serde(default)]
+    pub track_id: Option<String>,
+    /// The new task's epic, as in `task.create`.
+    #[serde(default)]
+    pub epic_id: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]

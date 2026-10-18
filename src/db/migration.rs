@@ -87,9 +87,17 @@ const MIGRATIONS: &[Migration] = &[
         hook: None,
         foreign_keys_off: false,
     },
+    Migration {
+        version: 9,
+        name: "tasks_on_tracks",
+        sql: include_str!("../../migrations/0009_tasks_on_tracks.sql"),
+        hook_revision: "",
+        hook: None,
+        foreign_keys_off: true,
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 8;
+pub const CURRENT_SCHEMA_VERSION: i64 = 9;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MigrationOutcome {

@@ -8,7 +8,7 @@ const { normalizeBoardFilters } = require('../../../src/data/board-filters.js');
 test('live Board moves keep loaded cards in position and ID order across columns',async()=>{
  const t=bootApp({route:'board'}),projectId=t.A.context().projectId;
  t.D.tasks.splice(0);t.D.projectTaskCounts={};
- const task=(id,position,status='planning')=>({id,taskKey:`BIR-${id}`,projectId,epicId:t.D.epics[0].id,title:id,status,position,revision:1,assigneeIds:[]});
+ const task=(id,position,status='planning')=>({id,taskKey:`BIR-${id}`,projectId,trackId:t.D.epics[0].trackId,epicId:t.D.epics[0].id,title:id,status,position,revision:1,assigneeIds:[]});
  const empty={items:[],total:0,nextCursor:null},counts={planning:4,inProgress:4,inReview:0,done:0,blocked:0};
  let changed;
  const reads=createReadController({data:t.D,onBoard:()=>t.A.refreshBoard(),api:{
@@ -33,7 +33,7 @@ test('a Done order chosen in another tab leaves this tab\'s Board taking live ch
   t.D.tasks.splice(0); t.D.projectTaskCounts = {};
   // The page's own read controller, which reads the order from this window's storage.
   const { createReadController } = t.module('src/data/read-controller.js');
-  const task = (id, position) => ({ id, taskKey: `BIR-${id}`, projectId, epicId: t.D.epics[0].id, title: id, status: 'planning', position, revision: 1, assigneeIds: [] });
+  const task = (id, position) => ({ id, taskKey: `BIR-${id}`, projectId, trackId: t.D.epics[0].trackId, epicId: t.D.epics[0].id, title: id, status: 'planning', position, revision: 1, assigneeIds: [] });
   const empty = { items: [], total: 0, nextCursor: null };
   let changed;
   const reads = createReadController({ data: t.D, onBoard: () => t.A.refreshBoard(), api: {
@@ -179,6 +179,19 @@ test('a Board address shows its filters, and values the project no longer has ar
     [['p1', { trackIds: ['t2'], epicIds: [], assigneeIds: ['__unassigned__', 'robin'], search: 'reader', blocked: false }]]);
 });
 
+test('No epic in the epic filter shows the tasks without an epic, in the address and in the Board read', async () => {
+  const t = bootApp({ route: 'board/p1?epic=none', prepare: D => {
+    D.tasks.push({ id: 'BIR-500', internalId: 'loose', projectId: 'p1', trackId: 't2', epicId: null, title: 'Loose task', state: 'planning', assignees: [], created: Date.now(), revision: 1 });
+    // The cards loaded are those of a Board read for the filter.
+    D.boardPageInfo = { projectId: 'p1', filters: normalizeBoardFilters({ epicIds: ['none'] }), pages: {} };
+  } });
+  assert.equal(t.w.location.hash, '#/board/p1?epic=none');
+  assert.equal(t.d.querySelector('[data-filter-key="fEpic"] .sel-label').textContent, 'No epic');
+  assert.deepEqual([...t.d.querySelectorAll('.board .card')].map(card => card.dataset.task), ['BIR-500']);
+  await t.bridge.loadCurrentRoute();
+  assert.deepEqual(JSON.parse(JSON.stringify(t.reads.calls.filter(([name]) => name === 'board').map(([, , filters]) => filters.epicIds))), [['none']]);
+});
+
 test('a filter or search change rewrites the Board address in place, so Back leaves the Board, and Clear filters empties its query', t => {
   const board = bootApp({ route: 'board/p1' });
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -201,7 +214,7 @@ test('a filter or search change rewrites the Board address in place, so Back lea
 test('Back to a Board address with other filters shows the placeholder, not No matching tasks, until their read lands', async () => {
   // The cards on screen were read for the first track only; reads wait for the test.
   const reads = [], cards = () => [...t.d.querySelectorAll('.board .card')].map(card => card.dataset.task);
-  const onTrack = (D, track) => { const epics = new Set(D.epics.filter(epic => epic.trackId === track).map(epic => epic.id)); return all.filter(task => epics.has(task.epicId)); };
+  const onTrack = (_D, track) => all.filter(task => task.trackId === track);
   let all;
   const t = bootApp({ route: 'board/p1?track=t1', reads: { board: (_projectId, filters) => { const read = deferred(); reads.push({ filters, read }); return read.promise; } }, prepare: D => {
     all = [...D.tasks]; D.tasks.splice(0, Infinity, ...onTrack(D, 't1'));
@@ -243,7 +256,7 @@ test('a Load more page that lands after the search changed draws nothing, and th
 test('after Load more, a search typed and erased before its read keeps every loaded card', async () => {
   // Planning holds more than its first page; Load more brings the last page.
   const t = bootApp({ route: 'board', prepare: D => {
-    for (let index = 0; index < 60; index++) D.tasks.push({ id: `BIR-${900 + index}`, internalId: `more-${index}`, projectId: 'p1', epicId: 'e1', state: 'planning', title: `More work ${index}`, order: 1000 + index, assignees: [], created: Date.now(), revision: 1, comments: [], attachments: [], activity: [] });
+    for (let index = 0; index < 60; index++) D.tasks.push({ id: `BIR-${900 + index}`, internalId: `more-${index}`, projectId: 'p1', trackId: 't1', epicId: 'e1', state: 'planning', title: `More work ${index}`, order: 1000 + index, assignees: [], created: Date.now(), revision: 1, comments: [], attachments: [], activity: [] });
     D.boardPageInfo = { projectId: 'p1', filters: {}, pages: { planning: { nextCursor: 'next', total: 0 } } };
   } });
   const planning = () => t.d.querySelectorAll('[data-col="planning"] .card').length, loaded = t.D.tasks.filter(task => task.projectId === 'p1' && task.state === 'planning').length;
@@ -367,7 +380,7 @@ test('a Pool item turned into a task reads the Board and the Pool once, and the 
   acting.A.promotePool('pl3');
   const form = acting.d.querySelector('.pool-editor form'); form.querySelector('[name=epicId]').value = epicId;
   acting.A.saveTask({ target: form, preventDefault() {} });
-  const task = { id: 'promoted', taskKey: 'BIR-200', projectId: 'p1', epicId, title: 'Branch map overview', description: '', status: 'planning', position: -1024, createdAt: 1, updatedAt: 1, revision: 1, assigneeIds: [], activeBlock: null };
+  const task = { id: 'promoted', taskKey: 'BIR-200', projectId: 'p1', trackId: acting.D.epics.find(e => e.id === epicId).trackId, epicId, title: 'Branch map overview', description: '', status: 'planning', position: -1024, createdAt: 1, updatedAt: 1, revision: 1, assigneeIds: [], activeBlock: null };
   acting.commands[0].resolve({ entities: [{ entityType: 'task', ...task }, { entityType: 'poolItem', id: 'pl3', projectId: 'p1', deleted: true, revision: 2, promoted: true }], events: [] });
   await settle(); await settle();
   // The hints of the change: the new task and the Pool item it came from.
@@ -515,7 +528,7 @@ test('Move to puts the card at the top of its new column, in view and focused', 
 test('a card moved to the top of a column stays first when a live change sorts the column again', async () => {
   const t = bootApp({ route: 'board' }), projectId = t.A.context().projectId;
   t.D.tasks.splice(0); t.D.projectTaskCounts = {};
-  const task = (id, position, status, title = id) => ({ id, taskKey: `BIR-${id}`, projectId, epicId: t.D.epics[0].id, title, status, position, revision: 1, assigneeIds: [] });
+  const task = (id, position, status, title = id) => ({ id, taskKey: `BIR-${id}`, projectId, trackId: t.D.epics[0].trackId, epicId: t.D.epics[0].id, title, status, position, revision: 1, assigneeIds: [] });
   const empty = { items: [], total: 0, nextCursor: null }, counts = { planning: 1, inProgress: 2, inReview: 0, done: 0, blocked: 0 };
   let changed;
   // The column's first card sits above 1024, as after older cards moved on.

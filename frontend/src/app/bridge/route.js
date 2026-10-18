@@ -10,7 +10,7 @@ import { pageOf } from '../address.js';
  * @param {ReturnType<typeof import('./account.js').installAccount>} account
  */
 export function installRoute(ctx, account) {
-  const { app, data, reads, recovery, reloadBootstrap, task, epic, track, context, sessionScope, nav } = ctx;
+  const { app, data, reads, recovery, reloadBootstrap, task, track, context, sessionScope, nav } = ctx;
   const { loadUsers, loadProfileAccess } = account;
   let projectGeneration=0,routeGeneration=0;
 
@@ -80,8 +80,8 @@ export function installRoute(ctx, account) {
         const loaded=await reads.task(current.taskId);
         if(!stillCurrent())return {stale:true};
         if(!loaded?.stale&&loaded?.task){
-          const parent=epic(loaded.task.epicId);
-          if(!parent||!track(parent.trackId)){
+          // A task of another project needs that project's tracks and epics.
+          if(!track(loaded.task.trackId)){
             const roadmap=await reads.roadmap(loaded.task.projectId);
             if(!stillCurrent()||roadmap?.stale)return {stale:true};
           }

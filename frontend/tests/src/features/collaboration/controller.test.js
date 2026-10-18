@@ -85,7 +85,7 @@ test('same-second comments and projections retain server IDs through initial, ap
   let phase=0;
   const comment=(id)=>({id,projectId:'p1',taskId:'opaque-task',authorId:'u2',authorName:'Bob',rootId:id,replyToId:null,content:id,mentions:[],createdAt:20,editedAt:null,deletedAt:null,revision:1});
   const activity=(id)=>({id,eventType:'task.updated',actorUserId:'u2',actorName:'Bob',createdAt:20,fieldKey:'title',metadata:{}});
-  const t=fixture({api:{task:async()=>({id:'opaque-task',projectId:'p1',epicId:'e1',taskKey:'ONE-101',title:'Reconciled',description:'',status:'planning',position:1,deadline:null,createdAt:20,updatedAt:20,revision:1,assigneeIds:[],activeBlock:null})}});
+  const t=fixture({api:{task:async()=>({id:'opaque-task',projectId:'p1',trackId:'tr1',epicId:'e1',taskKey:'ONE-101',title:'Reconciled',description:'',status:'planning',position:1,deadline:null,createdAt:20,updatedAt:20,revision:1,assigneeIds:[],activeBlock:null})}});
   const page=(items,nextCursor)=>({items,nextCursor});
   t.transport.api.comments=async(_taskId,options)=>page(phase===0?[comment('c2'),comment('c1')]:phase===1?[comment('c3')]:[comment('c4'),comment('c0')],phase===2?null:'more-comments');
   t.transport.api.activity=async(_projectId,options)=>page(phase===0?[activity('a2'),activity('a1')]:phase===1?[activity('a0')]:[activity('a3'),activity('a1')],phase===2?null:'more-activity');
@@ -198,7 +198,7 @@ test('first read failure ends loading, Retry succeeds, and background failures k
 test('SSE reconciliation passively refreshes canonical task fields before scoped discussion data',async()=>{
   useMockedClock();
   let request;
-  const canonical={id:'opaque-task',projectId:'p1',epicId:'e1',taskKey:'ONE-101',title:'Changed elsewhere',description:'',status:'in_progress',position:1,deadline:null,createdAt:1,updatedAt:2,revision:2,assigneeIds:[],activeBlock:null};
+  const canonical={id:'opaque-task',projectId:'p1',trackId:'tr1',epicId:'e1',taskKey:'ONE-101',title:'Changed elsewhere',description:'',status:'in_progress',position:1,deadline:null,createdAt:1,updatedAt:2,revision:2,assigneeIds:[],activeBlock:null};
   let refreshed=0,t;
   // The page draws again with the new task object, as the views do.
   t=fixture({api:{task:async(id,options)=>{request={id,options};return canonical;}},facade:{canonicalTask:()=>{refreshed++;t.controller.mount({view:'task',taskId:'ONE-101'});}}});

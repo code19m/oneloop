@@ -1336,7 +1336,7 @@ async fn inbox_grants_limit_reads_counts_and_all_mutations_to_selected_projects(
             tx.execute("INSERT INTO project_memberships(project_id,user_id,created_at,updated_at) VALUES(?1,'sender',1,1)",[project])?;
             tx.execute("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES(?1,?1,'Track',0,1,1)",[project])?;
             tx.execute("INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at) VALUES(?1,?1,?1,'Epic','2026-01-01',0,1,1)",[project])?;
-            tx.execute("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES(?1,?1,?1,1,?1,?2,'planning',0,1,1)",rusqlite::params![project,if project=="project-2" {"Confidential acquisition"} else {"Alpha"}])?;
+            tx.execute("INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES(?1,?1,?1,?1,1,?1,?2,'planning',0,1,1)",rusqlite::params![project,if project=="project-2" {"Confidential acquisition"} else {"Alpha"}])?;
         } Ok(())
     }).await.unwrap();
     let service = CollaborationService::new(db.clone());
@@ -1471,7 +1471,7 @@ async fn dates_and_hidden_resources_have_matching_browser_and_mcp_contracts() {
         tx.execute_batch("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('hidden-project','Hidden','HID',1,1);
             INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('hidden-track','hidden-project','Track',0,1,1);
             INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at) VALUES('hidden-epic','hidden-project','hidden-track','Epic','2026-01-01',0,1,1);
-            INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('hidden-task','hidden-project','hidden-epic',1,'HID-001','Hidden','planning',0,1,1);")?;
+            INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('hidden-task','hidden-project','hidden-track','hidden-epic',1,'HID-001','Hidden','planning',0,1,1);")?;
         Ok(())
     })
     .await

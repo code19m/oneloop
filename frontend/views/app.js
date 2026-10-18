@@ -24,8 +24,8 @@ import {
 import { mountDescription, sizeDescription, sizeDescriptionEditors } from './app/forms.js';
 import {
   App, D, blockedCount, canBoard, canReadProject, canReadTask, counts, epicById, hasPermission, instanceNow,
-  isAdmin, knowledge, me, poolTotal, project, projectLoaded, recovery, report, runtime, state, taskById, trackById,
-  visibleProjects,
+  isAdmin, knowledge, me, poolTotal, project, projectLoaded, recovery, report, runtime, state, taskById, taskTrack,
+  trackById, visibleProjects,
 } from './app/model.js';
 import {
   POP, askToDiscard, closePop, dismissMenu, hideEpicTip, openMenu, overlayKey, pendingConfirmation,
@@ -421,7 +421,7 @@ Object.assign(App, {
   /** Enter leaves a field that saves itself when it loses focus, and types nothing. */
   leaveField(event, field) { event.preventDefault(); field.blur(); },
 
-  openTask(id) { const target=taskById(id),track=trackById(epicById(target?.epicId)?.trackId);if(!target||!track)return;if(!canReadTask(target)){state.view='forbidden';state.peek=null;state.modal=null;render();return;}state.projectId=track.projectId;state.sideOpen = false; state.view = 'task'; state.taskId = id; state.menu = null; setLocalHash('#/task/' + id); render(); },
+  openTask(id) { const target=taskById(id),track=taskTrack(target);if(!target||!track)return;if(!canReadTask(target)){state.view='forbidden';state.peek=null;state.modal=null;render();return;}state.projectId=track.projectId;state.sideOpen = false; state.view = 'task'; state.taskId = id; state.menu = null; setLocalHash('#/task/' + id); render(); },
   closeOverlays() { if (state.menu&&!state.modal&&!state.peek){dismissMenu();return;}if (state.modal?.poolId) { App.returnToPool(); return; } state.peek = state.peek && state.modal ? state.peek : null; state.modal = null; state.menu = null; if (dialogPaintOwed) render(); else renderOverlays(); },
 
   // menus
@@ -478,7 +478,7 @@ function resolveRoute() {
   if(place.page==='task'){
     const task=taskById(place.taskId);
     if(!task){state.view='notfound';return;}
-    const epic=epicById(task.epicId),track=trackById(epic?.trackId);
+    const track=taskTrack(task);
     if(!track){state.view='notfound';return;}
     state.projectId=track.projectId;state.view=canReadTask(task)?'task':'forbidden';state.taskId=task.id;return;
   }

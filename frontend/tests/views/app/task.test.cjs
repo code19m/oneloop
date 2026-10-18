@@ -16,6 +16,15 @@ function block(t,mode,reason){t.A.openModal(mode,'BIR-079');const form=t.d.query
 const accept = (t, entities = []) => { t.commands.at(-1).resolve({ entities, events: [] }); return settle(); };
 const sent = t => t.commands.map(command => [command.operation, command.payload]);
 
+test('a task without an epic opens on its track, and its Epic says No epic', () => {
+ const t = bootApp({ route: 'task/BIR-500', prepare: D => {
+  D.tasks.push({ id: 'BIR-500', internalId: 'loose', projectId: 'p1', trackId: 't2', epicId: null, title: 'Loose task', desc: '', detailsLoaded: true, state: 'planning', assignees: [], created: Date.now(), revision: 1 });
+ } });
+ assert.equal(t.A.context().view, 'task');
+ assert.equal(t.d.querySelector('.tp-title').value, 'Loose task');
+ assert.equal(t.d.querySelector('#select-tpEpic .sel-label').textContent, 'No epic');
+});
+
 test('field saves show a quiet Saved status once accepted, and a block needs a reason', async () => {
  const t=taskPage(),task=t.D.tasks.find(x=>x.id==='BIR-079'),status=()=>t.d.querySelector('.task-save-status').textContent;
  t.A.updTask(task.id,'title','Changed title');await accept(t,[{entityType:'task',id:task.internalId,title:'Changed title',revision:2}]);assert.equal(status(),'Saved');assert.equal(t.notices.length,0);
@@ -379,7 +388,7 @@ function changedElsewhere(options = {}) {
   const bootstrap = { idle: async () => {}, load: async () => { if (latest) replaceTaskDetail(t.D, latest); return { stale: false }; } };
   reload = t.module('src/app/projection-reload.js').createProjectionReload({ data: t.D, bootstrap, reads: t.reads, getApp: () => t.A, getBridge: () => null, getRecovery: () => t.w.Recovery, location: t.w.location });
   return { ...t, change(entityTypes, fields) {
-    latest = { id: 'bir-079', taskKey: 'BIR-079', projectId: 'p1', epicId: 'e2', title: 'Flexible reading schedule', description: t.D.tasks.find(item => item.id === 'BIR-079').desc ?? '', status: 'planning', position: 1, createdAt: 1, updatedAt: 2, assigneeIds: [], activeBlock: null, revision: 2, ...fields };
+    latest = { id: 'bir-079', taskKey: 'BIR-079', projectId: 'p1', trackId: 't1', epicId: 'e2', title: 'Flexible reading schedule', description: t.D.tasks.find(item => item.id === 'BIR-079').desc ?? '', status: 'planning', position: 1, createdAt: 1, updatedAt: 2, assigneeIds: [], activeBlock: null, revision: 2, ...fields };
     for (const entityType of entityTypes) t.events.at(-1).emit('hint', { kind: 'activity.changed', projectId: 'p1', taskId: 'bir-079', entityType, entityId: entityType === 'epic' ? 'e2' : 'bir-079', entityRevision: latest.revision });
   } };
 }

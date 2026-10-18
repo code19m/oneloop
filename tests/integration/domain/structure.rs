@@ -111,8 +111,8 @@ async fn epic_panel_reads_every_task_and_real_activity_in_bounded_pages() {
                     [(index as usize) % 4];
                 tx.execute(
                     "INSERT INTO tasks
-                     (id,project_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at)
-                     VALUES (?1,'p1','e1',?2,?3,?4,?5,?6,'u1',?7,?7)",
+                     (id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at)
+                     VALUES (?1,'p1','tr1','e1',?2,?3,?4,?5,?6,'u1',?7,?7)",
                     params![
                         format!("epic-task-{index:03}"),
                         index + 100,
@@ -686,7 +686,7 @@ async fn membership_management_needs_admin_access_but_not_a_fresh_password() {
 async fn populated_project_deletion_preserves_other_projects_and_foreign_keys() {
     let f = fixture().await;
     f.db.transaction(|tx| {
-        tx.execute_batch("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('pop-task','p2','e2',1,'TWO-001','Work','planning',0,1,1);
+        tx.execute_batch("INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('pop-task','p2','tr2','e2',1,'TWO-001','Work','planning',0,1,1);
             INSERT INTO task_assignees VALUES('pop-task','u1','u1',1);
             INSERT INTO task_blocks(id,project_id,task_id,reason,created_by,created_at) VALUES('pop-block','p2','pop-task','@Manager waiting','u1',1);
             INSERT INTO block_mentions VALUES('pop-mention','pop-block','user','u1',0,8,'@Manager');
@@ -698,7 +698,7 @@ async fn populated_project_deletion_preserves_other_projects_and_foreign_keys() 
             INSERT INTO mcp_grants(id,user_id,client_id,client_name,created_at,updated_at,expires_at) VALUES('pop-grant','u1','c','Client',1,1,9999999999);
             INSERT INTO mcp_grant_projects VALUES('pop-grant','p2');
             INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at,deleted_at) VALUES('pop-deleted-epic','p2','tr2','Deleted','2026-01-01',1,1,1,NULL);
-            INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,deleted_at) VALUES('pop-deleted-task','p2','pop-deleted-epic',2,'TWO-002','Deleted','planning',1,1,1,2);
+            INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,deleted_at) VALUES('pop-deleted-task','p2','tr2','pop-deleted-epic',2,'TWO-002','Deleted','planning',1,1,1,2);
             UPDATE epics SET deleted_at=2 WHERE id='pop-deleted-epic';
             -- Enforce the intended order independently of SQLite sibling cascade order.
             CREATE TRIGGER test_project_dependency_order BEFORE DELETE ON projects BEGIN
@@ -877,7 +877,7 @@ async fn structural_commands_enforce_permissions_revisions_replay_and_audit() {
         f.db.transaction(|tx| {
             tx.execute("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('empty-track','p1','Empty',1,1,1)", [])?;
             tx.execute("INSERT INTO milestones(id,project_id,title,milestone_date,created_at,updated_at) VALUES('ms','p1','Milestone','2026-01-01',1,1)", [])?;
-            tx.execute("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('blocked','p1','e1',1,'ONE-001','Blocked','planning',0,1,1)", [])?;
+            tx.execute("INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('blocked','p1','tr1','e1',1,'ONE-001','Blocked','planning',0,1,1)", [])?;
             tx.execute("INSERT INTO task_blocks(id,project_id,task_id,reason,created_by,created_at) VALUES('block','p1','blocked','Initial','u1',1)", [])?;
             Ok(())
         }).await.unwrap();
@@ -989,26 +989,6 @@ async fn a_retry_needs_the_access_of_its_first_run() {
             Some(code) => assert_eq!(retry.unwrap_err().code(), code, "{operation:?}"),
             None => assert!(retry.unwrap().replayed, "{operation:?}"),
         }
-    }
-}
-
-#[tokio::test]
-async fn structural_deletion_requires_empty_parents() {
-    let f = fixture().await;
-    seed_ordering_column(&f, 1).await;
-    for (operation, id) in [
-        (DomainOperation::DeleteTrack, "tr1"),
-        (DomainOperation::DeleteEpic, "e1"),
-    ] {
-        let error = f
-            .service
-            .execute(
-                &f.manager,
-                command(operation, json!({"id":id}), id, Some(1)),
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(error, AppError::PreconditionFailed(_)));
     }
 }
 

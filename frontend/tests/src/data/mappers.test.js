@@ -18,7 +18,20 @@ test('activity events read as the line the timeline shows', () => {
     [{eventType:'task.restored'}, 'restored the task'],
     [{eventType:'comment.restored'}, 'restored a comment'],
     [{eventType:'attachment.restored',metadata:{name:'plan.pdf'}}, 'restored attachment: plan.pdf'],
+    [{eventType:'epic.restored'}, 'restored the epic'],
   ]) assert.equal(mapActivity(event, users).text, text, event.eventType);
+});
+
+test('a change of a task\'s track or epic names where the task went, and a gone epic goes without its name', () => {
+  const roadmap = {tracks:[{id:'ios',name:'iOS'}], epics:[{id:'pay',title:'Payments v2'},{id:'web',title:'Web launch'}]};
+  for (const [fieldKey, before, after, text] of [
+    ['trackId', 'web-track', 'ios', 'moved the task to iOS'],
+    ['trackId', 'ios', 'deleted-track', 'moved the task to another track'],
+    ['epicId', null, 'pay', 'added the task to Payments v2'],
+    ['epicId', 'pay', null, 'removed the task from Payments v2'],
+    ['epicId', 'deleted-epic', null, 'removed the task from its epic'],
+    ['epicId', 'pay', 'web', 'moved the task to Web launch'],
+  ]) assert.equal(mapActivity({eventType:'task.updated',fieldKey,before,after}, [], roadmap).text, text, `${fieldKey} ${before} ${after}`);
 });
 
 test('an activity event keeps who acted, when and which block it was about; new comments add no row', () => {

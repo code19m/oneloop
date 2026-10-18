@@ -5,8 +5,23 @@ import {secondsToMilliseconds} from './time.js';
 const clone = (value) => value == null ? value : JSON.parse(JSON.stringify(value));
 const statusName = (value) => ({planning:'Planning',in_progress:'In Progress',in_review:'In Review',done:'Done'})[value] ?? value;
 
-/** Project a server activity row into the stable shape used by legacy feeds. */
-export function mapActivity(event, users = []) {
+/**
+ * What a change of a task's track or epic says, with the names the projection
+ * has. An epic that is gone, such as a deleted one, goes without its name.
+ * @param {any} event @param {{tracks?:any[],epics?:any[]}} roadmap
+ */
+function placeText(event, roadmap) {
+  if (event.fieldKey === 'trackId') return `moved the task to ${roadmap.tracks?.find((track) => track.id === event.after)?.name ?? 'another track'}`;
+  const title = (id) => roadmap.epics?.find((epic) => epic.id === id)?.title;
+  if (event.after == null) return `removed the task from ${title(event.before) ?? 'its epic'}`;
+  return `${event.before == null ? 'added the task to' : 'moved the task to'} ${title(event.after) ?? 'an epic'}`;
+}
+
+/**
+ * Project a server activity row into the stable shape used by legacy feeds.
+ * @param {any} event @param {any[]} [users] @param {{tracks?:any[],epics?:any[]}} [roadmap] the projection's tracks and epics, which name a task's place.
+ */
+export function mapActivity(event, users = [], roadmap = {}) {
   if (['comment.created','comment.replied'].includes(event.eventType)) return null;
   const userName = (id) => users.find((user) => user.id === id)?.name ?? id ?? 'a former member';
   let text;
@@ -25,11 +40,12 @@ export function mapActivity(event, users = []) {
     case 'task.unblocked': text = `unblocked the task${event.after?.resolution ? ': '+event.after.resolution : ''}`; break;
     case 'task.unblocked_and_completed': text = `unblocked and completed the task${event.after?.resolution ? ': '+event.after.resolution : ''}`; break;
     case 'task.updated': {
-      const names={title:'title',description:'description',deadline:'deadline',epicId:'epic'};
-      text=`updated the ${names[event.fieldKey] ?? event.fieldKey ?? 'task'}`;
+      const names={title:'title',description:'description',deadline:'deadline'};
+      text=['trackId','epicId'].includes(event.fieldKey) ? placeText(event, roadmap) : `updated the ${names[event.fieldKey] ?? event.fieldKey ?? 'task'}`;
       break;
     }
     case 'epic.created': text = 'created the epic'; break;
+    case 'epic.restored': text = 'restored the epic'; break;
     case 'epic.completed': text = 'marked the epic as done'; break;
     case 'epic.reopened': text = 'reopened the epic'; break;
     case 'epic.updated': {

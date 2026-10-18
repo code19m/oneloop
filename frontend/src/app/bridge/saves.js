@@ -5,11 +5,11 @@
  * it was saved at, and a task field's text not saved yet stays as its draft.
  */
 
-import { commandInteractionKey } from '../action-feedback.js';
+import { commandInteractionKey, retryableFailure } from '../action-feedback.js';
 
 /** @param {import('../view-bridge.js').BridgeBase & ReturnType<typeof import('./commands.js').createCommands>} ctx */
 export function createSaves(ctx) {
-  const { app, data, recovery, task, sessionScope, run, stale, paintCommand, latestEntity } = ctx;
+  const { app, data, recovery, task, sessionScope, run, stale, paintCommand, latestEntity, fire, failureMessage } = ctx;
 
   // Saves of one record run one at a time, and each builds on the revision the
   // previous save was acknowledged at. Two fields saved close together never
@@ -122,5 +122,21 @@ export function createSaves(ctx) {
     return enqueue(record,operation,payload,entity,message,options);
   }
 
-  return { execute, drafts, draftKey, pruneDrafts, dropDrafts, taskBusy, unsavedDraft, paintDrafts };
+  /**
+   * Offer Undo of the deletion that `result` confirmed. Undo is a save of the
+   * record too: `operation` restores it at the revision its deletion left. A
+   * restore that fails in a way worth trying again offers Undo again; a retry
+   * after an unknown result keeps the restore's key, so it applies once.
+   * @param {any} result @param {{id:string,item:any,deleted:string,restored:string,operation:string}} undo
+   */
+  function offerRestore(result,{id,item,deleted,restored,operation}){
+    const revision=result?.entities?.find((/** @type {any} */ entity)=>entity?.id===id)?.revision;
+    if(!Number.isSafeInteger(revision)){app.toast(deleted,'success');return;}
+    app.offerUndo(deleted,(/** @type {(message:string)=>void} */ again)=>{
+      if(recovery.connection==='offline'){again('Reconnect before making this change.');return;}
+      fire(execute(operation,{id},item,restored,{reload:true,expectedRevision:revision,handleError:(/** @type {any} */ error)=>{if(!retryableFailure(error))return false;again(failureMessage(error));return true;}}));
+    });
+  }
+
+  return { execute, offerRestore, drafts, draftKey, pruneDrafts, dropDrafts, taskBusy, unsavedDraft, paintDrafts };
 }

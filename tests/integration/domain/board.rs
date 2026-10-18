@@ -57,8 +57,8 @@ async fn composite_board_read_keeps_pages_filters_and_global_counts_consistent()
                 let id = format!("board-view-{index:03}");
                 tx.execute(
                     "INSERT INTO tasks
-                     (id,project_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at)
-                     VALUES (?1,'p1','e1',?2,?3,?4,?5,?6,'u1',?7,?7)",
+                     (id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at)
+                     VALUES (?1,'p1','tr1','e1',?2,?3,?4,?5,?6,'u1',?7,?7)",
                     params![
                         id,
                         index + 200,
@@ -182,6 +182,50 @@ async fn http_board_read_parses_multi_filters_and_blocked_across_the_dataset() {
 }
 
 #[tokio::test]
+async fn the_board_filters_by_each_tasks_own_track_and_finds_tasks_without_an_epic() {
+    let f = fixture().await;
+    f.db.transaction(|tx| {
+        tx.execute_batch("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('side','p1','Side',1,1,1);
+            INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES
+                ('in-epic','p1','tr1','e1',1,'ONE-001','In an epic','planning',0,1,1),
+                ('loose','p1','side',NULL,2,'ONE-002','No epic','planning',1024,1,1);")?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let planning = async |track_ids: &[&str], epic_ids: &[&str]| {
+        let mut query = board_query("planning", None);
+        query.filter.track_ids = track_ids.iter().map(|id| id.to_string()).collect();
+        query.filter.epic_ids = epic_ids.iter().map(|id| id.to_string()).collect();
+        let page = f.service.board_page(&f.member, query).await.unwrap();
+        let ids = page
+            .items
+            .iter()
+            .map(|task| task.id.clone())
+            .collect::<Vec<_>>();
+        (ids, page.total)
+    };
+    assert_eq!(
+        planning(&["side"], &[]).await,
+        (vec!["loose".to_owned()], 1)
+    );
+    assert_eq!(
+        planning(&[], &["none"]).await,
+        (vec!["loose".to_owned()], 1)
+    );
+    assert_eq!(
+        planning(&[], &["e1", "none"]).await,
+        (vec!["in-epic".to_owned(), "loose".to_owned()], 2)
+    );
+    assert_eq!(planning(&["tr1"], &["none"]).await, (Vec::new(), 0));
+    let loose = f.service.task(&f.member, "loose".into()).await.unwrap();
+    assert_eq!(
+        (loose.track_id.as_str(), loose.epic_id, loose.started_at),
+        ("side", None, None)
+    );
+}
+
+#[tokio::test]
 async fn a_bootstrap_with_board_filters_has_the_pages_that_the_board_read_has_for_them() {
     let f = fixture().await;
     let now = now();
@@ -197,8 +241,8 @@ async fn a_bootstrap_with_board_filters_has_the_pages_that_the_board_read_has_fo
             };
             tx.execute(
                 "INSERT INTO tasks
-                 (id,project_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at,completed_at)
-                 VALUES (?1,'p1','e1',?2,?3,?4,?5,?2,'u1',?6,?6,?6)",
+                 (id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at,completed_at)
+                 VALUES (?1,'p1','tr1','e1',?2,?3,?4,?5,?2,'u1',?6,?6,?6)",
                 params![format!("filtered-{index:03}"), index + 300, format!("ONE-{}", index + 300), title, status, now],
             )?;
         }
@@ -794,7 +838,7 @@ async fn board_snapshot_batches_cards_and_omits_detail_text_without_changing_sea
     let timestamp = now();
     f.db.transaction(move|tx|{
         for index in 0..200_i64 {
-            tx.execute("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,description,status,position,created_by,created_at,updated_at) VALUES(?1,'p1','e1',?2,?3,'Привет task','Detail only',?4,?5,'u1',?6,?6)",params![format!("batch-{index}"),index+1000,format!("ONE-{}",index+1000),["planning","in_progress","in_review","done"][index as usize%4],index,timestamp])?;
+            tx.execute("INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,description,status,position,created_by,created_at,updated_at) VALUES(?1,'p1','tr1','e1',?2,?3,'Привет task','Detail only',?4,?5,'u1',?6,?6)",params![format!("batch-{index}"),index+1000,format!("ONE-{}",index+1000),["planning","in_progress","in_review","done"][index as usize%4],index,timestamp])?;
         }Ok(())
     }).await.unwrap();
     f.db.run(|connection| {
@@ -982,7 +1026,7 @@ async fn task_pages_detect_concurrent_moves_and_sort_epic_numbers_across_prefixe
     f.db.transaction(|tx| {
         tx.execute("DELETE FROM tasks",[])?;
         for (number,key) in [(1000,"AAA-1000"),(101,"OLD-101"),(5000,"NEW-5000")] {
-            tx.execute("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES(?1,'p1','e1',?2,?1,'Numeric order','planning',?2,1,1)",params![key,number])?;
+            tx.execute("INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES(?1,'p1','tr1','e1',?2,?1,'Numeric order','planning',?2,1,1)",params![key,number])?;
         }
         Ok(())
     }).await.unwrap();
@@ -1017,7 +1061,7 @@ async fn done_column_removal_and_anchored_move_do_not_rewrite_other_cards() {
         // Position writes are recorded, so a few cards show what a large
         // column does. The weekly workload times moves into and deletions
         // from a Done column of about 50,000 cards.
-        let mut insert=tx.prepare("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,completed_at) VALUES(?1,'p1','e1',?2,?1,'Done column','done',?3,1,1,1)")?;
+        let mut insert=tx.prepare("INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,completed_at) VALUES(?1,'p1','tr1','e1',?2,?1,'Done column','done',?3,1,1,1)")?;
         for n in 1..=6_i64 {insert.execute(params![format!("bulk-{n}"),n,n*1024])?;}
         Ok(())
     }).await.unwrap();
@@ -1201,8 +1245,8 @@ async fn seed_done_column(f: &Fixture) {
             (506, "done-f", Some(50)),
         ] {
             tx.execute(
-                "INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,completed_at)
-                 VALUES(?1,'p1','e1',?2,?3,'Finished work','done',?2,1,1,?4)",
+                "INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,completed_at)
+                 VALUES(?1,'p1','tr1','e1',?2,?3,'Finished work','done',?2,1,1,?4)",
                 params![id, number, format!("ONE-{number}"), completed],
             )?;
         }

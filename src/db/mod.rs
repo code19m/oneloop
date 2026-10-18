@@ -847,12 +847,29 @@ pub(crate) fn migrated_connection() -> (tempfile::TempDir, Connection) {
 /// Test support: the plan SQLite chooses for `sql`, one step per line.
 #[cfg(test)]
 pub(crate) fn query_plan(connection: &Connection, sql: &str) -> String {
-    let mut statement = connection
+    let count = connection
+        .prepare(sql)
+        .expect("statement to explain")
+        .parameter_count();
+    query_plan_with(
+        connection,
+        sql,
+        rusqlite::params_from_iter(vec![rusqlite::types::Value::Null; count]),
+    )
+}
+
+/// Test support: the plan SQLite chooses for `sql` with `parameters` bound,
+/// which statistics weigh when they have samples of the values.
+#[cfg(test)]
+pub(crate) fn query_plan_with(
+    connection: &Connection,
+    sql: &str,
+    parameters: impl rusqlite::Params,
+) -> String {
+    connection
         .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
-        .expect("statement to explain");
-    let parameters = vec![rusqlite::types::Value::Null; statement.parameter_count()];
-    statement
-        .query_map(rusqlite::params_from_iter(parameters), |row| row.get(3))
+        .expect("statement to explain")
+        .query_map(parameters, |row| row.get(3))
         .and_then(|steps| steps.collect::<Result<Vec<String>, _>>())
         .expect("query plan")
         .join("\n")

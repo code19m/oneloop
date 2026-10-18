@@ -4,7 +4,7 @@ use super::board::{
 };
 use super::roadmap::{EPIC_SUMMARY_SQL, epics_on, local_midnight};
 use super::*;
-use crate::db::query_plan;
+use crate::db::{query_plan, query_plan_with};
 use jiff::{Timestamp, civil::date};
 
 #[test]
@@ -27,7 +27,7 @@ fn epic_summary_uses_covering_index_and_preserves_local_day_boundaries() {
         (7, "planning", Some(monday), None),
         (8, "done", Some(monday), Some(1)),
     ] {
-        c.execute("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,completed_at,deleted_at) VALUES(?1,'p','e',?2,?1,'Task',?3,?2,1,1,?4,?5)",params![format!("t{id}"),id,status,completed,deleted]).unwrap();
+        c.execute("INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,completed_at,deleted_at) VALUES(?1,'p','tr','e',?2,?1,'Task',?3,?2,1,1,?4,?5)",params![format!("t{id}"),id,status,completed,deleted]).unwrap();
     }
     let result = epics_on(&c, "p", &zone, date(2026, 11, 2)).unwrap();
     let epic = result[0].summary.as_ref().unwrap();
@@ -214,6 +214,87 @@ fn checklist_counts_read_only_the_items_of_the_page() {
     let plan = query_plan(&c, CHECKLIST_COUNTS_SQL);
     assert!(
         plan.contains("SEARCH task_checklist_items USING INDEX") && !plan.contains("TEMP B-TREE"),
+        "{plan}"
+    );
+}
+
+/// A project of 400 tasks on three tracks, with deleted tasks that each have
+/// their own `deleted_at`, and the statistics the server gathers for it. They
+/// make SQLite think few tasks aren't deleted, so it reads a whole column by
+/// `tasks_project_status_idx` unless a read names the track index. A read of
+/// a track's tasks shows its plan here.
+fn analyzed_tracks() -> (tempfile::TempDir, rusqlite::Connection) {
+    let (root, c) = crate::db::migrated_connection();
+    c.execute_batch("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','ONE',1,1);
+        INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('a','p','A',0,1,1),('b','p','B',1,1,1),('c','p','C',2,1,1);").unwrap();
+    let statuses = ["planning", "in_progress", "in_review", "done"];
+    for n in 0..450_i64 {
+        let deleted = (n >= 400).then_some(n);
+        c.execute(
+            "INSERT INTO tasks(id,project_id,track_id,task_number,task_key,title,status,position,created_at,updated_at,deleted_at)
+             VALUES(?1,'p',?2,?3,?1,'Task',?4,?3,1,1,?5)",
+            params![format!("t{n}"), ["a", "b", "c"][n as usize % 3], n + 1, statuses[n as usize % 4], deleted],
+        )
+        .unwrap();
+    }
+    c.execute_batch("ANALYZE").unwrap();
+    (root, c)
+}
+
+thread_local! {
+    static STATEMENTS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The SQL of each statement that `run` makes `connection` execute.
+fn statements(connection: &rusqlite::Connection, run: impl FnOnce()) -> Vec<String> {
+    STATEMENTS.with_borrow_mut(Vec::clear);
+    connection.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
+        Some(|event| {
+            if let rusqlite::trace::TraceEvent::Profile(statement, _) = event {
+                STATEMENTS.with_borrow_mut(|sql| sql.push(statement.sql().into_owned()));
+            }
+        }),
+    );
+    run();
+    connection.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    STATEMENTS.take()
+}
+
+#[test]
+fn reads_of_a_tracks_tasks_use_the_track_index_whatever_the_statistics() {
+    let (_root, c) = analyzed_tracks();
+    let plan = query_plan_with(&c, TRACK_CONTENTS_SQL, params!["p", "a"]);
+    assert!(
+        plan.contains(
+            "SEARCH tasks USING INDEX tasks_project_track_status_idx (project_id=? AND track_id=?)"
+        ),
+        "{plan}"
+    );
+    // The Board's track filter, as a Board read runs it.
+    let generation = board::task_page_generation(&c, "p").unwrap();
+    let query = BoardQuery {
+        project_id: "p".into(),
+        status: TaskStatus::InProgress,
+        cursor: None,
+        limit: Some(50),
+        filter: TaskFilter {
+            track_ids: vec!["a".into()],
+            ..Default::default()
+        },
+    };
+    let mut page = None;
+    let sql = statements(&c, || {
+        page = Some(board::board_page_with_total(&c, &query, None, generation).unwrap());
+    });
+    assert_eq!(page.unwrap().total, 33);
+    let filtered = sql
+        .iter()
+        .find(|sql| sql.contains("track_id IN"))
+        .expect("the track filter");
+    let plan = query_plan_with(&c, filtered, params!["p", "in_progress", r#"["a"]"#, 51]);
+    assert!(
+        plan.contains("SEARCH t USING INDEX tasks_project_track_status_idx (project_id=? AND track_id=? AND status=?)"),
         "{plan}"
     );
 }

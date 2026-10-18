@@ -183,6 +183,7 @@ pub(super) fn promote_pool_item(
     require_project(tx, actor, &item.project_id, Need::Board, false)?;
     let task = TaskCreate {
         project_id: item.project_id.clone(),
+        track_id: input.track_id,
         epic_id: input.epic_id,
         title: input.title.unwrap_or_else(|| item.title.clone()),
         description: input.description.unwrap_or(item.description),

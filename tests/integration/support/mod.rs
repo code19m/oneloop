@@ -104,9 +104,50 @@ pub fn data_dir() -> TempDir {
     root
 }
 
-/// Creates `oneloop.sqlite3` in `root` at schema 2, the schema of 0.1.0-rc.2,
-/// and returns a connection for adding rows before an upgrade.
-pub fn schema_two_database(root: &Path) -> rusqlite::Connection {
+/// The migrations of earlier releases, as `db migrate` applied them.
+const EARLIER_MIGRATIONS: [(i64, &str, &str); 8] = [
+    (
+        1,
+        "initial",
+        include_str!("../../../migrations/0001_initial.sql"),
+    ),
+    (
+        2,
+        "knowledge",
+        include_str!("../../../migrations/0002_knowledge.sql"),
+    ),
+    (
+        3,
+        "file_deletion_provenance",
+        include_str!("../../../migrations/0003_file_deletion_provenance.sql"),
+    ),
+    (
+        4,
+        "done_order",
+        include_str!("../../../migrations/0004_done_order.sql"),
+    ),
+    (5, "undo", include_str!("../../../migrations/0005_undo.sql")),
+    (
+        6,
+        "completion_order",
+        include_str!("../../../migrations/0006_completion_order.sql"),
+    ),
+    (
+        7,
+        "upload_replaces",
+        include_str!("../../../migrations/0007_upload_replaces.sql"),
+    ),
+    (
+        8,
+        "task_checklist",
+        include_str!("../../../migrations/0008_task_checklist.sql"),
+    ),
+];
+
+/// Creates `oneloop.sqlite3` in `root` at schema `version`, as an earlier
+/// release left it: 2 is 0.1.0-rc.2's, 3 is `main`'s before 0.1.0-rc.4. Returns
+/// a connection for adding rows before an upgrade.
+pub fn database_at_schema(root: &Path, version: i64) -> rusqlite::Connection {
     use sha2::{Digest, Sha256};
     let connection = rusqlite::Connection::open(root.join("oneloop.sqlite3")).unwrap();
     // Stored triggers need the server's Unicode lower-case function.
@@ -120,18 +161,7 @@ pub fn schema_two_database(root: &Path) -> rusqlite::Connection {
         )
         .unwrap();
     connection.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL UNIQUE,checksum TEXT NOT NULL,applied_at INTEGER NOT NULL)").unwrap();
-    for (version, name, sql) in [
-        (
-            1,
-            "initial",
-            include_str!("../../../migrations/0001_initial.sql"),
-        ),
-        (
-            2,
-            "knowledge",
-            include_str!("../../../migrations/0002_knowledge.sql"),
-        ),
-    ] {
+    for (version, name, sql) in EARLIER_MIGRATIONS.into_iter().take(version as usize) {
         connection.execute_batch(sql).unwrap();
         connection
             .execute(
@@ -143,24 +173,6 @@ pub fn schema_two_database(root: &Path) -> rusqlite::Connection {
             .pragma_update(None, "user_version", version)
             .unwrap();
     }
-    connection
-}
-
-/// Creates `oneloop.sqlite3` in `root` at schema 3, the schema of `main`
-/// before 0.1.0-rc.4, and returns a connection for adding rows before an
-/// upgrade.
-pub fn schema_three_database(root: &Path) -> rusqlite::Connection {
-    use sha2::{Digest, Sha256};
-    let connection = schema_two_database(root);
-    let sql = include_str!("../../../migrations/0003_file_deletion_provenance.sql");
-    connection.execute_batch(sql).unwrap();
-    connection
-        .execute(
-            "INSERT INTO schema_migrations VALUES(3,'file_deletion_provenance',?1,1)",
-            [hex::encode(Sha256::digest(sql.as_bytes()))],
-        )
-        .unwrap();
-    connection.pragma_update(None, "user_version", 3).unwrap();
     connection
 }
 

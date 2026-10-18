@@ -21,7 +21,8 @@ use pool::{
 use project::{create_project, delete_project, update_project};
 use roadmap::{
     complete_epic, create_epic, create_milestone, create_track, delete_epic, delete_milestone,
-    delete_track, reopen_epic, reorder_track, update_epic, update_milestone, update_track,
+    delete_track, reopen_epic, reorder_track, restore_epic, update_epic, update_milestone,
+    update_track,
 };
 use task::{create_task, delete_task, move_task, restore_task, update_task};
 
@@ -63,7 +64,6 @@ const NAME_MAX: usize = 60;
 const EPIC_TITLE_MAX: usize = 120;
 const TASK_TITLE_MAX: usize = 140;
 const EPIC_DESCRIPTION_MAX: usize = 2_000;
-const TRACK_DESCRIPTION_MAX: usize = 2_000;
 const POOL_DESCRIPTION_MAX: usize = 2_000;
 const BLOCK_REASON_MAX: usize = 500;
 const BLOCK_RESOLUTION_MAX: usize = 500;
@@ -152,6 +152,7 @@ fn dispatch(
         }
         DomainOperation::ReopenEpic => reopen_epic(tx, actor, payload!(EntityId), expected, now),
         DomainOperation::DeleteEpic => delete_epic(tx, actor, payload!(EntityId), expected, now),
+        DomainOperation::RestoreEpic => restore_epic(tx, actor, payload!(EntityId), expected, now),
         DomainOperation::CreateMilestone => {
             create_milestone(tx, actor, payload!(MilestoneCreate), now)
         }
@@ -301,7 +302,8 @@ fn ensure_project_and_active_user(
 
 struct TaskRow {
     project_id: String,
-    epic_id: String,
+    track_id: String,
+    epic_id: Option<String>,
     task_key: String,
     title: String,
     description: String,
@@ -311,27 +313,30 @@ struct TaskRow {
     position: i64,
 }
 
+/// The columns `TaskRow::from_row` reads, in its order.
+const TASK_ROW_COLUMNS: &str =
+    "project_id,track_id,epic_id,task_key,title,description,status,deadline,revision,position";
+
 impl TaskRow {
-    /// Reads the columns of `task_row`'s query, in its order.
     fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             project_id: row.get(0)?,
-            epic_id: row.get(1)?,
-            task_key: row.get(2)?,
-            title: row.get(3)?,
-            description: row.get(4)?,
-            status: row.get(5)?,
-            deadline: row.get(6)?,
-            revision: row.get(7)?,
-            position: row.get(8)?,
+            track_id: row.get(1)?,
+            epic_id: row.get(2)?,
+            task_key: row.get(3)?,
+            title: row.get(4)?,
+            description: row.get(5)?,
+            status: row.get(6)?,
+            deadline: row.get(7)?,
+            revision: row.get(8)?,
+            position: row.get(9)?,
         })
     }
 }
 
 fn task_row(tx: &Transaction<'_>, id: &str) -> AppResult<TaskRow> {
     tx.query_row(
-        "SELECT project_id,epic_id,task_key,title,description,status,deadline,revision,position FROM tasks \
-                     WHERE id=?1 AND deleted_at IS NULL",
+        &format!("SELECT {TASK_ROW_COLUMNS} FROM tasks WHERE id=?1 AND deleted_at IS NULL"),
         [id],
         TaskRow::from_row,
     )
@@ -347,7 +352,8 @@ enum Entity {
     Track(TrackView),
     Epic(EpicView),
     Milestone(MilestoneView),
-    Task(TaskView),
+    // A task is much larger than the others.
+    Task(Box<TaskView>),
     ChecklistItem(ChecklistItemView),
     PoolItem(PoolItemView),
 }
@@ -360,7 +366,7 @@ impl Entity {
 }
 
 fn task_entity(tx: &Transaction<'_>, id: &str) -> AppResult<Value> {
-    Entity::Task(super::reads::task_view(tx, id)?).value()
+    Entity::Task(Box::new(super::reads::task_view(tx, id)?)).value()
 }
 
 /// What a command returns for a record it deleted.
@@ -374,24 +380,52 @@ fn deleted(entity_type: &str, id: &str, project_id: &str, revision: i64) -> Valu
     })
 }
 
-fn ensure_open_epic(tx: &Transaction<'_>, epic_id: &str, project_id: &str) -> AppResult<()> {
-    let state: Option<String> = tx
+/// The track of an open epic of the project, which a task can join.
+fn open_epic_track(tx: &Transaction<'_>, epic_id: &str, project_id: &str) -> AppResult<String> {
+    let epic: Option<(String, String)> = tx
         .query_row(
-            "SELECT state FROM epics WHERE id=?1 AND project_id=?2 AND deleted_at IS NULL",
+            "SELECT track_id,state FROM epics WHERE id=?1 AND project_id=?2 AND deleted_at IS NULL",
             params![epic_id, project_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    match state.as_deref() {
+    match epic {
         None => Err(AppError::validation(
             "epicId",
             "epic does not belong to this project",
         )),
-        Some("done") => Err(AppError::PreconditionFailed(
+        Some((_, state)) if state == "done" => Err(AppError::PreconditionFailed(
             "completed epics cannot receive new tasks".into(),
         )),
-        Some(_) => Ok(()),
+        Some((track_id, _)) => Ok(track_id),
     }
+}
+
+/// Where a new task goes: on the track that `track_id` names, or without
+/// one on its epic's track, and in its epic when it has one.
+fn new_task_place(
+    tx: &Transaction<'_>,
+    project_id: &str,
+    track_id: Option<String>,
+    epic_id: Option<String>,
+) -> AppResult<(String, Option<String>)> {
+    let Some(epic_id) = epic_id else {
+        let track_id = track_id
+            .ok_or_else(|| AppError::validation("trackId", "provide a trackId or an epicId"))?;
+        roadmap::ensure_track_project(tx, &track_id, project_id)?;
+        return Ok((track_id, None));
+    };
+    let epic_track = open_epic_track(tx, &epic_id, project_id)?;
+    if let Some(track_id) = track_id
+        && track_id != epic_track
+    {
+        roadmap::ensure_track_project(tx, &track_id, project_id)?;
+        return Err(AppError::validation(
+            "epicId",
+            "epic is on another track than trackId",
+        ));
+    }
+    Ok((epic_track, Some(epic_id)))
 }
 
 fn validate_assignees(
@@ -494,6 +528,8 @@ const HAS_OPEN_ASSIGNMENTS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM task_assigne
                      a.user_id=?1 AND t.project_id=?2 AND t.deleted_at IS NULL AND t.status<>'done')";
 const NEXT_TRACK_POSITION_SQL: &str =
     "SELECT COALESCE(MAX(position),-1)+1 FROM tracks WHERE project_id=?1 AND deleted_at IS NULL";
+const NEXT_EPIC_POSITION_SQL: &str =
+    "SELECT COALESCE(MAX(position),-1)+1 FROM epics WHERE track_id=?1 AND deleted_at IS NULL";
 const INSERT_EPIC_SQL: &str = "INSERT INTO epics (id,project_id,track_id,title,description,start_date,end_date,state,\
                      position,created_by,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'planning',?8,?9,?10,?10)";
 const EPIC_ROW_SQL: &str = "SELECT project_id,track_id,title,description,start_date,end_date,state,position,revision \
@@ -501,14 +537,17 @@ const EPIC_ROW_SQL: &str = "SELECT project_id,track_id,title,description,start_d
 const SET_EPIC_STATE_SQL: &str = "UPDATE epics SET state=?1,completed_at=?2,updated_at=?3,revision=?4 WHERE id=?5 AND revision=?6";
 const MILESTONE_ROW_SQL: &str = "SELECT project_id,title,description,milestone_date,revision FROM milestones WHERE id=?1 \
                      AND deleted_at IS NULL";
-const INSERT_TASK_SQL: &str = "INSERT INTO tasks (id,project_id,epic_id,task_number,task_key,title,description,status,\
-                     position,deadline,created_by,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,\
-                     'planning',?8,?9,?10,?11,?11)";
+const INSERT_TASK_SQL: &str = "INSERT INTO tasks (id,project_id,track_id,epic_id,task_number,task_key,title,description,\
+                     status,position,deadline,created_by,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,\
+                     'planning',?9,?10,?11,?12,?12)";
 /// Moves a task, and gives it the next completion order when it enters Done.
+/// A task that enters In Progress or In Review without a start of work gets
+/// one; it keeps it until it goes back to Planning.
 const MOVE_TASK_SQL: &str = "UPDATE tasks SET status=?1,position=?2,completed_at=CASE WHEN status=?1 THEN completed_at ELSE ?3 END,\
                      completion_order=CASE WHEN status=?1 THEN completion_order WHEN ?1='done' THEN (SELECT \
-                     COALESCE(MAX(completion_order),0)+1 FROM tasks WHERE completion_order>0) ELSE 0 END,updated_at=?4,\
-                     revision=revision+1 WHERE id=?5 AND revision=?6";
+                     COALESCE(MAX(completion_order),0)+1 FROM tasks WHERE completion_order>0) ELSE 0 END,\
+                     started_at=CASE WHEN ?1='planning' THEN NULL WHEN ?1 IN ('in_progress','in_review') AND \
+                     status<>?1 THEN COALESCE(started_at,?4) ELSE started_at END,updated_at=?4,revision=revision+1 WHERE id=?5 AND revision=?6";
 
 const ACTIVE_BLOCK_SQL: &str = "SELECT b.project_id,b.task_id,b.reason,b.revision FROM task_blocks b \
     JOIN tasks t ON t.id=b.task_id AND t.deleted_at IS NULL WHERE b.id=?1 AND b.resolved_at IS NULL";
@@ -518,7 +557,6 @@ const POOL_ITEM_SQL: &str = "SELECT project_id,scope,owner_user_id,title,descrip
 struct TrackRow {
     project_id: String,
     name: String,
-    description: String,
     position: i64,
     revision: i64,
 }
@@ -527,9 +565,8 @@ impl TrackRow {
         Ok(Self {
             project_id: row.get(0)?,
             name: row.get(1)?,
-            description: row.get(2)?,
-            position: row.get(3)?,
-            revision: row.get(4)?,
+            position: row.get(2)?,
+            revision: row.get(3)?,
         })
     }
 }

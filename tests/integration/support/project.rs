@@ -33,8 +33,8 @@ pub async fn seed_project<const N: usize>(db: &Db, people: [(&str, Role); N]) ->
                 VALUES ('track','p1','Track',0,{now},{now});
             INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at)
                 VALUES ('epic','p1','track','Epic','2026-01-01',0,{now},{now});
-            INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
-                VALUES ('task','p1','epic',1,'ONE-001','Task','planning',0,{now},{now});
+            INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
+                VALUES ('task','p1','track','epic',1,'ONE-001','Task','planning',0,{now},{now});
         "#))?;
         Ok(())
     })

@@ -995,7 +995,7 @@ async fn project_deletion_revokes_every_grant_that_selected_it() {
         connection.execute_batch(
             "INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('kept-track','project-1','Track',0,1,1);
             INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at) VALUES('kept-epic','project-1','kept-track','Epic','2026-01-01',0,1,1);
-            INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('kept-task','project-1','kept-epic',1,'PRJ-001','Kept','planning',0,1,1);",
+            INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('kept-task','project-1','kept-track','kept-epic',1,'PRJ-001','Kept','planning',0,1,1);",
         )?;
         Ok(())
     })

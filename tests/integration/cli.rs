@@ -265,7 +265,7 @@ fn upgrade_messages_lead_to_a_command_that_works() {
     let backups = root.path().join("backups");
     std::fs::create_dir_all(&data).unwrap();
     std::fs::create_dir(&backups).unwrap();
-    drop(crate::support::schema_two_database(&data));
+    drop(crate::support::database_at_schema(&data, 2));
     let command = || {
         let mut command = ProcessCommand::cargo_bin("oneloop").unwrap();
         command

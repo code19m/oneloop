@@ -3,7 +3,7 @@
 /** The view bridge's task actions: fields saved from the task page, new tasks and Pool promotions, blocks, deletion and Undo. */
 
 import { toWireScope, toWireStatus } from '../../data/wire.js';
-import { retryableFailure, validDate } from '../action-feedback.js';
+import { validDate } from '../action-feedback.js';
 import { isFormRetryPending, completeForm } from '../form-feedback.js';
 import { text } from './commands.js';
 
@@ -14,7 +14,7 @@ const BLOCK_MESSAGES = Object.freeze({
 
 /** @param {import('../view-bridge.js').BridgeContext} ctx */
 export function installTasks(ctx) {
-  const { app, data, gateway, reads, recovery, task, poolItem, context, sessionScope, nav, execute, fire, accepted, refusedAtOnce, formValues, fieldError, validOptionalDate, skipped, ifCurrent, failureMessage, drafts, draftKey, pruneDrafts, dropDrafts, taskBusy, unsavedDraft, paintDrafts } = ctx;
+  const { app, data, gateway, reads, recovery, task, poolItem, context, sessionScope, nav, execute, offerRestore, fire, accepted, refusedAtOnce, formValues, fieldError, validOptionalDate, skipped, ifCurrent, drafts, draftKey, pruneDrafts, dropDrafts, taskBusy, unsavedDraft, paintDrafts } = ctx;
   const assigneeSaves=new Map();
   const pendingTaskForms = new WeakSet();
   let promotionSource=null;
@@ -73,7 +73,8 @@ export function installTasks(ctx) {
     const next=field==='deadline'?(value||null):text(value,field==='title'?140:4000);
     if(field==='title'&&!next)return fieldError(form,'title','Enter a task title.');
     if(field==='deadline'&&next&&!validDate(next)){app.toast('Enter a valid deadline in YYYY-MM-DD format.','error');return false;}
-    if(field==='epicId'&&!data.epics.some((entry)=>entry.id===next&&entry.projectId===item.projectId&&entry.state!=='done')){app.toast('Choose an open epic. Completed epics must be reopened first.','error');return false;}
+    const chosenEpic=field==='epicId'?data.epics.find((entry)=>entry.id===next&&entry.projectId===item.projectId&&entry.state!=='done'):null;
+    if(field==='epicId'&&!chosenEpic){app.toast('Choose an open epic. Completed epics must be reopened first.','error');return false;}
     let draft;pruneDrafts();
     if(field==='title'||field==='desc'){
       draft=draftKey(item.internalId,field);
@@ -84,7 +85,9 @@ export function installTasks(ctx) {
       if(next===(field==='title'?item.title:item.desc??'')&&!previous)draft=undefined;
       else{drafts.set(draft,{taskId:item.internalId,field,value:next,base,scope:sessionScope(),unsaved:false,retryOnline:false});if(previous?.unsaved)paintDrafts(item.internalId);}
     }else if(refusedAtOnce(form))return false;
-    return accepted(execute('task.update',{taskId:item.internalId,[names[field]]:next},item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>document.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
+    // An epic on another track moves the task there with it.
+    const payload={taskId:item.internalId,[names[field]]:next,...(chosenEpic&&chosenEpic.trackId!==item.trackId?{trackId:chosenEpic.trackId}:{})};
+    return accepted(execute('task.update',payload,item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>document.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
   }
   function retryDrafts(){
     for(const draft of [...drafts.values()]){
@@ -153,18 +156,7 @@ export function installTasks(ctx) {
       if(!isFormRetryPending(form))buttons.forEach((button,index)=>button.disabled=disabled[index]);
     }));
   };
-  app.deleteTask = (id) => {const item=task(id);if(!item)return;app.confirm({title:'Delete task?',text:`${item.id} will be deleted with its comments and files. You can undo this right after.`,action:'Delete task',confirm:()=>fire(execute('task.delete',{id:item.internalId},item,null,{reload:true,onAccepted:()=>{dropDrafts(item.internalId);nav('board');}}).then((result)=>ifCurrent(result,()=>undoTaskDeletion(item,result))))});};
-  // Undo restores the task at the revision its deletion left. A restore that
-  // fails in a way worth trying again offers Undo again; a retry after an
-  // unknown result keeps the restore's key, so it applies once.
-  function undoTaskDeletion(item,result){
-    const revision=result?.entities?.find((entity)=>entity?.id===item.internalId)?.revision;
-    if(!Number.isSafeInteger(revision)){app.toast(`${item.id} deleted`,'success');return;}
-    app.offerUndo(`${item.id} deleted`,(again)=>{
-      if(recovery.connection==='offline'){again('Reconnect before making this change.');return;}
-      fire(execute('task.restore',{id:item.internalId},item,`${item.id} restored`,{reload:true,expectedRevision:revision,handleError:(error)=>{if(!retryableFailure(error))return false;again(failureMessage(error));return true;}}));
-    });
-  }
+  app.deleteTask = (id) => {const item=task(id);if(!item)return;app.confirm({title:'Delete task?',text:`${item.id} will be deleted with its comments and files. You can undo this right after.`,action:'Delete task',confirm:()=>fire(execute('task.delete',{id:item.internalId},item,null,{reload:true,onAccepted:()=>{dropDrafts(item.internalId);nav('board');}}).then((result)=>ifCurrent(result,()=>offerRestore(result,{id:item.internalId,item,deleted:`${item.id} deleted`,restored:`${item.id} restored`,operation:'task.restore'}))))});};
 
   app.saveBlock=(event,id,mode)=>{
     const form=event.target,values=formValues(event),item=task(id);if(!item)return false;const reason=text(values.get('reason'),500);

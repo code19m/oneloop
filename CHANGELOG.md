@@ -6,13 +6,56 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- Stop oneloop, install the new version, and run
+  `oneloop db migrate --backup-dir <directory>`. It saves a backup first, then
+  upgrades the database from schema 8 to schema 9. Older versions refuse a
+  schema 9 database. To go back to one, restore the backup that `db migrate`
+  made.
+- Every task is now on a track, and an epic is optional. The upgrade puts
+  each task on its epic's track and keeps every task, epic and track. If you
+  made epics only to hold a track's tasks, you can delete them afterwards:
+  their tasks stay on their tracks.
+- The upgrade also records when work started on each task in progress, in
+  review or done, from its history. A task in progress or in review whose
+  history doesn't show it takes the time of its last change.
+- Track descriptions are gone. The web app no longer showed them. In MCP,
+  `track.create` and `track.update` no longer take a `description`, and a call
+  that still sends one fails with `validation_failed`; track reads no longer
+  return one.
+- The other MCP changes add to what clients send and read, so connected AI
+  assistants keep working: a task created with only an `epicId` still goes on
+  the epic's track.
+
 ### Added
 
 - In MCP, `list_projects` names the task prefixes that each project had
   before, in `earlierPrefixes`. Older tasks keep their keys with them.
+- A task can be on a track without an epic. In MCP, `task.create` and
+  `pool.promote` take a `trackId`, and `task.update` can move a task to
+  another track or take it out of its epic with `epicId: null`. Task reads
+  have `trackId`, and `epicId` is null for a task without an epic.
+- The Board's epic filter offers **No epic**, and `search_tasks` in MCP takes
+  `epicIds: ["none"]`.
+- Each task records when work on it started: `startedAt` in MCP reads, the
+  time it first entered In Progress or In Review since it was last in
+  Planning.
+- **Undo** right after deleting an epic brings it back, with the tasks that
+  are still on its track without an epic.
 
 ### Changed
 
+- Deleting an epic keeps its tasks on its track, without an epic. Before, an
+  epic with tasks couldn't be deleted.
+- A track can be deleted only when it has no tasks and no epics, and the
+  message says how many it has. Moving an epic to another track moves its
+  tasks with it.
+- Choosing an epic on another track on a task's page moves the task to that
+  track. An epic on another track than the task's is refused, also in MCP.
+- Restoring a deleted task whose epic was deleted meanwhile brings it back on
+  its track without the epic. Before, it couldn't be restored. A task whose
+  track was deleted meanwhile can't be restored.
 - A track's **⋮** menu on the **Roadmap** now offers only **Rename track** and
   **Delete track**. To move a track, drag its grip, or focus the grip and use
   the arrow keys, Home and End. A dragged track now shows its name and a line

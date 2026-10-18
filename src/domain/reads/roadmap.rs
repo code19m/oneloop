@@ -14,7 +14,7 @@ pub(super) fn tracks(
     project_id: &str,
 ) -> AppResult<Vec<TrackView>> {
     let mut s = connection.prepare_cached(
-        "SELECT id,project_id,name,description,position,revision FROM tracks WHERE project_id=?1 \
+        "SELECT id,project_id,name,position,revision FROM tracks WHERE project_id=?1 \
                      AND deleted_at IS NULL ORDER BY position,id",
     )?;
     Ok(s.query_map([project_id], |r| {
@@ -22,9 +22,8 @@ pub(super) fn tracks(
             id: r.get(0)?,
             project_id: r.get(1)?,
             name: r.get(2)?,
-            description: r.get(3)?,
-            position: r.get(4)?,
-            revision: r.get(5)?,
+            position: r.get(3)?,
+            revision: r.get(4)?,
         })
     })?
     .collect::<Result<Vec<_>, _>>()?)

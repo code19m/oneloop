@@ -125,7 +125,7 @@ pub(super) struct SearchTasksInput {
     /// Filter to these track IDs; empty means all tracks.
     pub track_ids: Vec<String>,
     #[serde(default)]
-    /// Filter to these epic IDs; empty means all epics.
+    /// Filter to these epic IDs, and `none` for tasks without an epic; empty means all epics.
     pub epic_ids: Vec<String>,
     #[serde(default)]
     /// Filter to these assignee user IDs.
@@ -1161,7 +1161,9 @@ fn command_variants(tool: McpTool) -> Vec<Value> {
             | DomainOperation::RemoveMembership => {
                 unreachable!("administration is excluded from MCP")
             }
-            DomainOperation::RestoreTask => unreachable!("Undo is excluded from MCP"),
+            DomainOperation::RestoreTask | DomainOperation::RestoreEpic => {
+                unreachable!("Undo is excluded from MCP")
+            }
         };
         variants.push(command_variant(operation.as_str(), payload));
     }

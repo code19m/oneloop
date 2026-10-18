@@ -10,7 +10,7 @@ import {
   previewFile, shownPreview,
 } from '../../src/features/files/preview.js';
 import { UIAction, esc, formatInstant, setHTML } from './format.js';
-import { App, D, canReadTask, epicById, hasPermission, recovery, runtime, taskById, trackById } from './model.js';
+import { App, D, canReadTask, hasPermission, recovery, runtime, taskById, taskTrack } from './model.js';
 import { askConfirmation } from './overlays.js';
 
 const maxFile=()=>D.limits.maxAttachmentBytes,maxFiles=()=>D.limits.maxAttachmentsPerTask;
@@ -25,7 +25,7 @@ let loaded=new WeakSet(),next=0;
 let attachmentsRead=new Set();
 const transport=()=>runtime().transport.api;
 /** Whether the person may change `taskId`'s attachments. */
-const canEdit=taskId=>hasPermission('manage_board',trackById(epicById(taskById(taskId)?.epicId)?.trackId)?.projectId);
+const canEdit=taskId=>hasPermission('manage_board',taskTrack(taskById(taskId))?.projectId);
 const escape=value=>esc(displayText(value));
 const available=task=>(task.attachments||[]).filter(f=>!f.state||f.state==='available');
 

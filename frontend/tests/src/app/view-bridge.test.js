@@ -535,6 +535,22 @@ function taskPage(overrides={}){
   return {...state,item,requests,accept};
 }
 
+test('an epic chosen on the task page from another track moves the task there with it',async()=>{
+  const state=taskPage();
+  state.item.trackId='t1';
+  state.data.epics.push({id:'e1',projectId:'p1',trackId:'t1',state:'active'},{id:'elsewhere',projectId:'p1',trackId:'t2',state:'planning'});
+  state.app.updTask('ONE-1','epicId','elsewhere');
+  assert.deepEqual(state.requests[0].command.payload,{taskId:'t1',epicId:'elsewhere',trackId:'t2'});
+  state.accept(0,{trackId:'t2',epicId:'elsewhere'});await settle();
+  state.app.updTask('ONE-1','epicId','e1');
+  assert.deepEqual(state.requests[1].command.payload,{taskId:'t1',epicId:'e1',trackId:'t1'});
+  state.accept(1,{trackId:'t1',epicId:'e1'});await settle();
+  // The same track's epic needs no track.
+  state.data.epics.push({id:'beside',projectId:'p1',trackId:'t1',state:'active'});
+  state.app.updTask('ONE-1','epicId','beside');
+  assert.deepEqual(state.requests[2].command.payload,{taskId:'t1',epicId:'beside'});
+});
+
 test('two task fields saved close together build on each other instead of conflicting',async()=>{
   const state=taskPage();
   state.app.updTask('ONE-1','title','New title');state.app.updTask('ONE-1','desc','New description');state.app.updTask('ONE-1','state','progress');
@@ -819,6 +835,37 @@ test('a task Undo the server can no longer apply is only reported, and one witho
   offline.state.toasts.at(-1)[2].action.run();
   assert.deepEqual(offline.state.toasts.at(-1).slice(0,2),['Reconnect before making this change.','error']);
   assert.equal(offline.state.toasts.at(-1)[2].action.label,'Undo');assert.equal(offline.restores().length,0);
+});
+
+test('deleting an epic says its tasks stay on its track, reads them again and offers Undo, which restores the epic',async()=>{
+  const commands=[];let confirmation,reloads=0;
+  const gateway={execute:async(operation,payload,input)=>{commands.push([operation,payload,input.expectedRevision]);return operation==='epic.delete'?{entities:[{entityType:'epic',id:'e1',projectId:'p1',deleted:true,revision:2}],events:[]}:{entities:[],events:[]};}};
+  const state=fixture({view:'roadmap',projectId:'p1'},{gateway,app:{confirm(options){confirmation=options;}},reloadBootstrap:async()=>{reloads++;return {};}});
+  state.data.tracks.push({id:'t1',projectId:'p1',name:'Backend'});
+  state.data.epics.push({id:'e1',projectId:'p1',trackId:'t1',title:'Payments',revision:1});
+  state.app.deleteEpic('e1');
+  assert.equal(confirmation.text,'“Payments” will be deleted. Its tasks stay on Backend without an epic. You can undo this right after.');
+  confirmation.confirm();
+  await waitFor(()=>state.toasts.length);
+  const [text,kind,options]=state.toasts.at(-1);
+  assert.deepEqual([text,kind,options.action.label],['Epic deleted','success','Undo']);
+  options.action.run();
+  await waitFor(()=>state.toasts.length>=2);
+  assert.deepEqual(commands,[['epic.delete',{id:'e1'},1],['epic.restore',{id:'e1'},2]]);
+  assert.deepEqual(state.toasts.at(-1),['Epic restored']);
+  assert.equal(reloads,2,'the tasks the epic left, and took back, are read again');
+});
+
+test('an epic moved to another track reads its tasks again, and an epic renamed does not',async()=>{
+  let reloads=0;const sent=[];
+  const state=fixture({view:'roadmap',projectId:'p1'},{gateway:{execute:async(operation,payload)=>{sent.push(payload);return {entities:[],events:[]};}},reloadBootstrap:async()=>{reloads++;return {};}});
+  state.data.tracks.push({id:'t1',projectId:'p1',name:'Backend'},{id:'t2',projectId:'p1',name:'Design'});
+  state.data.epics.push({id:'e1',projectId:'p1',trackId:'t1',title:'Payments',desc:'',start:'2026-01-01',end:null,revision:1});
+  const save=(values)=>state.app.saveEpic(submit(form(inputs({title:'Payments',desc:'',start:'2026-01-01',end:'',...values}))),'e1');
+  save({trackId:'t1',title:'Payments v2'});await settle();
+  assert.equal(reloads,0);
+  save({trackId:'t2'});await settle();
+  assert.equal(sent.at(-1).trackId,'t2');assert.equal(reloads,1);
 });
 
 test('a deleted task offers Undo, which restores it at the revision its deletion left',async()=>{
