@@ -976,8 +976,8 @@ async fn bulk_inbox_uses_displayed_filter_and_actor_identity_is_immutable() {
     let actor = f.alice.clone();
     f.db.transaction(move |tx| {
         tx.execute("UPDATE users SET display_name='Bob' WHERE id='alice'", [])?;
-        tx.execute("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
-            SELECT 'deleted-task',project_id,epic_id,2,'ONE-002','Deleted','planning',1,created_at,updated_at FROM tasks WHERE id='task'", [])?;
+        tx.execute("INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
+            SELECT 'deleted-task',project_id,track_id,epic_id,2,'ONE-002','Deleted','planning',1,created_at,updated_at FROM tasks WHERE id='task'", [])?;
         for task_id in ["task", "deleted-task"] {
             snapshot_notification_tx(tx,&actor, NotificationInput {
                 project_id:"p1",event_type:"task.assigned",task_id:Some(task_id),comment_id:None,

@@ -27,7 +27,7 @@ fn epic_summary_uses_covering_index_and_preserves_local_day_boundaries() {
         (7, "planning", Some(monday), None),
         (8, "done", Some(monday), Some(1)),
     ] {
-        c.execute("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,completed_at,deleted_at) VALUES(?1,'p','e',?2,?1,'Task',?3,?2,1,1,?4,?5)",params![format!("t{id}"),id,status,completed,deleted]).unwrap();
+        c.execute("INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,completed_at,deleted_at) VALUES(?1,'p','tr','e',?2,?1,'Task',?3,?2,1,1,?4,?5)",params![format!("t{id}"),id,status,completed,deleted]).unwrap();
     }
     let result = epics_on(&c, "p", &zone, date(2026, 11, 2)).unwrap();
     let epic = result[0].summary.as_ref().unwrap();

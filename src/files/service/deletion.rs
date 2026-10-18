@@ -447,8 +447,8 @@ mod tests {
                  INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('tr','p','Track',0,1,1);
                  INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at)
                      VALUES('e','p','tr','Epic','2026-11-01',0,1,1);
-                 INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
-                     VALUES('t','p','e',1,'ONE-1','Task','planning',0,1,1);",
+                 INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
+                     VALUES('t','p','tr','e',1,'ONE-1','Task','planning',0,1,1);",
             )?;
             tx.execute(
                 "INSERT INTO file_blobs(id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at)

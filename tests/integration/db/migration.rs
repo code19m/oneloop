@@ -18,7 +18,7 @@ async fn pending_deletion_provenance_survives_schema_upgrade_backup_and_restore(
     let root = support::scratch_dir();
     let live = root.path().join("live");
     fs::create_dir(&live).unwrap();
-    let connection = support::schema_two_database(&live);
+    let connection = support::database_at_schema(&live, 2);
     connection.execute_batch("INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at) VALUES('u','owner','Original','hash',1,1,1);
         INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','PRJ',1,1);
         INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('tr','p','Track',0,1,1);
@@ -105,7 +105,7 @@ async fn a_main_branch_database_upgrades_to_undo_with_its_deletions_intact() {
     let root = support::scratch_dir();
     let live = root.path().join("live");
     fs::create_dir(&live).unwrap();
-    let connection = support::schema_three_database(&live);
+    let connection = support::database_at_schema(&live, 3);
     let now = support::now();
     connection.execute_batch(&format!("INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at) VALUES('u','owner','Owner','hash',1,1,1);
         INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at) VALUES('s','u','h',{now},{now},{now},{expiry},{expiry});
@@ -264,7 +264,7 @@ async fn an_upgraded_done_column_keeps_its_order_and_puts_new_completions_first(
     let root = support::scratch_dir();
     let live = root.path().join("live");
     fs::create_dir(&live).unwrap();
-    let connection = support::schema_three_database(&live);
+    let connection = support::database_at_schema(&live, 3);
     let now = support::now();
     connection.execute_batch(&format!("INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at) VALUES('u','owner','Owner','hash',1,1,1);
         INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at) VALUES('s','u','h',{now},{now},{now},{expiry},{expiry});
@@ -320,6 +320,194 @@ async fn an_upgraded_done_column_keeps_its_order_and_puts_new_completions_first(
     .await
     .unwrap();
     assert_eq!(newest().await, ["open", "b", "a", "c"]);
+}
+
+/// The names and SQL of a database's indexes and triggers.
+fn indexes_and_triggers(connection: &Connection) -> std::collections::BTreeMap<String, String> {
+    connection
+        .prepare("SELECT name,sql FROM sqlite_schema WHERE type IN ('index','trigger') AND sql IS NOT NULL")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+#[test]
+fn a_schema_eight_database_puts_every_task_on_its_epics_track() {
+    let root = support::scratch_dir();
+    let live = root.path().join("live");
+    fs::create_dir(&live).unwrap();
+    let connection = support::database_at_schema(&live, 8);
+    // Tasks in every status, with and without history, on epics with and
+    // without an end date, and deleted tasks, epics and tracks.
+    connection.execute_batch(r#"
+        INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at) VALUES('u','owner','Owner','hash',1,1,1);
+        INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','PRJ',1,1);
+        INSERT INTO project_memberships(project_id,user_id,manage_board,created_at,updated_at) VALUES('p','u',1,1,1);
+        INSERT INTO tracks(id,project_id,name,description,position,created_at,updated_at) VALUES
+            ('web','p','Web','Old notes',0,1,1),('api','p','API','',1,1,1),('gone','p','Gone','',2,1,1);
+        INSERT INTO epics(id,project_id,track_id,title,start_date,end_date,position,created_at,updated_at) VALUES
+            ('dated','p','web','Dated','2026-01-01','2026-02-01',0,1,1),('open','p','api','Open','2026-01-01',NULL,0,1,1),
+            ('gone-epic','p','gone','Gone','2026-01-01',NULL,0,1,1);
+        INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,completed_at,completion_order,deleted_at) VALUES
+            ('planning','p','dated',1,'PRJ-001','Planned','planning',0,1,1,NULL,0,NULL),
+            ('progress','p','open',2,'PRJ-002','Started','in_progress',0,1,1,NULL,0,NULL),
+            ('review','p','open',3,'PRJ-003','In review','in_review',0,1,1,NULL,0,NULL),
+            ('done','p','dated',4,'PRJ-004','Finished','done',0,1,1,320,1,NULL),
+            ('restarted','p','dated',5,'PRJ-005','Started again','in_progress',1024,1,1,NULL,0,NULL),
+            ('reset','p','open',6,'PRJ-006','Done without work','done',1024,1,1,520,2,NULL),
+            ('untracked','p','open',7,'PRJ-007','No history','in_review',1024,1,1,NULL,0,NULL),
+            ('deleted','p','dated',8,'PRJ-008','Deleted','in_progress',2048,1,1,NULL,0,5),
+            ('gone-task','p','gone-epic',9,'PRJ-009','Long gone','planning',1024,1,1,NULL,0,2);
+        UPDATE epics SET deleted_at=3 WHERE id='gone-epic';
+        UPDATE tracks SET deleted_at=3 WHERE id='gone';
+        INSERT INTO task_assignees(task_id,user_id,assigned_at) VALUES('progress','u',1);
+        INSERT INTO comments(id,project_id,task_id,author_id,root_id,content,created_at) VALUES('comment','p','done','u','comment','Shipped',1);
+        INSERT INTO task_checklist_items(id,task_id,position,title,created_at,updated_at) VALUES('item','review',0,'Check',1,1);
+        INSERT INTO activity_events(id,entity_type,entity_id,event_type,field_key,before_json,after_json,created_at) VALUES
+            ('a-planning-1','task','planning','task.moved','status','"planning"','"in_progress"',600),
+            ('a-planning-2','task','planning','task.moved','status','"in_progress"','"planning"',610),
+            ('a-progress-1','task','progress','task.moved','status','"planning"','"in_progress"',100),
+            ('a-review-1','task','review','task.moved','status','"planned"','"in_review"',200),
+            ('a-done-1','task','done','task.moved','status','"planning"','"in_progress"',300),
+            ('a-done-2','task','done','task.moved','status','"in_progress"','"in_review"',310),
+            ('a-done-3','task','done','task.moved','status','"in_review"','"done"',320),
+            ('a-restarted-1','task','restarted','task.moved','status','"planning"','"in_progress"',400),
+            ('a-restarted-2','task','restarted','task.moved','status','"in_progress"','"planning"',410),
+            ('a-restarted-3','task','restarted','task.moved','status','"planning"','"in_progress"',420),
+            ('a-reset-1','task','reset','task.moved','status','"planning"','"in_progress"',500),
+            ('a-reset-2','task','reset','task.moved','status','"in_progress"','"planning"',500),
+            ('a-reset-3','task','reset','task.moved','status','"planning"','"done"',520),
+            ('a-deleted-1','task','deleted','task.moved','status','"planning"','"in_progress"',4);
+    "#).unwrap();
+    let task_columns = "SELECT json_array(id,project_id,epic_id,task_number,task_key,title,description,status,position,deadline,
+        created_by,created_at,updated_at,completed_at,completion_order,deleted_at,revision,search_title,checklist_version)
+        FROM tasks ORDER BY id";
+    let rows = |connection: &Connection, sql: &str| {
+        connection
+            .prepare(sql)
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let tasks_before = rows(&connection, task_columns);
+    let tracks_before = rows(
+        &connection,
+        "SELECT json_array(id,project_id,name,position,deleted_at,revision) FROM tracks ORDER BY id",
+    );
+    let children = "SELECT json_array((SELECT COUNT(*) FROM task_assignees),(SELECT COUNT(*) FROM comments),(SELECT COUNT(*) FROM task_checklist_items))";
+    let children_before = rows(&connection, children);
+    let mut schema_before = indexes_and_triggers(&connection);
+    drop(connection);
+
+    fs::create_dir(root.path().join("before")).unwrap();
+    let upgrade = migrate(&live, Some(root.path().join("before"))).unwrap();
+    assert_eq!((upgrade.previous_version, upgrade.applied), (8, vec![9]));
+
+    let connection = Connection::open(live.join("oneloop.sqlite3")).unwrap();
+    // Every row is kept as it was, and each task is on its epic's track.
+    assert_eq!(rows(&connection, task_columns), tasks_before);
+    assert_eq!(
+        rows(
+            &connection,
+            "SELECT json_array(id,project_id,name,position,deleted_at,revision) FROM tracks ORDER BY id"
+        ),
+        tracks_before
+    );
+    assert_eq!(rows(&connection, children), children_before);
+    assert_eq!(
+        rows(
+            &connection,
+            "SELECT json_array(id,track_id,started_at) FROM tasks ORDER BY id"
+        ),
+        [
+            r#"["deleted","web",4]"#,
+            r#"["done","web",300]"#,
+            r#"["gone-task","gone",null]"#,
+            r#"["planning","web",null]"#,
+            r#"["progress","api",100]"#,
+            r#"["reset","api",null]"#,
+            r#"["restarted","web",420]"#,
+            r#"["review","api",200]"#,
+            r#"["untracked","api",null]"#,
+        ]
+    );
+    let description: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('tracks') WHERE name='description')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!description, "tracks have no description");
+    let violations: i64 = connection
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(violations, 0);
+    let integrity: String = connection
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(integrity, "ok");
+    // Every index and trigger is back as it was; the rule that a task's epic
+    // is in its project gives way to the rules of tracks.
+    let mut schema_after = indexes_and_triggers(&connection);
+    for replaced in [
+        "tasks_require_epic_in_project_insert",
+        "tasks_require_epic_in_project_update",
+    ] {
+        assert!(schema_before.remove(replaced).is_some());
+    }
+    for added in [
+        "tasks_project_track_status_idx",
+        "tasks_require_track_in_project_insert",
+        "tasks_require_track_in_project_update",
+        "tasks_require_epic_on_track_insert",
+        "tasks_require_epic_on_track_update",
+    ] {
+        assert!(schema_after.remove(added).is_some(), "{added}");
+    }
+    assert_eq!(schema_after, schema_before);
+}
+
+#[tokio::test]
+async fn a_task_stays_on_a_track_of_its_project_with_its_epic_on_that_track() {
+    let root = support::scratch_dir();
+    let db = initialize(&root);
+    let refusals = db
+        .run(|connection| {
+            connection.execute_batch("
+                INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','PRJ',1,1),('q','Other','OTH',1,1);
+                INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('a','p','A',0,1,1),('b','p','B',1,1,1),('elsewhere','q','Q',0,1,1);
+                INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at) VALUES('on-a','p','a','On A','2026-01-01',0,1,1);
+                INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES
+                    ('in-epic','p','a','on-a',1,'PRJ-001','In an epic','planning',0,1,1),
+                    ('no-epic','p','b',NULL,2,'PRJ-002','No epic','planning',1024,1,1);")?;
+            let refused = |sql: &str| match connection.execute_batch(sql) {
+                Err(rusqlite::Error::SqliteFailure(_, Some(message))) => message,
+                other => panic!("{sql}: {other:?}"),
+            };
+            Ok([
+                refused("INSERT INTO tasks(id,project_id,track_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('away','p','elsewhere',3,'PRJ-003','Away','planning',2048,1,1)"),
+                refused("INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('apart','p','b','on-a',3,'PRJ-003','Apart','planning',2048,1,1)"),
+                refused("UPDATE tasks SET track_id='b' WHERE id='in-epic'"),
+                refused("UPDATE tasks SET epic_id='on-a' WHERE id='no-epic'"),
+                // A deleted task may keep a deleted track, but can't come back on it.
+                refused("UPDATE tasks SET deleted_at=1 WHERE id='no-epic'; UPDATE tracks SET deleted_at=1 WHERE id='b';
+                    UPDATE tasks SET deleted_at=NULL WHERE id='no-epic'"),
+            ])
+        })
+        .await
+        .unwrap();
+    let (track, epic) = (
+        "task track must belong to the same project",
+        "task epic must be on the task track",
+    );
+    assert_eq!(refusals, [track, epic, epic, epic, track]);
 }
 
 #[tokio::test]

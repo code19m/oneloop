@@ -95,8 +95,8 @@ fn signed_in_get(user_id: &str, uri: &str) -> axum::http::Request<Body> {
 
 async fn seed_ordering_column(f: &Fixture, count: i64) {
     f.db.transaction(move |tx| {
-        let mut insert = tx.prepare("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
-            VALUES(?1,'p1','e1',?2,?3,'Ordering workload',?4,?5,1,1)")?;
+        let mut insert = tx.prepare("INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
+            VALUES(?1,'p1','tr1','e1',?2,?3,'Ordering workload',?4,?5,1,1)")?;
         for index in 0..count {
             for (offset, status) in [(0, "planning"), (count, "in_review")] {
                 let number = index + offset + 1;

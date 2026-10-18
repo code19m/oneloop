@@ -380,6 +380,10 @@ pub(super) fn update_epic(
     )?;
     if track_id != before.track_id {
         compact_positions(tx, "epics", "track_id", &before.track_id, None, now)?;
+        tx.execute(
+            "UPDATE tasks SET track_id=?1 WHERE epic_id=?2",
+            params![track_id, input.epic_id],
+        )?;
     }
     let mut events = Vec::new();
     for (field, old, new) in [

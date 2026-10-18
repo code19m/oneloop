@@ -500,9 +500,9 @@ const EPIC_ROW_SQL: &str = "SELECT project_id,track_id,title,description,start_d
 const SET_EPIC_STATE_SQL: &str = "UPDATE epics SET state=?1,completed_at=?2,updated_at=?3,revision=?4 WHERE id=?5 AND revision=?6";
 const MILESTONE_ROW_SQL: &str = "SELECT project_id,title,description,milestone_date,revision FROM milestones WHERE id=?1 \
                      AND deleted_at IS NULL";
-const INSERT_TASK_SQL: &str = "INSERT INTO tasks (id,project_id,epic_id,task_number,task_key,title,description,status,\
-                     position,deadline,created_by,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,\
-                     'planning',?8,?9,?10,?11,?11)";
+const INSERT_TASK_SQL: &str = "INSERT INTO tasks (id,project_id,track_id,epic_id,task_number,task_key,title,description,\
+                     status,position,deadline,created_by,created_at,updated_at) VALUES (?1,?2,(SELECT track_id FROM \
+                     epics WHERE id=?3),?3,?4,?5,?6,?7,'planning',?8,?9,?10,?11,?11)";
 /// Moves a task, and gives it the next completion order when it enters Done.
 const MOVE_TASK_SQL: &str = "UPDATE tasks SET status=?1,position=?2,completed_at=CASE WHEN status=?1 THEN completed_at ELSE ?3 END,\
                      completion_order=CASE WHEN status=?1 THEN completion_order WHEN ?1='done' THEN (SELECT \

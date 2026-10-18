@@ -230,7 +230,7 @@ async fn outbox_burst(small: bool) -> Result<(), Box<dyn std::error::Error>> {
         seed_project(tx, ("Outbox", "OUT"), members, writers + 2, now)?;
         tx.execute("INSERT INTO epics(id,project_id,track_id,title,start_date,state,position,created_at,updated_at) VALUES('epic','project','track','Epic','2026-01-01','active',0,?1,?1)",[now])?;
         for task in 0..=writers {
-            tx.execute("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES(?1,'project','epic',?2,?3,'Outbox task','planning',?2,?4,?4)",params![format!("task-{task}"),(task+1) as i64,format!("OUT-{}",task+1),now])?;
+            tx.execute("INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES(?1,'project','track','epic',?2,?3,'Outbox task','planning',?2,?4,?4)",params![format!("task-{task}"),(task+1) as i64,format!("OUT-{}",task+1),now])?;
         }
         Ok(())
     }).await?;
@@ -464,7 +464,7 @@ async fn seed(db: &Db, tasks: usize, events: usize, clients: usize) -> oneloop::
             tx.execute("INSERT INTO epics(id,project_id,track_id,title,start_date,state,position,created_at,updated_at) VALUES(?1,'project','track',?2,'2026-01-01','active',?3,?4,?4)",params![format!("epic-{epic}"),format!("Epic {epic}"),epic,now])?;
         }
         {
-            let mut statement = tx.prepare("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,completed_at) VALUES(?1,'project',?2,?3,?4,?5,?6,?3,?7,?7,?8)")?;
+            let mut statement = tx.prepare("INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,completed_at) VALUES(?1,'project','track',?2,?3,?4,?5,?6,?3,?7,?7,?8)")?;
             let statuses=["planning","in_progress","in_review","done"];
             for task in 0..tasks {
                 statement.execute(params![format!("task-{task}"),format!("epic-{}",task%100),(task+1) as i64,format!("BEN-{}",task+1),format!("Benchmark task {task}"),if task<clients {"planning"} else if task<clients*2 || task%2==1 {"done"} else {statuses[(task/2)%3]},now,if task>=clients && (task<clients*2 || task%2==1) {Some(now-task as i64*61)}else{None}])?;
@@ -482,8 +482,8 @@ async fn seed(db: &Db, tasks: usize, events: usize, clients: usize) -> oneloop::
         tx.execute("INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at) VALUES('delete-project','Delete workload','DEL','user-0',?1,?1)", [now])?;
         tx.execute("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('delete-track','delete-project','Work',0,?1,?1)", [now])?;
         tx.execute("INSERT INTO epics(id,project_id,track_id,title,start_date,state,position,created_at,updated_at) VALUES('delete-epic','delete-project','delete-track','Delete epic','2026-01-01','active',0,?1,?1)", [now])?;
-        tx.execute("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
-            SELECT 'delete-'||id,'delete-project','delete-epic',task_number,'DEL-'||task_number,title,status,position,created_at,updated_at FROM tasks LIMIT ?1", [tasks as i64 / 10])?;
+        tx.execute("INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
+            SELECT 'delete-'||id,'delete-project','delete-track','delete-epic',task_number,'DEL-'||task_number,title,status,position,created_at,updated_at FROM tasks LIMIT ?1", [tasks as i64 / 10])?;
         tx.execute("INSERT INTO activity_events(id,project_id,entity_type,entity_id,task_id,actor_user_id,event_type,metadata_json,created_at)
             SELECT 'delete-'||id,'delete-project','task',id,id,'user-0','task.created','{}',?1 FROM tasks WHERE project_id='delete-project'", [now])?;
         Ok(())

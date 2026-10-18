@@ -155,8 +155,8 @@ pub(super) fn update_task(
     }
     let revision = expected + 1;
     tx.execute(
-        "UPDATE tasks SET epic_id=?1,title=?2,description=?3,deadline=?4,updated_at=?5,\
-                     revision=?6 WHERE id=?7 AND revision=?8",
+        "UPDATE tasks SET epic_id=?1,track_id=(SELECT track_id FROM epics WHERE id=?1),title=?2,\
+                     description=?3,deadline=?4,updated_at=?5,revision=?6 WHERE id=?7 AND revision=?8",
         params![
             epic_id,
             title,
