@@ -241,6 +241,14 @@ Some emoji count as two characters.
 | Sensitive admin actions | Need a sign-in within the last 30 minutes |
 | Failed sign-ins | Within 15 minutes, delays start after 5 failures for one account/address pair, 20 failures from one address across accounts, or 15 failures for one account across addresses. Delays start at 30 seconds and double, up to 15 minutes for pair/address limits or 60 seconds for the account limit. |
 
+**Roadmap**
+
+| Limit | Value |
+| --- | --- |
+| Tasks in progress drawn | 500 for each project; counts and **+N in progress** include the rest |
+| Done tasks and dated plans drawn | 2,000 of each at a time. Scrolling loads others in their place; a view with more done tasks shows the latest and says to zoom in |
+| Overdue | Steps through the late tasks the Roadmap draws |
+
 **Collaboration**
 
 | Limit | Value |
