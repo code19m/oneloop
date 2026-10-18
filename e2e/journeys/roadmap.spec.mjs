@@ -198,6 +198,35 @@ test('done work of one day is a count whose list the server gives, and a teammat
   await expect.poll(() => reads.length).toBe(1);
   expect(reads[0][0]).toBe(`/api/projects/${project.id}/roadmap`);
   expect(reads[0][1]).toBeLessThan(8 * 1024);
+  // A row of the list opens its task, which the page doesn't hold, with Enter.
+  await laneOf(page, 'Renamed track').locator('.rt-count-done').click();
+  await list.getByRole('button', { name: new RegExp(shipped[1].taskKey) }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.tp-title')).toHaveValue('Shipped 1');
+  expect(page.url()).toContain(`#/task/${shipped[1].taskKey}`);
+});
+
+test('a done dot, a plan\'s ring and Overdue\'s late plan open their task with a click or Enter', async ({ page, instance }) => {
+  const { project, track } = instance.projects[0];
+  const [made] = (await command(instance.api, 'task.create', { projectId: project.id, trackId: track.id, title: 'Shipped alone' })).entities;
+  const [shipped] = (await command(instance.api, 'task.move', { taskId: made.id, status: 'done' }, made.revision)).entities;
+  const [plan] = (await command(instance.api, 'task.create', { projectId: project.id, trackId: track.id, title: 'Missed plan', deadline: day(-9) })).entities;
+  await openApp(page, instance, `roadmap/${project.id}?scale=months`);
+  const lane = laneOf(page, track.name);
+  // Each is drawn on its own, and its task comes once its day is read.
+  const dot = lane.locator(`.rt-done[data-task="${shipped.taskKey}"]`), ring = lane.locator(`.rt-planned[data-task="${plan.taskKey}"]`);
+  await dot.click();
+  await expect(page.locator('.tp-title')).toHaveValue('Shipped alone');
+  await page.goBack();
+  await ring.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.tp-title')).toHaveValue('Missed plan');
+  await page.goBack();
+  // "Overdue 1" focuses the late plan, and Enter opens it.
+  await page.getByRole('button', { name: /^Overdue: 1 task/ }).click();
+  await expect(ring).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.tp-title')).toHaveValue('Missed plan');
 });
 
 test('a track\'s name keeps clear of its grip and ⋮ on one line, and shows in full in its tip', async ({ page, instance }) => {
