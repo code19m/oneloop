@@ -29,10 +29,12 @@ pub(super) const LIST_LIMIT: usize = 50;
 /// most.
 pub(super) const WINDOW_DAYS_MAX: i64 = 400;
 pub(super) const SECTIONS_WINDOW_DAYS_MAX: i64 = 3660;
-/// How many tasks of days with one task a read gives, unless it asks for
-/// another number, and the most it may ask for.
-pub(super) const MARKS_DEFAULT: usize = 150;
+/// The most tasks of days with one task a read may ask for; it gives none
+/// unless it asks.
 pub(super) const MARKS_MAX: usize = 400;
+/// The most days apart a read's marks may ask for: farther than the page
+/// ever draws marks merged.
+pub(super) const APART_MAX: f64 = 60.0;
 /// The days the Roadmap opens with: what its first view shows at Months on
 /// a wide screen (about seven weeks back to three months ahead), with the 60
 /// days to spare on each side that the page keeps loaded.
@@ -302,18 +304,36 @@ pub(super) fn days(
         WINDOW_DAYS_MAX
     };
     let (from, to, anchor) = window_days(window, today, required, most)?;
-    let marks = window.marks.unwrap_or(MARKS_DEFAULT).min(MARKS_MAX);
+    let marks = window.marks.unwrap_or(0).min(MARKS_MAX);
+    let apart = window
+        .apart
+        .map(|apart| {
+            if apart.is_finite() && apart > 0.0 && apart <= APART_MAX {
+                Ok(apart)
+            } else {
+                Err(AppError::validation(
+                    "apart",
+                    format!("must be more than 0 and at most {APART_MAX} days"),
+                ))
+            }
+        })
+        .transpose()?;
+    // A day stands apart from neighbours just out of the window too: those
+    // days are counted, and left out of what the read gives.
+    let pad = apart.map_or(0, |apart| apart.ceil() as usize);
     let count = (to - from).get_days() as usize + 1;
+    let first = from - (pad as i64).days();
+    let days = count + 2 * pad;
     // Where each day starts, and where the last one ends.
-    let mut starts = Vec::with_capacity(count + 1);
-    for offset in 0..count as i64 {
-        starts.push(local_midnight(timezone, from + offset.days())?);
+    let mut starts = Vec::with_capacity(days + 1);
+    for offset in 0..days as i64 {
+        starts.push(local_midnight(timezone, first + offset.days())?);
     }
-    starts.push(day_end(timezone, to)?);
+    starts.push(day_end(timezone, to + (pad as i64).days())?);
     let mut sections: HashMap<SectionKey, Section> = HashMap::new();
     let counted = |key: &SectionKey| only.is_none_or(|only| only.contains(key));
     let mut statement = connection.prepare_cached(DONE_DAYS_SQL)?;
-    let mut rows = statement.query(params![project_id, starts[0], starts[count]])?;
+    let mut rows = statement.query(params![project_id, starts[0], starts[days]])?;
     while let Some(row) = rows.next()? {
         let key = (row.get(1)?, row.get(2)?);
         if !counted(&key) {
@@ -325,12 +345,13 @@ pub(super) fn days(
             .saturating_sub(1);
         sections
             .entry(key)
-            .or_insert_with(|| Section::new(count))
+            .or_insert_with(|| Section::new(days))
             .done
             .add(index, row.get(0)?);
     }
     let mut statement = connection.prepare_cached(PLAN_DAYS_SQL)?;
-    let mut rows = statement.query(params![project_id, from.to_string(), to.to_string()])?;
+    let last = to + (pad as i64).days();
+    let mut rows = statement.query(params![project_id, first.to_string(), last.to_string()])?;
     while let Some(row) = rows.next()? {
         let key = (row.get(1)?, row.get(2)?);
         if !counted(&key) {
@@ -340,19 +361,27 @@ pub(super) fn days(
         let index = deadline
             .parse::<Date>()
             .map_err(|_| AppError::internal("stored deadline is invalid"))
-            .map(|day| (day - from).get_days() as usize)?;
+            .map(|day| (day - first).get_days() as usize)?;
         let blocked: bool = row.get(4)?;
-        let section = sections.entry(key).or_insert_with(|| Section::new(count));
+        let section = sections.entry(key).or_insert_with(|| Section::new(days));
         section.plans.add(index, row.get(0)?);
         if blocked {
             section.blocked[index] += 1;
         }
     }
-    // A day with one task gives the task itself, the days nearest the anchor first.
-    let anchor = (anchor - from).get_days() as i64;
+    // A day of the window with one task gives the task itself, the days
+    // nearest the anchor first.
+    let anchor = (anchor - first).get_days() as i64;
+    let core = pad..pad + count;
     let mut singles: Vec<(i64, &String)> = sections
         .values()
-        .flat_map(|section| section.done.singles().chain(section.plans.singles()))
+        .flat_map(|section| {
+            section
+                .done
+                .singles(apart)
+                .chain(section.plans.singles(apart))
+        })
+        .filter(|(index, _)| core.contains(index))
         .map(|(index, id)| ((index as i64 - anchor).abs(), id))
         .collect();
     singles.sort();
@@ -366,11 +395,12 @@ pub(super) fn days(
         .map(|((track_id, epic_id), section)| SectionDays {
             track_id,
             epic_id,
-            done: trimmed(section.done.counts),
-            plans: trimmed(section.plans.counts),
-            blocked: trimmed(section.blocked),
+            done: trimmed(section.done.counts[core.clone()].to_vec()),
+            plans: trimmed(section.plans.counts[core.clone()].to_vec()),
+            blocked: trimmed(section.blocked[core.clone()].to_vec()),
             marks: Vec::new(),
         })
+        .filter(|section| !section.done.is_empty() || !section.plans.is_empty())
         .collect();
     sections.sort_by(|a, b| (&a.track_id, &a.epic_id).cmp(&(&b.track_id, &b.epic_id)));
     // Each task in its section, which names its track and epic for it. The
@@ -426,13 +456,25 @@ impl Counts {
         self.first[day].get_or_insert(id);
     }
 
-    /// The days with one task each, and that task.
-    fn singles(&self) -> impl Iterator<Item = (usize, &String)> {
+    /// The days with one task each, and that task; with `apart`, only those
+    /// that many days or more from the other days with tasks. The page draws
+    /// a day closer than that to another merged with it, so a day a little
+    /// closer still counts as apart, to give at least the ones it draws.
+    fn singles(&self, apart: Option<f64>) -> impl Iterator<Item = (usize, &String)> {
+        let near = apart.map_or(0, |apart| (apart * 0.95).ceil() as usize - 1);
+        let alone = move |day: usize| {
+            let busy = |other: usize| self.counts.get(other).is_some_and(|count| *count > 0);
+            (1..=near).all(|gap| {
+                !busy(day + gap) && day.checked_sub(gap).is_none_or(|before| !busy(before))
+            })
+        };
         self.counts
             .iter()
             .zip(&self.first)
             .enumerate()
-            .filter_map(|(day, (count, id))| (*count == 1).then_some(day).zip(id.as_ref()))
+            .filter_map(move |(day, (count, id))| {
+                (*count == 1 && alone(day)).then_some(day).zip(id.as_ref())
+            })
     }
 }
 

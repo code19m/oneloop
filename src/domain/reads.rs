@@ -62,14 +62,18 @@ pub struct BootstrapQuery {
 
 /// The days a read of the Roadmap's lanes covers, `from` to `to`; each left
 /// out is the one the Roadmap opens with, counted from today. On days with
-/// one task each, `marks` of those tasks come with the counts, the ones
-/// nearest `anchor` (today when left out) first.
+/// one task each, `marks` of those tasks (none when left out) come with the
+/// counts, the ones nearest `anchor` (today when left out) first. With
+/// `apart`, only of the
+/// days that many days or more from the section's other days with tasks of
+/// their kind, done or planned: the ones the page draws on their own.
 #[derive(Clone, Debug, Default)]
 pub struct RoadmapWindow {
     pub from: Option<String>,
     pub to: Option<String>,
     pub anchor: Option<String>,
     pub marks: Option<usize>,
+    pub apart: Option<f64>,
 }
 
 /// A read of the Roadmap's lanes: their counts, work in progress and late

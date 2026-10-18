@@ -211,6 +211,7 @@ async fn the_lanes_count_done_work_and_plans_by_day_and_give_the_task_of_a_day_w
     january(&f).await;
     let query = days_of(RoadmapWindow {
         anchor: Some("2026-01-05".into()),
+        marks: Some(400),
         ..window("2026-01-01", "2026-01-10")
     });
     let lanes = read_lanes(&f, query).await;
@@ -269,15 +270,8 @@ async fn the_lanes_count_done_work_and_plans_by_day_and_give_the_task_of_a_day_w
     )
     .await;
     assert_eq!(day_mark_ids(&one.days), ["done-epic"]);
-    // None, for a read of the counts alone.
-    let counts = read_lanes(
-        &f,
-        days_of(RoadmapWindow {
-            marks: Some(0),
-            ..window("2026-01-01", "2026-01-10")
-        }),
-    )
-    .await;
+    // None, for a read of the counts alone, as when a read asks for none.
+    let counts = read_lanes(&f, days_of(window("2026-01-01", "2026-01-10"))).await;
     assert!(day_marks(&counts.days).is_empty());
     assert_eq!(sections(&counts.days.sections), sections(&days.sections));
     // The same days on their own.
@@ -288,6 +282,7 @@ async fn the_lanes_count_done_work_and_plans_by_day_and_give_the_task_of_a_day_w
             "p1".into(),
             RoadmapWindow {
                 anchor: Some("2026-01-05".into()),
+                marks: Some(400),
                 ..window("2026-01-01", "2026-01-10")
             },
         )
@@ -311,6 +306,98 @@ async fn the_lanes_count_done_work_and_plans_by_day_and_give_the_task_of_a_day_w
         .unwrap();
     assert!(structure.lanes.is_none());
     assert!(structure.epics.iter().all(|epic| epic.summary.is_some()));
+}
+
+#[tokio::test]
+async fn marks_can_come_for_the_days_the_page_draws_on_their_own() {
+    let f = fixture().await;
+    let done = |id: &str, day: &str| {
+        (
+            id.to_owned(),
+            "tr1",
+            None,
+            "done",
+            None,
+            Some(tashkent(day, 10)),
+            false,
+        )
+    };
+    let plan = |id: &str, day: &str| {
+        (
+            id.to_owned(),
+            "tr1",
+            None,
+            "planning",
+            Some(day.to_owned()),
+            None,
+            false,
+        )
+    };
+    insert_tasks(
+        &f,
+        vec![
+            done("first", "2026-01-01"),
+            done("close", "2026-01-03"),
+            done("alone", "2026-01-10"),
+            done("edge", "2026-01-18"),
+            done("past-edge", "2026-01-20"),
+            plan("plan", "2026-01-11"),
+        ],
+    )
+    .await;
+    let read = |apart: Option<f64>| {
+        let window = RoadmapWindow {
+            apart,
+            marks: Some(400),
+            ..window("2026-01-01", "2026-01-18")
+        };
+        async { read_lanes(&f, days_of(window)).await.days }
+    };
+    let sorted = |days: &RoadmapDays| {
+        let mut ids = day_mark_ids(days);
+        ids.sort_unstable();
+        ids.join(" ")
+    };
+    // Without `apart`, every day with one task.
+    assert_eq!(sorted(&read(None).await), "alone close edge first plan");
+    // 2.5 days: Jan 1 and 3 are drawn merged, and so is Jan 18 with Jan 20,
+    // past the window; a plan is on its own line.
+    let spaced = read(Some(2.5)).await;
+    assert_eq!(sorted(&spaced), "alone plan");
+    assert_eq!(
+        sections(&spaced.sections),
+        [(
+            "tr1",
+            None,
+            &[1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1][..],
+            &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1][..],
+            &[][..]
+        )],
+        "the counts stay those of the window"
+    );
+    // A day apart from the next.
+    assert_eq!(
+        sorted(&read(Some(1.0)).await),
+        "alone close edge first plan"
+    );
+    for apart in [0.0, -1.0, 61.0, f64::NAN] {
+        assert_eq!(
+            f.service
+                .roadmap_days(
+                    &f.member,
+                    "p1".into(),
+                    RoadmapWindow {
+                        apart: Some(apart),
+                        ..window("2026-01-01", "2026-01-18")
+                    },
+                )
+                .await
+                .unwrap_err()
+                .code(),
+            "validation_failed",
+            "{apart}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -695,6 +782,14 @@ async fn the_roadmap_page_reads_its_lanes_days_and_lists_and_its_bootstrap_the_d
     assert!(page["lanes"]["days"]["sections"][0].get("marks").is_none());
     let (_, days) = get("/api/projects/p1/roadmap/days?from=2026-01-01&to=2026-01-10").await;
     assert_eq!(days["sections"][0]["done"], json!([0, 2]));
+    // Marks of the days drawn on their own, at the page's spacing.
+    let (status, spaced) =
+        get("/api/projects/p1/roadmap/days?from=2026-01-01&to=2026-01-10&apart=2.5&marks=400")
+            .await;
+    assert_eq!(
+        (status.as_u16(), &spaced["sections"][1]["marks"][0]["id"]),
+        (200, &json!("done-epic"))
+    );
     let (_, list) =
         get("/api/projects/p1/roadmap/list?track=tr1&kind=plans&from=2026-01-01&to=2026-01-10")
             .await;
@@ -707,7 +802,7 @@ async fn the_roadmap_page_reads_its_lanes_days_and_lists_and_its_bootstrap_the_d
     let (_, changed) = get("/api/projects/p1/roadmap/lanes?tasks=plan-alone,done-a&sections=tr1/&late=true&from=2026-01-01&to=2026-01-10").await;
     assert_eq!(changed["lanes"]["tasks"].as_array().unwrap().len(), 2);
     assert!(changed["lanes"]["late"].is_array() && changed["tracks"] == json!([]));
-    let (_, bootstrap) = get("/api/bootstrap?projectId=p1&view=roadmap&roadmapFrom=2026-01-01&roadmapTo=2026-02-01&roadmapAnchor=2026-01-05").await;
+    let (_, bootstrap) = get("/api/bootstrap?projectId=p1&view=roadmap&roadmapFrom=2026-01-01&roadmapTo=2026-02-01&roadmapAnchor=2026-01-05&roadmapApart=0.5").await;
     assert_eq!(
         (
             &bootstrap["roadmap"]["days"]["from"],
@@ -715,9 +810,11 @@ async fn the_roadmap_page_reads_its_lanes_days_and_lists_and_its_bootstrap_the_d
         ),
         (&json!("2026-01-01"), &json!("2026-02-01"))
     );
-    assert_eq!(
-        bootstrap["roadmap"]["days"]["sections"][1]["marks"][0]["id"],
-        "done-epic"
+    // The counts alone: the page reads the tasks of the days it draws.
+    assert!(
+        bootstrap["roadmap"]["days"]["sections"][1]
+            .get("marks")
+            .is_none()
     );
     for refused in [
         "/api/projects/p1/roadmap/lanes?days=3",
