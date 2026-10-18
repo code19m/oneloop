@@ -7,14 +7,14 @@ use axum::{
     routing::get,
 };
 use serde::Deserialize;
-use serde_json::Value;
 
 use crate::{
     AppError, AppState,
     auth::Actor,
     domain::{
         BoardCounts, BoardQuery, BoardView, BoardViewQuery, BootstrapQuery, DoneOrder, Page,
-        PageQuery, PoolItemView, PoolQuery, TaskFilter, TaskStatus, TaskView,
+        PageQuery, PoolItemView, PoolQuery, RoadmapPage, RoadmapView, TaskFilter, TaskStatus,
+        TaskView,
     },
     error::AppResult,
 };
@@ -28,6 +28,10 @@ pub(crate) fn read_router() -> Router<AppState> {
         .route("/api/projects/{project_id}/board-view", get(board_view))
         .route("/api/projects/{project_id}/counts", get(board_counts))
         .route("/api/projects/{project_id}/roadmap", get(roadmap))
+        .route(
+            "/api/projects/{project_id}/roadmap/tasks",
+            get(roadmap_tasks),
+        )
         .route("/api/projects/{project_id}/pool", get(pool))
         .route("/api/epics/{epic_id}/tasks", get(epic_tasks))
         .route("/api/epics/{epic_id}/activity", get(epic_activity))
@@ -170,8 +174,31 @@ async fn roadmap(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Path(project_id): Path<String>,
-) -> AppResult<Json<Value>> {
-    state.domain.roadmap(&actor, project_id).await.map(Json)
+) -> AppResult<Json<RoadmapView>> {
+    state
+        .domain
+        .roadmap_view(&actor, project_id)
+        .await
+        .map(Json)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RoadmapTasksParams {
+    cursor: String,
+}
+
+async fn roadmap_tasks(
+    State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
+    Path(project_id): Path<String>,
+    ApiQuery(query): ApiQuery<RoadmapTasksParams>,
+) -> AppResult<Json<RoadmapPage>> {
+    state
+        .domain
+        .roadmap_tasks(&actor, project_id, query.cursor)
+        .await
+        .map(Json)
 }
 
 #[derive(Deserialize)]

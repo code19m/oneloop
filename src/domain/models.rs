@@ -215,6 +215,55 @@ pub struct BoardView {
     pub counts: BoardCounts,
 }
 
+/// The Roadmap page: the project's tracks, epics with their progress and
+/// milestones, and the tasks its lanes draw.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoadmapView {
+    pub project_id: String,
+    pub tracks: Vec<TrackView>,
+    pub epics: Vec<EpicView>,
+    pub milestones: Vec<MilestoneView>,
+    #[serde(flatten)]
+    pub timeline: RoadmapTimeline,
+}
+
+/// The tasks the Roadmap's lanes draw, and what they count. Plans without a
+/// deadline stay on the Board, and the counts include them.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoadmapTimeline {
+    /// Each track's tasks by status; a track without tasks is left out.
+    pub track_counts: Vec<TrackCounts>,
+    /// Tasks past their deadline and not done.
+    pub overdue: i64,
+    /// Tasks in progress and in review, in the Board's order, up to a limit.
+    pub open: Vec<TaskView>,
+    /// Planned tasks with a deadline, the earliest first.
+    pub plans: RoadmapPage,
+    /// Done tasks, the latest finished first.
+    pub done: RoadmapPage,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackCounts {
+    pub track_id: String,
+    pub planning: i64,
+    pub in_progress: i64,
+    pub in_review: i64,
+    pub done: i64,
+}
+
+/// A page of the Roadmap's dated plans or done tasks, and where the next one
+/// starts.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoadmapPage {
+    pub items: Vec<TaskView>,
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapView {
@@ -239,6 +288,9 @@ pub struct BootstrapView {
     pub board_counts: Option<BoardCounts>,
     #[serde(default)]
     pub board_pages: std::collections::BTreeMap<String, PageSummary>,
+    /// The Roadmap's tasks and counts, when the bootstrap is for the Roadmap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roadmap: Option<RoadmapTimeline>,
     #[serde(default)]
     pub pool_counts: std::collections::BTreeMap<String, i64>,
     #[serde(default)]

@@ -9,7 +9,7 @@ use board::{
     board_columns, board_counts_connection, board_page_connection, epic_task_page_connection,
 };
 use bootstrap::bootstrap_snapshot;
-use roadmap::{epics, milestones, tracks};
+use roadmap::{epics, local_date, milestones, timeline, timeline_page, tracks};
 
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -27,7 +27,8 @@ use crate::{
 use super::{
     BlockView, BoardCounts, BoardView, BootstrapView, ChecklistItemView, DomainService, DoneOrder,
     EpicSummary, EpicView, MembershipView, MilestoneView, Page, PageSummary, PoolItemView,
-    PoolScope, ProjectMembers, ProjectView, SessionView, TaskStatus, TaskView, TrackView, UserView,
+    PoolScope, ProjectMembers, ProjectView, RoadmapPage, RoadmapView, SessionView, TaskStatus,
+    TaskView, TrackView, UserView,
 };
 
 pub(super) use board::{checklist_item, task_view};
@@ -191,6 +192,7 @@ impl DomainService {
         .await
     }
 
+    /// A project's tracks, epics with their task counts, and milestones.
     pub async fn roadmap(&self, actor: &Actor, project_id: String) -> AppResult<Value> {
         let time_zone = self.time_zone.clone();
         access::read(&self.db, actor, move |connection, actor| {
@@ -201,6 +203,37 @@ impl DomainService {
             "epics":epics(connection,&project_id,&time_zone,Some(unix_now()?))?,
             "milestones":milestones(connection,&project_id)?
             }))
+        })
+        .await
+    }
+
+    /// The Roadmap page: what `roadmap` gives, and the tasks its lanes draw.
+    pub async fn roadmap_view(&self, actor: &Actor, project_id: String) -> AppResult<RoadmapView> {
+        let time_zone = self.time_zone.clone();
+        access::read(&self.db, actor, move |connection, actor| {
+            require_project(connection, actor, &project_id, Need::Read, false)?;
+            let now = unix_now()?;
+            Ok(RoadmapView {
+                tracks: tracks(connection, &project_id)?,
+                epics: epics(connection, &project_id, &time_zone, Some(now))?,
+                milestones: milestones(connection, &project_id)?,
+                timeline: timeline(connection, &project_id, local_date(&time_zone, now)?)?,
+                project_id,
+            })
+        })
+        .await
+    }
+
+    /// The next page of the Roadmap's dated plans or done tasks.
+    pub async fn roadmap_tasks(
+        &self,
+        actor: &Actor,
+        project_id: String,
+        cursor: String,
+    ) -> AppResult<RoadmapPage> {
+        access::read(&self.db, actor, move |connection, actor| {
+            require_project(connection, actor, &project_id, Need::Read, false)?;
+            timeline_page(connection, &project_id, &cursor)
         })
         .await
     }

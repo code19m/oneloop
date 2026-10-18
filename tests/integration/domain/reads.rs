@@ -222,8 +222,10 @@ async fn epic_task_counts_come_only_with_the_roadmap() {
             )
             .await
             .unwrap();
-        let epic = epic(&serde_json::to_value(bootstrap).unwrap()["epics"]);
         let counted = view == Some("roadmap");
+        // Only a Roadmap bootstrap draws tasks on its lanes.
+        assert_eq!(bootstrap.roadmap.is_some(), counted, "{view:?}");
+        let epic = epic(&serde_json::to_value(bootstrap).unwrap()["epics"]);
         for field in [
             "taskTotal",
             "taskDone",
@@ -303,6 +305,9 @@ async fn hidden_and_missing_resources_have_identical_http_errors() {
         .await
         .unwrap();
     let id = task.entities[0]["id"].as_str().unwrap();
+    // A page of the hidden project's done tasks, as its Roadmap would ask.
+    let cursor = r#"{"kind":"done","completed_at":1,"completion_order":0,"id":"x"}"#;
+    let cursor = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, cursor);
     let app = router(&f);
     for (hidden, missing) in [
         ("/api/tasks/TWO-001".into(), "/api/tasks/TWO-999".into()),
@@ -313,6 +318,10 @@ async fn hidden_and_missing_resources_have_identical_http_errors() {
         (
             "/api/projects/p2/roadmap".into(),
             "/api/projects/missing/roadmap".into(),
+        ),
+        (
+            format!("/api/projects/p2/roadmap/tasks?cursor={cursor}"),
+            format!("/api/projects/missing/roadmap/tasks?cursor={cursor}"),
         ),
     ] {
         let mut responses = Vec::new();

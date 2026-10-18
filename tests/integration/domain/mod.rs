@@ -3,6 +3,7 @@
 mod board;
 mod checklist;
 mod reads;
+mod roadmap;
 mod structure;
 mod tasks;
 mod tracks;

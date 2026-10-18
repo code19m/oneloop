@@ -1,5 +1,5 @@
-//! Roadmap reads: tracks, epics with their task counts by local day, and
-//! milestones.
+//! Roadmap reads: tracks, epics with their task counts by local day,
+//! milestones, and the tasks the Roadmap's lanes draw.
 
 use jiff::{
     Timestamp, ToSpan,
@@ -7,7 +7,9 @@ use jiff::{
     tz::AmbiguousOffset,
 };
 
+use super::board::{newest_done_ids, task_views};
 use super::*;
+use crate::domain::{RoadmapPage, RoadmapTimeline, TrackCounts};
 
 pub(super) fn tracks(
     connection: &rusqlite::Connection,
@@ -40,14 +42,14 @@ pub(super) fn epics(
     let Some(now) = counted_at else {
         return epic_rows(connection, project_id);
     };
+    epics_on(connection, project_id, timezone, local_date(timezone, now)?)
+}
+
+/// The instance's date at `now`.
+pub(super) fn local_date(timezone: &TimeZone, now: i64) -> AppResult<Date> {
     let now = Timestamp::from_second(now)
         .map_err(|error| AppError::internal(format!("read the current time: {error}")))?;
-    epics_on(
-        connection,
-        project_id,
-        timezone,
-        timezone.rules().to_datetime(now).date(),
-    )
+    Ok(timezone.rules().to_datetime(now).date())
 }
 
 fn epic_rows(connection: &rusqlite::Connection, project_id: &str) -> AppResult<Vec<EpicView>> {
@@ -222,4 +224,183 @@ pub(super) fn milestones(
         })
     })?
     .collect::<Result<Vec<_>, _>>()?)
+}
+
+/// How many tasks in progress and in review the Roadmap draws at most. A
+/// team has a few at a time; the limit only bounds a project with very many.
+pub(super) const OPEN_LIMIT: usize = 500;
+/// How many dated plans or done tasks one page of the Roadmap holds.
+pub(super) const TIMELINE_PAGE: usize = 200;
+
+/// Each track's tasks by status. Its track index is named, as for the
+/// Board's track filter (see `TRACK_CONTENTS_SQL`).
+pub(super) const TRACK_COUNTS_SQL: &str =
+    "SELECT track_id,status,COUNT(*) FROM tasks INDEXED BY tasks_project_track_status_idx
+    WHERE project_id=?1 AND deleted_at IS NULL GROUP BY track_id,status";
+
+/// Late plans from their own index, and late work from the In Progress and
+/// In Review columns. The deadline index would pass over every done task
+/// that had a deadline.
+pub(super) const OVERDUE_SQL: &str = "SELECT
+    (SELECT COUNT(*) FROM tasks INDEXED BY tasks_dated_plans_idx
+     WHERE project_id=?1 AND deleted_at IS NULL AND status='planning' AND deadline IS NOT NULL
+       AND deadline<?2)
+    + (SELECT COUNT(*) FROM tasks INDEXED BY tasks_project_status_idx
+     WHERE project_id=?1 AND deleted_at IS NULL AND status IN ('in_progress','in_review')
+       AND deadline<?2)";
+
+/// Tasks in progress, then in review, each in the Board's order.
+pub(super) const OPEN_SQL: &str = "SELECT id FROM tasks INDEXED BY tasks_project_status_idx
+    WHERE project_id=?1 AND deleted_at IS NULL AND status IN ('in_progress','in_review')
+    ORDER BY status,position LIMIT ?2";
+
+/// Dated plans after a deadline and ID, the earliest first.
+pub(super) const PLANS_SQL: &str = "SELECT id FROM tasks INDEXED BY tasks_dated_plans_idx
+    WHERE project_id=?1 AND deleted_at IS NULL AND status='planning' AND deadline IS NOT NULL
+      AND (deadline,id)>(?2,?3)
+    ORDER BY deadline,id LIMIT ?4";
+
+/// Where a page of the Roadmap's dated plans or done tasks goes on: after
+/// the last task it holds. Other changes don't move it, so it stays valid.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum TimelineCursor {
+    Plans {
+        deadline: String,
+        id: String,
+    },
+    Done {
+        completed_at: Option<i64>,
+        completion_order: i64,
+        id: String,
+    },
+}
+
+/// The tasks the Roadmap's lanes draw on `today`, and what they count.
+pub(super) fn timeline(
+    connection: &rusqlite::Connection,
+    project_id: &str,
+    today: Date,
+) -> AppResult<RoadmapTimeline> {
+    let mut track_counts: Vec<TrackCounts> = Vec::new();
+    let mut statement = connection.prepare_cached(TRACK_COUNTS_SQL)?;
+    let mut rows = statement.query([project_id])?;
+    while let Some(row) = rows.next()? {
+        let track_id: String = row.get(0)?;
+        if track_counts
+            .last()
+            .is_none_or(|last| last.track_id != track_id)
+        {
+            track_counts.push(TrackCounts {
+                track_id,
+                planning: 0,
+                in_progress: 0,
+                in_review: 0,
+                done: 0,
+            });
+        }
+        let counts = track_counts.last_mut().expect("pushed above");
+        let count = row.get(2)?;
+        match row.get::<_, String>(1)?.as_str() {
+            "planning" => counts.planning = count,
+            "in_progress" => counts.in_progress = count,
+            "in_review" => counts.in_review = count,
+            "done" => counts.done = count,
+            _ => return Err(AppError::internal("stored task has an invalid status")),
+        }
+    }
+    let overdue = connection
+        .prepare_cached(OVERDUE_SQL)?
+        .query_row(params![project_id, today.to_string()], |row| row.get(0))?;
+    let open: Vec<String> = connection
+        .prepare_cached(OPEN_SQL)?
+        .query_map(params![project_id, OPEN_LIMIT as i64], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    let plans = plan_ids(connection, project_id, "", "")?;
+    let done = newest_done_ids(connection, project_id, None, TIMELINE_PAGE + 1)?;
+    // One read gives every task the lanes draw.
+    let (open_count, plans_count) = (open.len(), plans.len());
+    let ids: Vec<String> = open.into_iter().chain(plans).chain(done).collect();
+    let mut views = task_views(connection, &ids, false)?.into_iter();
+    let open = views.by_ref().take(open_count).collect();
+    let plans = page(views.by_ref().take(plans_count).collect(), plans_cursor);
+    let done = page(views.collect(), done_cursor);
+    Ok(RoadmapTimeline {
+        track_counts,
+        overdue,
+        open,
+        plans,
+        done,
+    })
+}
+
+/// The page of dated plans or done tasks that `cursor` goes on to.
+pub(super) fn timeline_page(
+    connection: &rusqlite::Connection,
+    project_id: &str,
+    cursor: &str,
+) -> AppResult<RoadmapPage> {
+    let (ids, cursor): (_, fn(&TaskView) -> TimelineCursor) = match paging::decode(cursor)? {
+        TimelineCursor::Plans { deadline, id } => (
+            plan_ids(connection, project_id, &deadline, &id)?,
+            plans_cursor,
+        ),
+        TimelineCursor::Done {
+            completed_at,
+            completion_order,
+            id,
+        } => (
+            newest_done_ids(
+                connection,
+                project_id,
+                Some((completed_at, completion_order, &id)),
+                TIMELINE_PAGE + 1,
+            )?,
+            done_cursor,
+        ),
+    };
+    Ok(page(task_views(connection, &ids, false)?, cursor))
+}
+
+/// One page more than fits, the earliest deadline first.
+fn plan_ids(
+    connection: &rusqlite::Connection,
+    project_id: &str,
+    deadline: &str,
+    id: &str,
+) -> AppResult<Vec<String>> {
+    Ok(connection
+        .prepare_cached(PLANS_SQL)?
+        .query_map(
+            params![project_id, deadline, id, (TIMELINE_PAGE + 1) as i64],
+            |row| row.get(0),
+        )?
+        .collect::<Result<_, _>>()?)
+}
+
+/// A page cut back to its size from one task more, which says that another
+/// page follows from the last task it keeps.
+fn page(mut items: Vec<TaskView>, cursor: fn(&TaskView) -> TimelineCursor) -> RoadmapPage {
+    let more = items.len() > TIMELINE_PAGE;
+    items.truncate(TIMELINE_PAGE);
+    let next_cursor = items
+        .last()
+        .filter(|_| more)
+        .map(|task| paging::encode(&cursor(task)));
+    RoadmapPage { items, next_cursor }
+}
+
+fn plans_cursor(task: &TaskView) -> TimelineCursor {
+    TimelineCursor::Plans {
+        deadline: task.deadline.clone().unwrap_or_default(),
+        id: task.id.clone(),
+    }
+}
+
+fn done_cursor(task: &TaskView) -> TimelineCursor {
+    TimelineCursor::Done {
+        completed_at: task.completed_at,
+        completion_order: task.completion_order.unwrap_or(0),
+        id: task.id.clone(),
+    }
 }
