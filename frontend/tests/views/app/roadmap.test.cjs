@@ -361,6 +361,32 @@ test('done work and a late plan on the same day stand apart on the line', () => 
   for (let index = 1; index < boxes.length; index++) assert(boxes[index - 1][1] <= boxes[index][0], JSON.stringify(boxes));
 });
 
+test('a done dot, a plan ring, a list row and Overdue\'s late plan open their task, also one the page doesn\'t hold', async () => {
+  // The lanes hold these as marks alone, as they do for done work and plans.
+  const marksOnly = D => { D.tasks.splice(0, D.tasks.length, ...D.tasks.filter(task => !['BIR-055', 'BIR-076', 'BIR-057'].includes(task.id))); };
+  const opened = async (act, prepare = marksOnly) => {
+    const t = boot('roadmap/p1?scale=months', { actions: true, prepare, reads: { roadmapList: async () => ({ items: [t.D.roadmap.marks['bir-061'], { ...t.D.roadmap.marks['bir-061'], internalId: 'bir-057', id: 'BIR-057' }], total: 2 }) } });
+    await act(t); await waitFor(() => t.w.location.hash.startsWith('#/task/'), 'the task\'s address'); await settle();
+    return [t.w.location.hash, t.d.querySelector('.pending-task-route') ? 'loading' : t.A.context().view];
+  };
+  assert.deepEqual(await opened(t => mark(t.d, 'BIR-055').click()), ['#/task/BIR-055', 'loading'], 'a done dot');
+  assert.deepEqual(await opened(t => mark(t.d, 'BIR-076').click()), ['#/task/BIR-076', 'loading'], 'a plan ring');
+  assert.deepEqual(await opened(async t => {
+    lane(t.d, 't2').querySelector('.rt-count-done').click(); await tick();
+    [...t.d.querySelectorAll('#roadmap-list .rt-pop-row')].find(row => row.textContent.includes('BIR-057')).click();
+  }), ['#/task/BIR-057', 'loading'], 'a row of a count\'s list');
+  // Overdue's longest overdue is a plan the lanes hold as a mark.
+  const latePlan = D => {
+    marksOnly(D);
+    D.roadmap.late.unshift({ ...D.roadmap.marks['bir-076'], deadline: '2026-09-20', day: '2026-09-20' });
+    D.roadmap.marks['bir-076'] = D.roadmap.late[0];
+    D.roadmap.days['t4/e10'] = { '2026-09-20': { done: 0, plans: 1, blocked: 0 } };
+  };
+  assert.deepEqual(await opened(async t => { t.A.focusOverdue(); await nextFrame(t.w); t.d.activeElement.click(); }, latePlan), ['#/task/BIR-076', 'loading'], 'Overdue\'s late plan');
+  // A task the page holds opens at once.
+  assert.deepEqual(await opened(t => mark(t.d, 'BIR-064').click()), ['#/task/BIR-064', 'task']);
+});
+
 test('every task on the timeline is a button that speaks its card', () => {
   const { d, D } = boot();
   const task = D.tasks.find(item => item.id === 'BIR-064'), epic = D.epics.find(item => item.id === task.epicId);

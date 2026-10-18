@@ -420,7 +420,11 @@ Object.assign(App, {
   /** Enter leaves a field that saves itself when it loses focus, and types nothing. */
   leaveField(event, field) { event.preventDefault(); field.blur(); },
 
-  openTask(id) { const target=taskById(id),track=taskTrack(target);if(!target||!track)return;if(!canReadTask(target)){state.view='forbidden';state.peek=null;state.modal=null;render();return;}state.projectId=track.projectId;state.sideOpen = false; state.view = 'task'; state.taskId = id; state.menu = null; setLocalHash('#/task/' + id); render(); },
+  /**
+   * Open a task. One the page doesn't hold, such as a done dot or a list row
+   * on the Roadmap, opens through its address, which loads it as a link does.
+   */
+  openTask(id) { const target=taskById(id),track=taskTrack(target);if(!target||!track){if(id)location.hash='#/task/'+id;return;}if(!canReadTask(target)){state.view='forbidden';state.peek=null;state.modal=null;render();return;}state.projectId=track.projectId;state.sideOpen = false; state.view = 'task'; state.taskId = id; state.menu = null; setLocalHash('#/task/' + id); render(); },
   closeOverlays() { if (state.menu&&!state.modal&&!state.peek){dismissMenu();return;}if (state.modal?.poolId) { App.returnToPool(); return; } state.peek = state.peek && state.modal ? state.peek : null; state.modal = null; state.menu = null; if (dialogPaintOwed) render(); else renderOverlays(); },
 
   // menus
