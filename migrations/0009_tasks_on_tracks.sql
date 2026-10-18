@@ -40,15 +40,14 @@ SELECT id,project_id,(SELECT track_id FROM epics WHERE epics.id = tasks.epic_id)
     deleted_at,revision,search_title,checklist_version
 FROM tasks;
 
--- Work on a task started at its latest move from Planning into In Progress or
--- In Review, or its creation there, unless a later move back to Planning
--- undid it. Tasks in Planning have no start. History from before 0.1.0 may
--- call Planning `planned`.
+-- Work on a task started when it first entered In Progress or In Review, or
+-- was created there, since it was last in Planning, as each move keeps a
+-- start once there is one. Tasks in Planning have no start. History from
+-- before 0.1.0 may call Planning `planned`.
 UPDATE tasks_new SET started_at = (
-    SELECT MAX(start.created_at) FROM activity_events start
+    SELECT MIN(start.created_at) FROM activity_events start
     WHERE start.entity_type = 'task' AND start.entity_id = tasks_new.id
       AND ((start.event_type = 'task.moved' AND start.field_key = 'status'
-            AND start.before_json IN ('"planning"', '"planned"')
             AND start.after_json IN ('"in_progress"', '"in_review"'))
         OR (start.event_type = 'task.created'
             AND json_extract(start.after_json, '$.status') IN ('in_progress', 'in_review')))

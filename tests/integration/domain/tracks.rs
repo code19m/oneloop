@@ -454,7 +454,7 @@ async fn a_track_is_deleted_only_when_it_has_no_tasks_or_epics() {
 }
 
 #[tokio::test]
-async fn work_starts_when_a_task_leaves_planning_and_ends_when_it_returns() {
+async fn work_starts_when_a_task_first_enters_progress_or_review_and_ends_in_planning() {
     let f = fixture().await;
     let id = task(&f, "Work", json!({"trackId":"tr1"})).await;
     let started = async || -> Option<i64> {
@@ -503,7 +503,15 @@ async fn work_starts_when_a_task_leaves_planning_and_ends_when_it_returns() {
     }
     move_to("planning").await;
     assert_eq!(started().await, None);
-    // Straight from Planning to Done, no work started.
+    // Straight from Planning to Done, no work started; it starts on reopening.
     move_to("done").await;
     assert_eq!(started().await, None);
+    move_to("in_progress").await;
+    let at: i64 = query_one(
+        &f.db,
+        "SELECT updated_at FROM tasks WHERE id=?1",
+        [id.clone()],
+    )
+    .await;
+    assert_eq!(started().await, Some(at));
 }

@@ -38,7 +38,8 @@ All notable changes to oneloop are recorded here. The format follows
 - The Board's epic filter offers **No epic**, and `search_tasks` in MCP takes
   `epicIds: ["none"]`.
 - Each task records when work on it started: `startedAt` in MCP reads, the
-  time it last moved from Planning to In Progress or In Review.
+  time it first entered In Progress or In Review since it was last in
+  Planning.
 - **Undo** right after deleting an epic brings it back, with the tasks that
   are still on its track without an epic.
 

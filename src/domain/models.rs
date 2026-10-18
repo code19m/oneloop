@@ -124,8 +124,8 @@ pub struct TaskView {
     pub deadline: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
-    /// When work on the task started: its last move from Planning to In
-    /// Progress or In Review. Null in Planning.
+    /// When work on the task started: its first move into In Progress or In
+    /// Review since it was last in Planning. Null until then.
     pub started_at: Option<i64>,
     /// When the task last moved to Done; null for open tasks.
     pub completed_at: Option<i64>,

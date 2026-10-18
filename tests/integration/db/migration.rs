@@ -359,6 +359,7 @@ fn a_schema_eight_database_puts_every_task_on_its_epics_track() {
             ('reset','p','open',6,'PRJ-006','Done without work','done',1024,1,1,520,2,NULL),
             ('untracked','p','open',7,'PRJ-007','No history','in_review',1024,1,1,NULL,0,NULL),
             ('deleted','p','dated',8,'PRJ-008','Deleted','in_progress',2048,1,1,NULL,0,5),
+            ('reopened','p','dated',10,'PRJ-010','Reopened','in_review',3072,1,1,NULL,0,NULL),
             ('gone-task','p','gone-epic',9,'PRJ-009','Long gone','planning',1024,1,1,NULL,0,2);
         UPDATE epics SET deleted_at=3 WHERE id='gone-epic';
         UPDATE tracks SET deleted_at=3 WHERE id='gone';
@@ -379,7 +380,10 @@ fn a_schema_eight_database_puts_every_task_on_its_epics_track() {
             ('a-reset-1','task','reset','task.moved','status','"planning"','"in_progress"',500),
             ('a-reset-2','task','reset','task.moved','status','"in_progress"','"planning"',500),
             ('a-reset-3','task','reset','task.moved','status','"planning"','"done"',520),
-            ('a-deleted-1','task','deleted','task.moved','status','"planning"','"in_progress"',4);
+            ('a-deleted-1','task','deleted','task.moved','status','"planning"','"in_progress"',4),
+            ('a-reopened-1','task','reopened','task.moved','status','"planning"','"done"',700),
+            ('a-reopened-2','task','reopened','task.moved','status','"done"','"in_progress"',710),
+            ('a-reopened-3','task','reopened','task.moved','status','"in_progress"','"in_review"',720);
     "#).unwrap();
     let task_columns = "SELECT json_array(id,project_id,epic_id,task_number,task_key,title,description,status,position,deadline,
         created_by,created_at,updated_at,completed_at,completion_order,deleted_at,revision,search_title,checklist_version)
@@ -429,6 +433,7 @@ fn a_schema_eight_database_puts_every_task_on_its_epics_track() {
             r#"["gone-task","gone",null]"#,
             r#"["planning","web",null]"#,
             r#"["progress","api",100]"#,
+            r#"["reopened","web",710]"#,
             r#"["reset","api",null]"#,
             r#"["restarted","web",420]"#,
             r#"["review","api",200]"#,

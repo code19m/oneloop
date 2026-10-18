@@ -539,13 +539,13 @@ const INSERT_TASK_SQL: &str = "INSERT INTO tasks (id,project_id,track_id,epic_id
                      status,position,deadline,created_by,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,\
                      'planning',?9,?10,?11,?12,?12)";
 /// Moves a task, and gives it the next completion order when it enters Done.
-/// Work starts when the task leaves Planning for In Progress or In Review,
-/// and its start is kept until the task goes back to Planning.
+/// A task that enters In Progress or In Review without a start of work gets
+/// one; it keeps it until it goes back to Planning.
 const MOVE_TASK_SQL: &str = "UPDATE tasks SET status=?1,position=?2,completed_at=CASE WHEN status=?1 THEN completed_at ELSE ?3 END,\
                      completion_order=CASE WHEN status=?1 THEN completion_order WHEN ?1='done' THEN (SELECT \
                      COALESCE(MAX(completion_order),0)+1 FROM tasks WHERE completion_order>0) ELSE 0 END,\
-                     started_at=CASE WHEN ?1='planning' THEN NULL WHEN status='planning' AND ?1<>'done' THEN ?4 \
-                     ELSE started_at END,updated_at=?4,revision=revision+1 WHERE id=?5 AND revision=?6";
+                     started_at=CASE WHEN ?1='planning' THEN NULL WHEN ?1 IN ('in_progress','in_review') AND \
+                     status<>?1 THEN COALESCE(started_at,?4) ELSE started_at END,updated_at=?4,revision=revision+1 WHERE id=?5 AND revision=?6";
 
 const ACTIVE_BLOCK_SQL: &str = "SELECT b.project_id,b.task_id,b.reason,b.revision FROM task_blocks b \
     JOIN tasks t ON t.id=b.task_id AND t.deleted_at IS NULL WHERE b.id=?1 AND b.resolved_at IS NULL";

@@ -229,10 +229,10 @@ schema describes the payload of each operation.
   `precondition_failed` and says how many it has. Tracks have a name and no
   description. `search_tasks` takes `epicIds: ["none"]` for the tasks without
   an epic, alone or with epic IDs.
-- **When work started.** Each task has a `startedAt`: the time it last moved
-  from Planning to In Progress or In Review. It stays through In Progress, In
-  Review and Done, and is null in Planning, also for a task that went straight
-  from Planning to Done.
+- **When work started.** Each task has a `startedAt`: set when it enters In
+  Progress or In Review without one, kept through In Progress, In Review and
+  Done, and cleared when it goes back to Planning. A task that went straight
+  from Planning to Done gets one if it later enters In Progress or In Review.
 - **Checklists.** `read_task` returns a task's checklist items, and every task
   in `search_tasks` and `read_epic` has `checklistDone` and `checklistTotal`.
   `task.create` takes the items' titles in `checklist`, so a task and its
