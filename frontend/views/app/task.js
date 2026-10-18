@@ -198,25 +198,29 @@ function epicNote(t) {
   if (clearedEpic && (clearedEpic.taskId !== t.internalId || clearedEpic.userId !== me()?.id || t.epicId || t.trackId !== clearedEpic.trackId)) clearedEpic = null;
   return clearedEpic?.text ?? '';
 }
-/** Move the task to `trackId`. Once that saves, a task that was in an epic says why it no longer is. */
-function moveToTrack(id, trackId) {
-  const t = taskById(id), epic = epicById(t?.epicId), from = trackById(t?.trackId), to = trackById(trackId);
-  const saved = App.updTask(id, 'trackId', trackId);
-  if (!epic || !from || !to || from === to || typeof saved?.then !== 'function') return saved;
-  return saved.then((ok) => {
-    const moved = taskById(id);
-    if (!ok || !moved || moved.epicId || moved.trackId !== trackId) return ok;
-    clearedEpic = { taskId: moved.internalId, userId: me()?.id, trackId, text: `Epic cleared: “${epic.title}” is on ${from.name}, not ${to.name}.` };
-    App.refreshTaskHeader(); announce(clearedEpic.text);
-    return ok;
+/**
+ * Save the task's `field`, its track or epic, as picked. Track and Epic show
+ * the saved values again afterwards, so a save that didn't go through, such
+ * as offline, doesn't leave the pick showing.
+ */
+function savePlace(id, field, value) {
+  const t = taskById(id), epic = epicById(t?.epicId), from = trackById(t?.trackId);
+  Promise.resolve(App.updTask(id, field, value)).then((saved) => {
+    const moved = taskById(id), to = field === 'trackId' && trackById(value);
+    // A task that left its epic for another track says why.
+    if (saved && to && epic && from && from !== to && moved && !moved.epicId && moved.trackId === value) {
+      clearedEpic = { taskId: moved.internalId, userId: me()?.id, trackId: value, text: `Epic cleared: “${epic.title}” is on ${from.name}, not ${to.name}.` };
+      announce(clearedEpic.text);
+    }
+    App.refreshTaskHeader();
   });
 }
 const trackOptions = () => tracks().map((x) => ({ v: x.id, l: x.name }));
 /** The task's Track and Epic, with the Epic cleared note. */
 function trackEpicHtml(t, canEdit) {
   const note = epicNote(t);
-  return `<div class="task-property"><dt>Track</dt><dd>${selectHtml('tpTrack', { label: 'Track', cls: 'prop', disabled: !canEdit, icon: I.track, value: t.trackId, options: trackOptions(), pick: (v) => moveToTrack(t.id, v) })}</dd></div>
-        <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: t.epicId ?? '', search: true, describedBy: note ? 'tpEpic-note' : '', options: epicOptions(t.trackId, t.epicId), pick: (v) => App.updTask(t.id, 'epicId', v) })}${note ? `<p class="task-property-note" id="tpEpic-note">${esc(note)}</p>` : ''}</dd></div>`;
+  return `<div class="task-property"><dt>Track</dt><dd>${selectHtml('tpTrack', { label: 'Track', cls: 'prop', disabled: !canEdit, icon: I.track, value: t.trackId, options: trackOptions(), pick: (v) => savePlace(t.id, 'trackId', v) })}</dd></div>
+        <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: t.epicId ?? '', search: true, describedBy: note ? 'tpEpic-note' : '', options: epicOptions(t.trackId, t.epicId), pick: (v) => savePlace(t.id, 'epicId', v) })}${note ? `<p class="task-property-note" id="tpEpic-note">${esc(note)}</p>` : ''}</dd></div>`;
 }
 /** Show the open task's track and epic in place: their choices, values and the Epic cleared note. */
 function paintTrackEpic(t, page) {

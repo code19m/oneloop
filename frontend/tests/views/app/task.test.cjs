@@ -156,6 +156,15 @@ test('another track takes the task out of its epic and says why under Epic, unti
   assert.equal(shown(t, 'tpEpic'), 'No epic'); assert.equal(note(), null, 'the note told of the track change only');
 });
 
+test('a track change that does not go through shows the saved track and epic again', async () => {
+  const t = taskPage();
+  pick(t, 'tpTrack', 'Mobile experience');
+  assert.equal(shown(t, 'tpTrack'), 'Mobile experience');
+  t.commands.at(-1).reject(new t.w.TestApiError('invalid trackId: track not found', { status: 422, code: 'validation_failed' })); await settle();
+  assert.deepEqual([shown(t, 'tpTrack'), shown(t, 'tpEpic')], ['Backend & API', 'Reading summaries']);
+  assert.equal(t.d.getElementById('tpEpic-note'), null);
+});
+
 test('new epics require an explicit track', async () => {
  const t=taskPage();t.A.openModal('epic');let form=t.d.querySelector('.modal form');assert.equal(form.querySelector('[name="trackId"]').value,'');assert(form.textContent.includes('Choose a track'));form.querySelector('[name="title"]').value='Explicit track';t.A.saveEpic(event(form),'');assert.equal(t.commands.length,0);assert(form.textContent.includes('Choose a track.'));
  form.querySelector('[name="trackId"]').value='t1';t.A.saveEpic(event(form),'');assert.deepEqual([t.commands[0].operation,t.commands[0].payload.trackId,t.commands[0].payload.title],['epic.create','t1','Explicit track']);
