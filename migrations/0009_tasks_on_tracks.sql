@@ -42,9 +42,11 @@ FROM tasks;
 
 -- Work on a task started when it first entered In Progress or In Review, or
 -- was created there, since it was last in Planning, as each move keeps a
--- start once there is one. Tasks in Planning have no start. History from
--- before 0.1.0 may call Planning `planned`.
-UPDATE tasks_new SET started_at = (
+-- start once there is one. A task in progress or in review whose move there
+-- the history lacks takes the time of its last change, the best evidence
+-- there is, so every task at work has a start. Tasks in Planning have none.
+-- History from before 0.1.0 may call Planning `planned`.
+UPDATE tasks_new SET started_at = COALESCE((
     SELECT MIN(start.created_at) FROM activity_events start
     WHERE start.entity_type = 'task' AND start.entity_id = tasks_new.id
       AND ((start.event_type = 'task.moved' AND start.field_key = 'status'
@@ -57,7 +59,7 @@ UPDATE tasks_new SET started_at = (
           AND back.event_type = 'task.moved' AND back.field_key = 'status'
           AND back.after_json IN ('"planning"', '"planned"')
           AND (back.created_at, back.id) > (start.created_at, start.id))
-)
+), CASE WHEN status IN ('in_progress', 'in_review') THEN updated_at END)
 WHERE status <> 'planning';
 
 -- The rename checks every trigger, so the triggers of other tables that read

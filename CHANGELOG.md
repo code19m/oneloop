@@ -18,7 +18,8 @@ All notable changes to oneloop are recorded here. The format follows
   made epics only to hold a track's tasks, you can delete them afterwards:
   their tasks stay on their tracks.
 - The upgrade also records when work started on each task in progress, in
-  review or done, from its history.
+  review or done, from its history. A task in progress or in review whose
+  history doesn't show it takes the time of its last change.
 - Track descriptions are gone. The web app no longer showed them. In MCP,
   `track.create` and `track.update` no longer take a `description`, and a call
   that still sends one fails with `validation_failed`; track reads no longer

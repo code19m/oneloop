@@ -357,7 +357,7 @@ fn a_schema_eight_database_puts_every_task_on_its_epics_track() {
             ('done','p','dated',4,'PRJ-004','Finished','done',0,1,1,320,1,NULL),
             ('restarted','p','dated',5,'PRJ-005','Started again','in_progress',1024,1,1,NULL,0,NULL),
             ('reset','p','open',6,'PRJ-006','Done without work','done',1024,1,1,520,2,NULL),
-            ('untracked','p','open',7,'PRJ-007','No history','in_review',1024,1,1,NULL,0,NULL),
+            ('untracked','p','open',7,'PRJ-007','No history','in_review',1024,1,900,NULL,0,NULL),
             ('deleted','p','dated',8,'PRJ-008','Deleted','in_progress',2048,1,1,NULL,0,5),
             ('reopened','p','dated',10,'PRJ-010','Reopened','in_review',3072,1,1,NULL,0,NULL),
             ('gone-task','p','gone-epic',9,'PRJ-009','Long gone','planning',1024,1,1,NULL,0,2);
@@ -437,7 +437,7 @@ fn a_schema_eight_database_puts_every_task_on_its_epics_track() {
             r#"["reset","api",null]"#,
             r#"["restarted","web",420]"#,
             r#"["review","api",200]"#,
-            r#"["untracked","api",null]"#,
+            r#"["untracked","api",900]"#,
         ]
     );
     let description: bool = connection
