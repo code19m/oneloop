@@ -672,19 +672,28 @@ test('a scale change keeps today where it was', () => {
   }
 });
 
-test('a scale change keeps the focused task where it was', () => {
-  const r = boot('roadmap/p1?scale=months', { setup: w => {
-    // Every task shows in the middle of a 1000 × 800 px Roadmap.
-    w.Element.prototype.getBoundingClientRect = function () {
-      const box = this.id === 'rmScroll' ? [0, 0, 1000, 800] : this.dataset?.nav ? [400, 300, 420, 320] : [0, 0, 0, 0];
-      return { left: box[0], top: box[1], right: box[2], bottom: box[3], x: box[0], y: box[1], width: box[2] - box[0], height: box[3] - box[1] };
-    };
-  } });
-  const startX = () => RAIL + parseFloat(mark(r.d, 'BIR-075').style.left) - r.d.getElementById('rmScroll').scrollLeft;
-  mark(r.d, 'BIR-075').focus();
-  const before = startX();
-  r.A.setRoadmapScale('weeks');
-  assert(anchored(startX(), before), 'the bar starts where it did');
+test('a scale change keeps the focused task where it was, scale after scale', () => {
+  // Work started at any hour: each scale keeps the day it starts on, not the whole pixel it was drawn at.
+  for (let hour = 0; hour < 24; hour += 3) {
+    // Milestones a year away on each side leave room to scroll, even at Quarters.
+    const r = boot('roadmap/p1?scale=months', { prepare: D => {
+      D.milestones.push({ ...D.milestones[0], id: 'm-past', date: '2025-09-01' }, { ...D.milestones[0], id: 'm-later', date: '2027-09-01' });
+      D.tasks.find(task => task.id === 'BIR-075').startedAt = Date.parse('2026-09-10T00:00:00Z') + hour * 3600000 + 17 * 60000;
+    }, setup: w => {
+      // Every task shows in the middle of a 1000 × 800 px Roadmap.
+      w.Element.prototype.getBoundingClientRect = function () {
+        const box = this.id === 'rmScroll' ? [0, 0, 1000, 800] : this.dataset?.nav ? [400, 300, 420, 320] : [0, 0, 0, 0];
+        return { left: box[0], top: box[1], right: box[2], bottom: box[3], x: box[0], y: box[1], width: box[2] - box[0], height: box[3] - box[1] };
+      };
+    } });
+    const startX = () => RAIL + parseFloat(mark(r.d, 'BIR-075').style.left) - r.d.getElementById('rmScroll').scrollLeft;
+    mark(r.d, 'BIR-075').focus();
+    const before = startX();
+    for (const scale of ['weeks', 'quarters', 'months', 'weeks', 'quarters', 'months']) {
+      r.A.setRoadmapScale(scale);
+      assert(Math.abs(startX() - before) <= 1, `${hour}h, ${scale}: ${startX()} for ${before}`);
+    }
+  }
 });
 
 test('W, M and Q switch the scale on the Roadmap, but not while typing, in a dialog or a list, with a modifier or elsewhere', () => {

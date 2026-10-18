@@ -631,8 +631,13 @@ function selectedDay(view) {
   if (!el?.isConnected) return null;
   const shown = el.getBoundingClientRect(), port = view.sc.getBoundingClientRect();
   if (!(shown.right > port.left + RAIL && shown.left < port.right && shown.bottom > port.top + axisHeight(view.model) && shown.top < port.bottom)) return null;
-  // A bar or an epic from its start, other marks from their middle, read from where they were placed.
-  const placed = el.closest('.rt-epic') ?? el, start = placed !== el || el.classList.contains('rt-bar');
+  // A bar from the day it starts and a task's dot or ring from its day, as the layout placed them: whole
+  // pixels would let each scale change move it a little further.
+  const mark = view.layout.lanes.flatMap((lane) => lane.sections).flatMap((laid) => laid.marks).find((item) => item.key === roadmapSelection);
+  if (mark?.type === 'bar') return mark.item.from;
+  if (mark?.item) return mark.item.at;
+  // An epic from its start, a count from its middle, read from where they were drawn.
+  const placed = el.closest('.rt-epic') ?? el, start = placed !== el;
   return (parseFloat(placed.style.left) + (start ? 0 : (parseFloat(placed.style.width) || 20) / 2)) / view.ppd;
 }
 
