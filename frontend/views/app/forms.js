@@ -95,6 +95,9 @@ export function mountDescription() {
 }
 
 // ---------- New task form ----------
+/** What a Track select offers: the project's tracks, in their order. */
+export const trackOptions = () => tracks().map((t) => ({ v: t.id, l: t.name }));
+
 /**
  * What an Epic select offers a task on `trackId`: No epic, then the open
  * epics on that track, and `current`, the task's own epic, even when it is
@@ -151,7 +154,7 @@ export function taskModalHtml(m) {
     <form novalidate data-save-shortcut ${UIAction.on('submit', 'saveTask', UIAction.event)}>
       ${field('Title', `<input class="ctl" name="title" placeholder="Fix payment validation" value="${esc(m.title || '')}" maxlength="140" required autofocus>`)}
       <div class="field-row">
-        ${field('Track', selectHtml('mTaskTrack', { name: 'trackId', value: m.trackId, placeholder: 'Choose a track', icon: I.track, options: tracks().map((t) => ({ v: t.id, l: t.name })), pick: (v) => chooseTaskTrack(m, v) }))}
+        ${field('Track', selectHtml('mTaskTrack', { name: 'trackId', value: m.trackId, placeholder: 'Choose a track', icon: I.track, options: trackOptions(), pick: (v) => chooseTaskTrack(m, v) }))}
         ${field('Epic', selectHtml('mEpic', { name: 'epicId', value: m.epicId, icon: I.roadmap, search: true, options: epicOptions(m.trackId), pick: (v) => chooseTaskEpic(m, v) }), true)}
       </div>
       <div class="field-row">

@@ -11,6 +11,7 @@ import { savedDoneOrder } from '../../src/data/done-order.js';
 import { sessionKey } from '../../src/data/projection-store.js';
 import { MULTI, multiHtml } from './controls.js';
 import { drag, dropIndicator, makeDropIndicator, setDragImage } from './drag.js';
+import { trackOptions } from './forms.js';
 import {
   I, STATUS, UIAction, avatarHtml, d, esc, formatInstant, humanInstant, humanShort, instanceDateKey,
   instanceTimeZone, instanceToday, overdue, setHTML, stIcon, today,
@@ -314,7 +315,7 @@ export function boardTopbarHtml() {
   return `<h1>Board</h1>
   <div class="right board-filters">
     <input class="ctl board-search" data-board-search aria-label="Search tasks" placeholder="Search tasks" value="${esc(state.boardQ)}" ${UIAction.on('input', 'setBoardQ', UIAction.value, UIAction.event)} ${UIAction.on('keydown', 'boardSearchKey', UIAction.event)}>
-    ${mk('fTrack', state.boardTracks, 'All tracks', 'tracks', tracks().map((t) => ({ v: t.id, l: t.name })), { width: 140 })}
+    ${mk('fTrack', state.boardTracks, 'All tracks', 'tracks', trackOptions(), { width: 140 })}
     ${mk('fEpic', state.boardEpics, 'All epics', 'epics', epicChoices(), { search: true, width: 180 })}
     ${mk('fAssignee', state.boardAssignees, 'All assignees', 'assignees', assigneeChoices(), { search: true, width: 150 })}
     <button class="btn blocked-filter" aria-pressed="${state.boardBlocked}" ${UIAction('setBlockedFilter', UIAction.element)}>${I.blocked}Blocked<span class="blocked-filter-count" title="Blocked tasks in this project">${blockedCount()}</span></button>

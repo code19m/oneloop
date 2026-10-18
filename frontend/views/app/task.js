@@ -14,10 +14,9 @@ import { dateHtml, multiHtml, selectHtml, setSelectValue } from './controls.js';
 import {
   I, STATUS, UIAction, ago, avatarHtml, esc, formatInstant, overdue, setHTML, stIcon,
 } from './format.js';
-import { epicOptions, mountDescription, sizeDescription, sizeTaskTitle } from './forms.js';
+import { epicOptions, mountDescription, sizeDescription, sizeTaskTitle, trackOptions } from './forms.js';
 import {
-  App, canBoard, epicById, me, projectMembers, recovery, report, runtime, state, taskById, trackById, tracks, userById,
-  userHandle,
+  App, canBoard, epicById, me, projectMembers, recovery, report, runtime, state, taskById, trackById, userById, userHandle,
 } from './model.js';
 import { openMenu } from './overlays.js';
 import { announce } from './toasts.js';
@@ -235,7 +234,6 @@ function saveProperty(id, field, value) {
     App.refreshTaskHeader();
   });
 }
-const trackOptions = () => tracks().map((x) => ({ v: x.id, l: x.name }));
 // A select skips changes from elsewhere while its list is open, so it shows them once the list closes.
 const showSaved = () => App.refreshTaskHeader();
 /** The task's Track and Epic, with the Epic cleared note. */
