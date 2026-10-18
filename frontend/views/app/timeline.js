@@ -384,9 +384,20 @@ const px = (value) => `${Math.round(value)}px`;
 export const numbers = (...values) => values.map((value) => Math.round(value)).join(',');
 /** The middle of a section's row, in the lane. */
 const rowMid = (laid, row) => laid.top + laid.head + row * ROW + ROW / 2;
-const tab = (focus, key) => `tabindex="${focus === key ? 0 : -1}"`;
+/**
+ * Every item of a lane leaves the Tab order; the page then makes one its
+ * lane's Tab stop (setTabStop), so a stop that moves draws nothing again.
+ */
+const TAB = 'tabindex="-1"';
 
-function markHtml(laid, mark, focus) {
+/** Make the item `key` its lane's one Tab stop. */
+export function setTabStop(body, key) {
+  for (const el of body.querySelectorAll('[data-nav][tabindex="0"]')) if (el.dataset.nav !== key) el.tabIndex = -1;
+  const stop = key && [...body.querySelectorAll('[data-nav]')].find((el) => el.dataset.nav === key);
+  if (stop && stop.tabIndex !== 0) stop.tabIndex = 0;
+}
+
+function markHtml(laid, mark) {
   const y = rowMid(laid, mark.row), boxed = laid.section.epic ? ' rt-in-box' : '';
   if (mark.type === 'done' || mark.type === 'planned') {
     const item = mark.group ? mark.group.items[0] : mark.item, task = item.task, x = mark.x, done = mark.type === 'done';
@@ -394,7 +405,7 @@ function markHtml(laid, mark, focus) {
     // A dated plan's title: one line beside its ring; it hides rather than be cut.
     const title = mark.title ? `<span class="rt-tag" data-tag="${esc(numbers(mark.box[1] + 8, mark.box[1] + 8 + mark.title, x))}" data-least="${esc(numbers(Math.min(LABEL_MIN, mark.title)))}" style="left:${px(mark.box[1] + 8 - (x - HIT / 2))};width:${px(mark.title)}" aria-hidden="true">${esc(task.title)}</span>` : '';
     const face = done ? '<span class="rt-dot" aria-hidden="true"></span>' : item.late ? lateIcon(RING) : item.blocked ? BLOCKED_SVG : RING_SVG;
-    return `<button type="button" class="${cls}" data-task="${esc(task.id)}" data-nav="${esc(navKey(task))}" ${tab(focus, navKey(task))} aria-label="${esc(taskLabel(task))}" style="left:${px(x - HIT / 2)};top:${px(y - HIT / 2)}">${face}${title}</button>`;
+    return `<button type="button" class="${cls}" data-task="${esc(task.id)}" data-nav="${esc(navKey(task))}" ${TAB} aria-label="${esc(taskLabel(task))}" style="left:${px(x - HIT / 2)};top:${px(y - HIT / 2)}">${face}${title}</button>`;
   }
   if (mark.type === 'doneCount' || mark.type === 'plannedCount') {
     // A count lists its tasks: from the lanes when they hold them all, else from a read of its days.
@@ -403,7 +414,7 @@ function markHtml(laid, mark, focus) {
     const late = !done && items.some((item) => item.late), blocked = !done && items.some((item) => item.blocked);
     const list = `data-list="${esc(done ? 'done' : 'plans')}" data-section="${esc(laid.section.key)}" data-from="${esc(items[0].day)}" data-to="${esc(items[items.length - 1].day)}" data-count="${esc(String(count))}"${held}`;
     const spoken = count === 1 ? (done ? `1 done task, ${span}` : `1 planned task, due ${span}`) : `${count} ${done ? 'done' : 'planned'} tasks, ${span}`;
-    const name = `${count} ${done ? 'done' : 'due'} · ${span}`, opens = `data-span="${esc(name)}" data-nav="${esc(key)}" ${tab(focus, key)} aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(spoken)}"`;
+    const name = `${count} ${done ? 'done' : 'due'} · ${span}`, opens = `data-span="${esc(name)}" data-nav="${esc(key)}" ${TAB} aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(spoken)}"`;
     // One task the lanes don't hold yet: its dot or ring, which lists it.
     if (count === 1) {
       const cls = ['rt-mark', done ? 'rt-done' : 'rt-planned', blocked ? 'rt-blocked' : '', late ? 'rt-late' : ''].filter(Boolean).join(' ') + boxed;
@@ -417,7 +428,7 @@ function markHtml(laid, mark, focus) {
     // The rest of the work in progress, past the bars: listed from the lanes when they hold it all, else read.
     const ids = mark.items.map((item) => item.task.id), shown = mark.shown.map((item) => item.task.id), key = mark.key;
     const held = ids.length >= mark.count ? ` data-cluster="${esc(ids.join(' '))}"` : ` data-shown="${esc(shown.join(' '))}"`;
-    return `<button type="button" class="rt-more${boxed}" data-more${held} data-section="${esc(laid.section.key)}" data-count="${esc(String(mark.count))}" data-span="${esc(mark.label)}" data-left="${esc(numbers(mark.left))}" data-nav="${esc(key)}" ${tab(focus, key)} aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(`${mark.count} more in progress`)}" style="left:${px(mark.left)};top:${px(y - 10)}">${esc(mark.label)}</button>`;
+    return `<button type="button" class="rt-more${boxed}" data-more${held} data-section="${esc(laid.section.key)}" data-count="${esc(String(mark.count))}" data-span="${esc(mark.label)}" data-left="${esc(numbers(mark.left))}" data-nav="${esc(key)}" ${TAB} aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(`${mark.count} more in progress`)}" style="left:${px(mark.left)};top:${px(y - 10)}">${esc(mark.label)}</button>`;
   }
   // A bar: its icon and title lead a thin line; a firm end at its deadline (red past it when late), or a fade at now without one.
   const { item, left, width, solid, slip, fade, lead } = mark, task = item.task;
@@ -425,7 +436,7 @@ function markHtml(laid, mark, focus) {
   const parts = `<span class="rt-fill" aria-hidden="true"></span>${slip ? '<span class="rt-slip" aria-hidden="true"></span>' : ''}${fade ? '<span class="rt-tail" aria-hidden="true"></span>' : ''}`;
   // At the left edge the title moves onto its line, while some of the line still shows after it.
   const words = `<span class="rt-tag rt-lead" data-tag="${esc(numbers(left - 8 - lead, left - 8, left + 2))}" data-pin="${esc(numbers(left + width - 16))}" data-least="${esc(numbers(Math.min(lead, LABEL_MIN)))}" style="left:${px(-8 - lead)};width:${px(lead)}" aria-hidden="true">${statusIcon(task)}<span class="rt-title">${esc(task.title)}</span></span>`;
-  return `<button type="button" class="${cls}" data-task="${esc(task.id)}" data-nav="${esc(navKey(task))}" ${tab(focus, navKey(task))} aria-label="${esc(taskLabel(task))}" style="left:${px(left)};top:${px(y - BAR_HIT / 2)};width:${px(width)};--solid:${px(solid)};--slip:${px(slip)};--fade:${px(fade)}">${parts}${words}</button>`;
+  return `<button type="button" class="${cls}" data-task="${esc(task.id)}" data-nav="${esc(navKey(task))}" ${TAB} aria-label="${esc(taskLabel(task))}" style="left:${px(left)};top:${px(y - BAR_HIT / 2)};width:${px(width)};--solid:${px(solid)};--slip:${px(slip)};--fade:${px(fade)}">${parts}${words}</button>`;
 }
 
 /**
@@ -434,22 +445,35 @@ function markHtml(laid, mark, focus) {
  * ("0/3" and a short bar). The header follows the view's left edge; when all
  * of the box is off screen, a compact header at that edge points to it.
  */
-function epicHtml(laid, focus) {
+function epicHtml(laid) {
   const epic = laid.section.epic, [left, right] = laid.span, key = `e:${epic.id}`;
   const pct = epic.total ? Math.round((epic.done / epic.total) * 100) : 0;
   const { short, full, dates, progress } = epicHeadWidth(epic), compact = short + 20;
   return `<div class="rt-epic rt-epic-${esc(epic.state)}" data-epic-box="${esc(numbers(left, right, full, compact))}" style="left:${px(left)};top:${px(laid.top)};width:${px(right - left)};height:${px(laid.height)};--head-x:${px(BOX_PAD)}">
-    <button type="button" class="rt-epic-label" data-epic="${esc(epic.id)}" data-nav="${esc(key)}" ${tab(focus, key)} ${UIAction('openPeek', epic.id)} aria-label="${esc(`Epic ${epic.title}, ${epic.done} of ${epic.total} tasks done${epic.state === 'done' ? ', complete' : dates ? `, ${dates}` : ''}`)}">${epic.state === 'done' ? I.check : ''}<span class="rt-epic-title">${esc(epic.title)}</span>${dates ? `<span class="rt-epic-dates">${esc(dates)}</span>` : ''}<span class="rt-epic-count">${progress}</span>${epic.total ? `<span class="rt-epic-prog" aria-hidden="true"><i style="width:${pct}%"></i></span>` : ''}</button></div>`;
+    <button type="button" class="rt-epic-label" data-epic="${esc(epic.id)}" data-nav="${esc(key)}" ${TAB} ${UIAction('openPeek', epic.id)} aria-label="${esc(`Epic ${epic.title}, ${epic.done} of ${epic.total} tasks done${epic.state === 'done' ? ', complete' : dates ? `, ${dates}` : ''}`)}">${epic.state === 'done' ? I.check : ''}<span class="rt-epic-title">${esc(epic.title)}</span>${dates ? `<span class="rt-epic-dates">${esc(dates)}</span>` : ''}<span class="rt-epic-count">${progress}</span>${epic.total ? `<span class="rt-epic-prog" aria-hidden="true"><i style="width:${pct}%"></i></span>` : ''}</button></div>`;
 }
 
-/** The lane's items in keyboard order: each section from the top: its epic, its line by date, then its work by row. */
-function laneOrder(layout) {
+/** A section's marks in keyboard order: its line by date, then its work by row. */
+const byPlace = (marks) => marks.slice().sort((a, b) => a.row - b.row || a.x - b.x);
+
+/** The lane's items in keyboard order: each section from the top: its epic, then its marks. */
+export function laneOrder(layout) {
   const keys = [];
   for (const laid of layout.sections) {
     if (laid.section.epic) keys.push(`e:${laid.section.epic.id}`);
-    for (const mark of laid.marks.slice().sort((a, b) => a.row - b.row || a.x - b.x)) keys.push(mark.key);
+    for (const mark of byPlace(laid.marks)) keys.push(mark.key);
   }
   return keys;
+}
+
+/** Where the item `key` of a lane's layout lies on it, in pixels: its epic's box, or its mark. */
+export function placeOfKey(layout, key) {
+  for (const laid of layout.sections) {
+    if (key === `e:${laid.section.epic?.id}`) return laid.span[0];
+    const mark = laid.marks.find((item) => item.key === key);
+    if (mark) return mark.type === 'bar' || mark.type === 'more' ? mark.left : mark.x;
+  }
+  return null;
 }
 
 /** Where a task shows: its section, and its day and kind on the line, or its work in progress. */
@@ -494,22 +518,38 @@ export function laneEntry(layout, remembered) {
   return laneOrder(layout)[0] || null;
 }
 
-/** A lane's timeline: each section's epic box, its line and its marks. */
-export function laneBodyHtml(lane, layout, ppd, now, focus) {
-  if (layout.blank) return `<div class="rt-empty-lane">${lane.total ? 'No dated work' : 'No tasks yet'}</div>`;
-  const nowX = now * ppd;
-  let html = '';
+/** The pixels a mark covers on its lane, with its title. */
+function markSpan(mark) {
+  if (mark.type === 'bar') return [mark.left - mark.lead - 8, mark.left + mark.width];
+  if (mark.type === 'more') return [mark.left, mark.left + mark.width];
+  return [mark.box[0] - HIT, mark.box[1] + HIT + (mark.title ? 8 + mark.title : 0)];
+}
+
+/**
+ * A lane's timeline as its pieces, each one element with its key: each
+ * section's epic box, its line and its marks, in keyboard order. Only what
+ * lies in `shown` (the pixels near the view) is drawn, and the lane's Tab
+ * stop (`focus`) wherever it is; the view draws more as it scrolls, and a
+ * piece that stays the same stays in the page.
+ * @returns {[string, string][]}
+ */
+export function lanePieces(lane, layout, ppd, now, focus, shown = { from: -Infinity, to: Infinity }) {
+  if (layout.blank) return [['empty', `<div class="rt-empty-lane">${lane.total ? 'No dated work' : 'No tasks yet'}</div>`]];
+  const nowX = now * ppd, near = (from, to) => to >= shown.from && from <= shown.to;
+  const pieces = [];
   for (const laid of layout.sections) {
-    if (laid.section.epic) html += epicHtml(laid, focus);
-    if (laid.spine) {
-      const { from, to } = laid.spine, top = px(rowMid(laid, 0));
+    const key = laid.section.key;
+    if (laid.section.epic && (near(...laid.span) || focus === `e:${laid.section.epic.id}`)) pieces.push([`e:${laid.section.epic.id}`, epicHtml(laid)]);
+    if (laid.spine && near(laid.spine.from, laid.spine.to)) {
+      // The line under the drawn marks: done before now, ahead after it.
+      const from = Math.max(laid.spine.from, shown.from), to = Math.min(laid.spine.to, shown.to), top = px(rowMid(laid, 0));
       const past = Math.min(to, nowX) - from, ahead = to - Math.max(from, nowX);
-      if (past > 0) html += `<span class="rt-spine" aria-hidden="true" style="left:${px(from)};width:${px(past)};top:${top}"></span>`;
-      if (ahead > 0) html += `<span class="rt-spine rt-spine-ahead" aria-hidden="true" style="left:${px(Math.max(from, nowX))};width:${px(ahead)};top:${top}"></span>`;
+      if (past > 0) pieces.push([`s:${key}`, `<span class="rt-spine" aria-hidden="true" style="left:${px(from)};width:${px(past)};top:${top}"></span>`]);
+      if (ahead > 0) pieces.push([`a:${key}`, `<span class="rt-spine rt-spine-ahead" aria-hidden="true" style="left:${px(Math.max(from, nowX))};width:${px(ahead)};top:${top}"></span>`]);
     }
-    for (const mark of laid.marks) html += markHtml(laid, mark, focus);
+    for (const mark of byPlace(laid.marks)) if (mark.key === focus || near(...markSpan(mark))) pieces.push([mark.key, markHtml(laid, mark)]);
   }
-  return html;
+  return pieces;
 }
 
 /** A track's figures: how much it has in progress and planned, each left out at zero. */
@@ -537,6 +577,8 @@ function taskTipHtml(task) {
 
 /** The open list of a count or "+N in progress": its anchor, element and how it opened. */
 const LIST = { el: null, anchor: null, hideTimer: 0, pinned: false };
+/** The mark whose list is open, if one is. */
+export const listAnchor = () => LIST.anchor;
 
 export function closeTimelineList({ focusAnchor = false } = {}) {
   clearTimeout(LIST.hideTimer);
@@ -548,7 +590,8 @@ export function closeTimelineList({ focusAnchor = false } = {}) {
   if (el.querySelector('.rt-pop-list[aria-busy="true"]')) runtime().cancelRoadmapList();
   UIMotion.remove(el);
   anchor?.setAttribute('aria-expanded', 'false');
-  if (focusAnchor && anchor?.isConnected) anchor.focus({ preventScroll: true });
+  // Back on its mark, the list that just closed stays closed.
+  if (focusAnchor && anchor?.isConnected) refocus(anchor, false);
 }
 
 /** One row for every list: icon, key, title, when (done, due, or started) and who. */
@@ -757,13 +800,11 @@ function moveFocus(sc, next, rail) {
 
 /**
  * Focus what shows `task` (its own mark, or the count or "+N" that holds
- * it), bring it into view and show its card. Returns whether it shows.
+ * it), bring it into view and show its card. `lanes` gives each lane's
+ * layout and draws an item that isn't drawn yet. Returns whether it shows.
  */
-export function focusTask(sc, task, rail) {
-  const place = placeOf(task), items = [...sc.querySelectorAll('.rt-body [data-nav]')];
-  // Its own mark, else what holds it: the count of its day, or its section's "+N".
-  const el = items.find((item) => item.dataset.task === task.id) ?? (place && items.find((item) => item.dataset.section === place.section
-    && (place.kind === 'flight' ? item.dataset.more !== undefined : item.dataset.list === (place.kind === 'done' ? 'done' : 'plans') && item.dataset.from <= place.day && place.day <= item.dataset.to)));
+export function focusTask(sc, task, rail, lanes) {
+  const key = lanes.layout(task.trackId) && resolveKey(lanes.layout(task.trackId), navKey(task)), el = key && lanes.reveal(task.trackId, key);
   if (!el) return false;
   hideEpicTip(); closeTimelineList();
   moveFocus(sc, el, rail);
@@ -774,9 +815,10 @@ export function focusTask(sc, task, rail) {
 /**
  * Hover, focus, click and keys for the lanes in `sc`. Returns a function
  * that removes them. Arrows move between a lane's items (Left, Right, Home,
- * End) and between lanes (Up, Down); Enter opens a task, an epic or a list.
+ * End), drawing one not drawn yet through `lanes`, and between lanes (Up,
+ * Down); Enter opens a task, an epic or a list.
  */
-export function mountLanes(sc, rail) {
+export function mountLanes(sc, rail, lanes) {
   const off = [];
   const on = (target, type, fn, options) => { target.addEventListener(type, fn, options); off.push(() => target.removeEventListener(type, fn, options)); };
   // A press focuses what it presses; its card shows on hover, so focus shows the card only without a press.
@@ -839,17 +881,16 @@ export function mountLanes(sc, rail) {
   on(sc, 'keydown', (event) => {
     const target = event.target.closest?.('.rt-body [data-nav]');
     if (!target || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
-    const lane = target.closest('.lane'), items = navItems(lane), at = items.indexOf(target);
+    const lane = target.closest('.lane'), track = lane.dataset.track, keys = laneOrder(lanes.layout(track)), at = keys.indexOf(target.dataset.nav);
+    // Along the lane by its order, which holds the items not drawn yet too.
+    const steps = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: keys.length - 1 };
     let next = null;
-    if (event.key === 'ArrowRight') next = items[at + 1];
-    else if (event.key === 'ArrowLeft') next = items[at - 1];
-    else if (event.key === 'Home') next = items[0];
-    else if (event.key === 'End') next = items[items.length - 1];
+    if (Object.hasOwn(steps, event.key)) { const key = keys[steps[event.key]]; next = key ? lanes.reveal(track, key) : null; }
     else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      const lanes = [...sc.querySelectorAll('.lane')];
-      for (let index = lanes.indexOf(lane) + (event.key === 'ArrowDown' ? 1 : -1); !next && index >= 0 && index < lanes.length; index += event.key === 'ArrowDown' ? 1 : -1) {
+      const rows = [...sc.querySelectorAll('.lane')];
+      for (let index = rows.indexOf(lane) + (event.key === 'ArrowDown' ? 1 : -1); !next && index >= 0 && index < rows.length; index += event.key === 'ArrowDown' ? 1 : -1) {
         const x = target.getBoundingClientRect().left;
-        next = navItems(lanes[index]).sort((a, b) => Math.abs(a.getBoundingClientRect().left - x) - Math.abs(b.getBoundingClientRect().left - x))[0];
+        next = navItems(rows[index]).sort((a, b) => Math.abs(a.getBoundingClientRect().left - x) - Math.abs(b.getBoundingClientRect().left - x))[0];
       }
     } else if (event.key === 'Escape' && LIST.el) { event.preventDefault(); closeTimelineList({ focusAnchor: true }); return; }
     else return;

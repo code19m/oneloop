@@ -246,24 +246,38 @@ test('done work shows as dots at the day it finished; close ones merge into a co
   assert.equal(lane(d, 't2').querySelector('.rt-count-done').textContent, '2');
 });
 
-test('a lane drawn again keeps focus on its count, and shows its list again only if it showed', async () => {
+test('a lane drawn again keeps focus on its count, leaves its list as it is, and shows it again only if it showed', async () => {
   const asked = [];
-  const { w, d, D, A } = boot('roadmap/p1?scale=months', { actions: true, reads: { roadmapList: async (_projectId, query) => { asked.push(query); return { items: [], total: 4 }; } } });
+  const { w, d, D, A } = boot('roadmap/p1?scale=months', { actions: true, reads: { roadmapList: async (_projectId, query) => { asked.push(query); return { items: [D.tasks.find(task => task.id === 'BIR-061')], total: 4 }; } } });
   const count = () => lane(d, 't2').querySelector('[data-nav="c:t2/e5:done:2026-09-22"]');
-  count().focus(); count().click(); await tick();
-  d.getElementById('roadmap-list').querySelector('.rt-pop-note').dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  // Focus opens the list; Down moves into it, and Escape closes it and goes back to the count.
+  count().focus(); await nextFrame(w); await tick();
+  count().click(); await tick();
+  d.getElementById('roadmap-list').querySelector('.rt-pop-row').focus();
+  d.activeElement.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await nextFrame(w); await nextFrame(w);
   assert.equal(d.activeElement, count());
+  assert.equal(d.getElementById('roadmap-list'), null, 'back on its count, the list stays closed');
   // A teammate finishes another task on Sep 10: the lane is drawn again.
   D.roadmap.days['t2/e5']['2026-09-10'].done = 2;
   A.refreshRoadmap(); await nextFrame(w); await nextFrame(w);
   assert.equal(d.activeElement, count(), 'focus stays on the count');
   assert.equal(d.getElementById('roadmap-list'), null, 'the list closed stays closed');
   assert.equal(asked.length, 1);
-  // With its list open, the count shows it again, read again.
+  // With its list open, a change elsewhere in the lane leaves the count and its list as they are.
   count().click(); await tick();
+  const list = d.getElementById('roadmap-list');
   D.roadmap.days['t2/e5']['2026-09-10'].done = 3;
   A.refreshRoadmap(); await nextFrame(w); await nextFrame(w); await tick();
-  assert(d.getElementById('roadmap-list'));
+  assert.equal(d.getElementById('roadmap-list'), list);
+  assert.equal(asked.length, 2);
+  // A change to its own days draws it again, and shows its list again, read again; focus in the list goes back to it.
+  assert(list.contains(d.activeElement), 'Enter on the count moved into its list');
+  D.roadmap.days['t2/e5']['2026-09-22'].done = 3;
+  A.refreshRoadmap(); await nextFrame(w); await nextFrame(w); await tick();
+  assert.equal(count().textContent, '5');
+  assert.equal(d.activeElement, count());
+  assert(d.getElementById('roadmap-list') && d.getElementById('roadmap-list') !== list);
   assert.equal(asked.length, 3);
 });
 
@@ -504,6 +518,44 @@ test('each lane\'s timeline is one Tab stop; arrows move inside the lane and Up 
   assert(lane(d, 't3').contains(d.activeElement), 'Down moves to the next lane');
   key(d.activeElement, 'ArrowUp');
   assert(lane(d, 't2').contains(d.activeElement));
+});
+
+// ---------- drawing near the view ----------
+
+test('the lanes draw the marks near the view, more as it scrolls, and the arrow keys reach those not drawn yet in order', async () => {
+  // A plan of Community tools far ahead: Dec 20, out of the view at Weeks.
+  const far = D => {
+    D.roadmap.days['t4/e10']['2026-12-20'] = { done: 0, plans: 1, blocked: 0 };
+    D.roadmap.marks['bir-090'] = { ...D.roadmap.marks['bir-076'], internalId: 'bir-090', id: 'BIR-090', title: 'Far plan', deadline: '2026-12-20', day: '2026-12-20' };
+  };
+  const t = boot('roadmap/p1?scale=weeks', { prepare: far });
+  const community = lane(t.d, 't4'), key = (el, name) => el.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }));
+  assert.equal(mark(t.d, 'BIR-090'), null, 'not drawn yet');
+  const items = [...community.querySelectorAll('.rt-body [data-nav]')].map(el => el.dataset.nav);
+  assert.deepEqual(items.slice(-1), ['t:BIR-076'], 'the lane\'s order: its epic, its line by date, its work by row');
+  // End reaches the last item of the lane, which draws it.
+  mark(t.d, 'BIR-076').focus();
+  key(t.d.activeElement, 'End');
+  assert.equal(t.d.activeElement.dataset.task, 'BIR-090');
+  key(t.d.activeElement, 'ArrowLeft');
+  assert.equal(t.d.activeElement.dataset.task, 'BIR-076');
+  // A scroll there draws it with what's near it, and stops drawing what's far behind.
+  const sc = t.d.getElementById('rmScroll'), x = parseFloat(mark(t.d, 'BIR-090').style.left);
+  sc.scrollLeft = x - 300; sc.dispatchEvent(new t.w.Event('scroll')); await nextFrame(t.w);
+  assert(mark(t.d, 'BIR-090'));
+  assert.equal(mark(t.d, 'BIR-052'), null, 'Sep 10 is far behind');
+});
+
+test('a change drawn in place changes only the marks it changed: the others stay in the page, with their focus', () => {
+  const t = boot('roadmap/p1?scale=months');
+  const bar = mark(t.d, 'BIR-064'), dot = mark(t.d, 'BIR-052');
+  bar.focus();
+  t.D.roadmap.days['t2/e5']['2026-09-10'].done = 2;
+  t.A.refreshRoadmap();
+  assert.equal(mark(t.d, 'BIR-064'), bar, 'the bar stays');
+  assert.equal(t.d.activeElement, bar);
+  assert(!dot.isConnected, 'the day that changed is drawn again');
+  assert.equal(lane(t.d, 't2').querySelector('[data-nav="c:t2/e5:done:2026-09-10"]').textContent, '2');
 });
 
 // ---------- loading more ----------

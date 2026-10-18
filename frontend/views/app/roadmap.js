@@ -21,8 +21,8 @@ import {
 } from './overlays.js';
 import { announce } from './toasts.js';
 import {
-  closeTimelineList, epicDated, epicStatus, focusTask, headFigure, laneBodyHtml, laneDates, laneEntry, laneFocus, laneModels, refocus,
-  layoutLane, mountLanes, numbers, roadmapLanes, roomAfterNow, setStyle, syncLaneEdges, textWidth,
+  closeTimelineList, epicDated, epicStatus, focusTask, headFigure, lanePieces, laneDates, laneEntry, laneFocus, laneModels, refocus,
+  layoutLane, listAnchor, mountLanes, numbers, placeOfKey, roadmapLanes, roomAfterNow, setStyle, setTabStop, syncLaneEdges, textWidth,
 } from './timeline.js';
 
 // ---------- roadmap geometry ----------
@@ -245,9 +245,12 @@ export function renderRoadmap() {
   const model = roadmapModel(), ppd = state.pxPerDay;
   const width = document.querySelector('.content')?.clientWidth || window.innerWidth;
   const layout = roadmapLayout(model, ppd);
-  const bodies = model.lanes.map((lane, i) => model.ready ? laneBodyHtml(lane, layout.lanes[i], ppd, model.today, laneEntry(layout.lanes[i], laneFocus.get(lane.track.id))) : null);
-  renderedRoadmap = { model, layout, bodies };
-  const lanes = model.lanes.map((lane, i) => laneHtml(lane, layout.lanes[i], bodies[i], model, stacked, width)).join('');
+  // The lanes draw what they drew, when the page is drawn again at the same zoom; else around where the
+  // view will be: where it was, or around today.
+  const drawn = keptDrawn?.ppd === ppd && keptDrawn.start === +model.start ? keptDrawn.drawn : drawnAround((document.getElementById('rmScroll')?.clientWidth ?? width) - RAIL, state.rmScrollLeft ?? todayScroll(null, model.today, ppd));
+  const pieces = model.lanes.map((lane, i) => model.ready ? lanePieces(lane, layout.lanes[i], ppd, model.today, laneEntry(layout.lanes[i], laneFocus.get(lane.track.id)), drawn) : null);
+  renderedRoadmap = { model, layout, pieces, drawn };
+  const lanes = model.lanes.map((lane, i) => laneHtml(lane, layout.lanes[i], pieces[i]?.map(([, html]) => html).join(''), model, stacked, width)).join('');
 
   // Milestones: a card with the shiny diamond above the lanes, and a line from the card down through them.
   let lines = '', connectors = '';
@@ -455,7 +458,7 @@ function bindRoadmap(sc, rendered) {
   const laneEls = all('.lane');
   return {
     sc, canvas: sc.querySelector('.rm-canvas'), ...rendered, ppd: rendered.layout.ppd, calendar: null, zoomLeft: NaN, shape: roadmapShape(rendered.model),
-    lanes: rendered.model.lanes.map((lane, i) => ({ lane: laneEls[i], body: laneEls[i]?.querySelector('.rt-body'), data: lane, html: rendered.bodies[i] })),
+    lanes: rendered.model.lanes.map((lane, i) => ({ lane: laneEls[i], body: laneEls[i]?.querySelector('.rt-body'), data: lane, pieces: rendered.pieces[i] })),
     goals: rendered.model.goals.map((goal, i) => ({ goal, line: lines[i], connector: connectors[i] })).filter((goal) => goal.line && goal.connector),
     cards: { el: sc.querySelector('.rt-cards'), ids: goalCards(rendered.model.goals, rendered.layout.ppd).map((card) => card.ids).join('|') },
     today: [sc.querySelector('.rt-lanes > .today-line'), sc.querySelector('.today-connector'), sc.querySelector(".rt-today")],
@@ -464,29 +467,110 @@ function bindRoadmap(sc, rendered) {
 }
 
 /**
- * Draw each lane's marks for the view's zoom and data; a lane whose marks are
- * the same stays as it is. Focus stays on the same task: on its own mark, or
- * the count it merged into. A card or list shown from a lane drawn again
- * closes, as its mark is gone.
+ * The pixels of the lanes drawn around a view of `room` pixels that starts at
+ * `left`: the view and half a view to spare on each side, so a scroll seldom
+ * reaches what isn't drawn.
+ */
+const drawnAround = (room, left) => ({ from: left - Math.max(room, 320) / 2, to: left + Math.max(room, 320) * 1.5 });
+const viewRoom = (view) => view.sc.clientWidth - RAIL;
+/** The pixels the lanes drew last, at a zoom and from a first day: the page drawn again draws the same. */
+let keptDrawn = null;
+function drawAt(view, drawn) {
+  view.drawn = drawn;
+  keptDrawn = { ppd: view.ppd, start: +view.model.start, drawn };
+}
+
+/** Draw the lanes around the view again once it leaves half of what they spare. Returns whether it did. */
+function followView(view) {
+  const room = Math.max(viewRoom(view), 320), left = view.sc.scrollLeft, { drawn } = view;
+  if (drawn && drawn.from <= left - room / 4 && drawn.to >= left + room * 1.25) return false;
+  drawAt(view, drawnAround(room, left));
+  drawLanes(view);
+  return true;
+}
+
+/**
+ * What the lanes' keyboard and focus need of the mounted view: a lane's
+ * layout at its zoom, and the element of an item, drawn first, around it,
+ * when it isn't yet.
+ */
+const lanesOf = (view) => ({
+  layout: (trackId) => view.layout.lanes[view.model.lanes.findIndex((lane) => lane.track.id === trackId)] ?? null,
+  reveal(trackId, key) {
+    const entry = view.lanes.find((item) => item.data.track.id === trackId);
+    const find = () => [...(entry?.body?.querySelectorAll('[data-nav]') ?? [])].find((el) => el.dataset.nav === key) ?? null;
+    if (!entry || find()) return find();
+    const x = placeOfKey(this.layout(trackId), key);
+    if (x === null) return null;
+    drawAt(view, drawnAround(viewRoom(view), x - viewRoom(view) / 2));
+    drawLanes(view);
+    return find();
+  },
+});
+
+/**
+ * Draw each lane's marks near the view for its zoom and data. Only the pieces
+ * that changed, came near the view or left it change in the page; the others
+ * stay as they are, with their cards and lists. Focus stays on the same
+ * task: on its own mark, or the count it merged into. A card or list shown
+ * from a mark drawn again closes, as that mark is gone.
  */
 function drawLanes(view) {
   if (!view.model.ready) return;
   const active = document.activeElement;
   const focusedLane = active && view.sc.contains(active) && active.closest('.rt-body') ? active.closest('.lane') : null;
+  // Focus in an open list goes back to its mark if that is drawn again, which shows the list again.
+  const inList = !!document.getElementById('roadmap-list')?.contains(active), listed = listAnchor()?.dataset.nav;
   view.lanes.forEach((entry, i) => {
     const { lane, body, data } = entry;
     if (!body) return;
     const laid = view.layout.lanes[i], focus = laneEntry(laid, lane === focusedLane ? active.dataset.nav : laneFocus.get(data.track.id));
-    const html = laneBodyHtml(data, laid, view.ppd, view.model.today, focus);
-    if (html === entry.html) return;
-    const card = !!EPIC_TIP.anchor && body.contains(EPIC_TIP.anchor), list = !!body.querySelector('[aria-expanded="true"]');
+    const pieces = lanePieces(data, laid, view.ppd, view.model.today, focus, view.drawn);
+    const removed = patchPieces(body, entry.pieces, pieces);
+    entry.pieces = pieces;
+    setTabStop(body, focus);
+    if (!removed.length) return;
+    const gone = (el) => !!el && removed.some((piece) => piece.contains(el));
+    const card = gone(EPIC_TIP.anchor), list = gone(listAnchor());
     if (card) hideEpicTip();
     if (list) closeTimelineList();
     body.style.minHeight = `${laid.height}px`;
-    setHTML(body, html);
-    entry.html = html;
-    if (lane === focusedLane && focus) refocus([...body.querySelectorAll('[data-nav]')].find((el) => el.dataset.nav === focus), card || list);
+    const find = (key) => [...body.querySelectorAll('[data-nav]')].find((el) => el.dataset.nav === key);
+    if (lane === focusedLane && focus && gone(active)) refocus(find(focus), card || list);
+    else if (list && inList) refocus(find(listed), true);
   });
+}
+
+/**
+ * Bring a lane body from its `before` pieces to its `after` pieces, keyed, in
+ * order: a piece with the same key and markup stays, others are made from
+ * their markup in one parse. Returns the elements it removed.
+ * @param {Element} body @param {[string, string][]|null} before @param {[string, string][]} after
+ */
+function patchPieces(body, before, after) {
+  const removed = [];
+  if (!before) {
+    removed.push(...body.children);
+    setHTML(body, after.map(([, html]) => html).join(''));
+    return removed;
+  }
+  const wanted = new Map(after), kept = new Map();
+  [...body.children].forEach((el, index) => {
+    const [key, html] = before[index] ?? [];
+    if (key !== undefined && wanted.get(key) === html && !kept.has(key)) kept.set(key, el);
+    else { removed.push(el); el.remove(); }
+  });
+  const fresh = after.filter(([key]) => !kept.has(key));
+  const template = document.createElement('template');
+  setHTML(template, fresh.map(([, html]) => html).join(''));
+  const made = [...template.content.children];
+  let ref = body.firstElementChild, next = 0;
+  for (const [key] of after) {
+    const el = kept.get(key) ?? made[next++];
+    if (el === ref) ref = ref.nextElementSibling;
+    else body.insertBefore(el, ref);
+  }
+  return removed;
 }
 
 /** What the page around the lanes shows: the tracks, the milestones, the layout and who may manage it. The lanes change in place while it stays. */
@@ -520,7 +604,7 @@ function patchLanes() {
   syncEdges(view);
   refreshStats();
   // A late task whose days just loaded.
-  if (overdueWaiting && focusTask(view.sc, overdueWaiting, RAIL)) overdueWaiting = null;
+  if (overdueWaiting && focusTask(view.sc, overdueWaiting, RAIL, lanesOf(view))) overdueWaiting = null;
   loadMore(view);
   App.refreshCounts();
   return true;
@@ -552,6 +636,7 @@ function zoomRoadmap(view, ppd, day, cx) {
     for (const el of [connector, pill]) if (el) el.style.left = `${todayX}px`;
     for (const el of Object.values(view.cells)) el?.style.setProperty('--ppd', String(ppd));
     view.layout = roadmapLayout(model, ppd);
+    drawAt(view, drawnAround(viewRoom(view), Math.max(0, RAIL + day * ppd - cx)));
     drawLanes(view);
     syncRoadmapScale();
   }
@@ -913,8 +998,11 @@ export function mountRoadmap() {
   if (!sc || !renderedRoadmap) return;
   const view = Object.assign(bindRoadmap(sc, renderedRoadmap), { zoomTo: (_ppd) => {} });
   mountedRoadmap = view;
+  drawAt(view, view.drawn);
+  // Each lane's Tab stop: the item last focused in it, or where its work is.
+  view.lanes.forEach((entry, i) => { if (entry.body && view.model.ready) setTabStop(entry.body, laneEntry(view.layout.lanes[i], laneFocus.get(entry.data.track.id))); });
   sc.addEventListener('focusin', (event) => { const item = event.target.closest?.('.rt-body [data-nav]'); if (item) roadmapSelection = item.dataset.nav; });
-  const stopLanes = mountLanes(sc, RAIL);
+  const stopLanes = mountLanes(sc, RAIL, lanesOf(view));
   const place = { reserve: roomAfterNow(view.model, datedAhead(view.model)), ahead: datedAhead(view.model) };
   // A project the person picked no scale for opens at the scale that fits its work, with that work in view.
   if (!picked && fitted !== state.projectId && view.model.ready) {
@@ -928,6 +1016,7 @@ export function mountRoadmap() {
   syncRoadmapScale();
   sc.scrollLeft = state.rmScrollLeft;
   sc.scrollTop = state.rmScrollTop;
+  followView(view);
   mountRoadmapCalendar(view);
   loadMore(view);
   /** The zoom gesture in progress. */
@@ -941,6 +1030,7 @@ export function mountRoadmap() {
     if (!scrollFrame) scrollFrame = requestAnimationFrame(() => {
       scrollFrame = 0;
       if (!sc.isConnected) return;
+      followView(view);
       mountRoadmapCalendar(view);
       loadMore(view);
     });
@@ -1160,7 +1250,7 @@ Object.assign(App, {
     const index = (late.findIndex((task) => task.id === overdueShown) + 1) % late.length, task = late[index];
     overdueShown = task.id; overdueWaiting = null;
     announce(`Overdue ${index + 1} of ${lanes.overdue}: ${task.title}`);
-    if (focusTask(sc, task, RAIL) || !task.deadline) return;
+    if (focusTask(sc, task, RAIL, lanesOf(view)) || !task.deadline) return;
     overdueWaiting = task;
     const day = Math.round((d(task.deadline) - view.model.start) / DAY);
     sc.scrollLeft = state.rmScrollLeft = Math.max(0, Math.round(day * view.ppd - (sc.clientWidth - RAIL) / 2));
