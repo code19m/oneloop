@@ -224,7 +224,9 @@ schema describes the payload of each operation.
   its epic. An epic on another track than the task's fails with
   `validation_failed` and is never dropped silently. Moving an epic to
   another track with `epic.update` moves its tasks with it, and
-  `epic.delete` keeps its tasks on the track without an epic. `track.delete`
+  `epic.delete` keeps its tasks on the track without an epic. The results of
+  both name only the epic, so read its tasks again for their new revisions:
+  with `read_epic` after a move, or `search_tasks` after a deletion. `track.delete`
   works only on a track without tasks or epics; otherwise it fails with
   `precondition_failed` and says how many it has. Tracks have a name and no
   description. `search_tasks` takes `epicIds: ["none"]` for the tasks without
