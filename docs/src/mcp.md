@@ -153,7 +153,7 @@ and deleting needs `destructive` too.
 | `list_projects` | Lists the selected projects, what you may manage there, and the instance time zone | Read |
 | `list_project_members` | Lists a project's members and their permissions | Read |
 | `read_roadmap` | Reads a project's tracks, epics and milestones | Read |
-| `search_tasks` | Searches a project's tasks by status, track, epic, assignee or blocked state | Read |
+| `search_tasks` | Searches a project's tasks by status, track, epic or no epic, assignee or blocked state | Read |
 | `read_task` | Reads one task and its checklist by ID or task key, such as `WEB-042` | Read |
 | `read_epic` | Reads an epic's tasks and activity | Read |
 | `read_pool` | Reads the Team Pool, or your My Pool | Read |
@@ -215,6 +215,24 @@ schema describes the payload of each operation.
   `task.unblock-and-complete`. New tasks start at the top of Planning.
   `search_tasks` lists every column, Done too, in this order. A task's
   `position` in a read only orders its column, and it can be below zero.
+- **Tracks and epics.** Every task is on a track, its `trackId`. An epic is
+  optional; a task's `epicId` is an epic on its track, or null for no epic.
+  `task.create` and `pool.promote` take a `trackId`, an `epicId` or both: with
+  only an `epicId`, the task goes on the epic's track. `task.update` with a
+  `trackId` moves the task to that track, which clears its epic unless
+  `epicId` names one on the new track; `epicId: null` takes the task out of
+  its epic. An epic on another track than the task's fails with
+  `validation_failed` and is never dropped silently. Moving an epic to
+  another track with `epic.update` moves its tasks with it, and
+  `epic.delete` keeps its tasks on the track without an epic. `track.delete`
+  works only on a track without tasks or epics; otherwise it fails with
+  `precondition_failed` and says how many it has. Tracks have a name and no
+  description. `search_tasks` takes `epicIds: ["none"]` for the tasks without
+  an epic, alone or with epic IDs.
+- **When work started.** Each task has a `startedAt`: the time it last moved
+  from Planning to In Progress or In Review. It stays through In Progress, In
+  Review and Done, and is null in Planning, also for a task that went straight
+  from Planning to Done.
 - **Checklists.** `read_task` returns a task's checklist items, and every task
   in `search_tasks` and `read_epic` has `checklistDone` and `checklistTotal`.
   `task.create` takes the items' titles in `checklist`, so a task and its

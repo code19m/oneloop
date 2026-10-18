@@ -8,7 +8,7 @@
 | Track | A long-running stream of work in a project. | Backend and API |
 | Epic | A piece of work on one track, with a start date and an optional end date. | Payment integration |
 | Milestone | A goal with a date, across all tracks. | Public launch |
-| Task | One thing to do. Every task belongs to an epic. | Add card payments |
+| Task | One thing to do, on a track. It can be part of an epic on the same track. | Add card payments |
 
 An epic without an end date is **ongoing**. Use ongoing epics for recurring
 work, such as "Small fixes".
@@ -47,8 +47,10 @@ track. It is the first page you see after you sign in.
 - Add work with **+ Track**, **+ Epic** and **Milestone**. To reorder tracks,
   drag the grip next to a track's name, or focus the grip and use the arrow
   keys, Home and End. A track's **⋮** menu renames or deletes it.
-- You can delete a track only when it has no epics, and an epic only when it has
-  no tasks.
+- You can delete a track only when it has no tasks and no epics. Moving an epic
+  to another track moves its tasks with it. Deleting an epic keeps its tasks
+  on its track, without an epic, and **Undo** right after brings it back with
+  them.
 
 ### Epic status
 
@@ -91,7 +93,8 @@ a review.
   **Planning**. A task that changes status without a place, such as with
   **Move to** or its **Status**, goes to the top of its new column. A card you
   drag, or move with **Move up** and **Move down**, goes exactly there.
-- Use the filters to find tasks by text, track, epic or assignee, or to show
+- Use the filters to find tasks by text, track, epic (**No epic** for tasks
+  without one) or assignee, or to show
   only blocked tasks. Several choices in one filter show more tasks; several
   filters together show fewer. The filters are part of the page's address, so
   a refresh keeps them and you can share a filtered Board as a link. Changing
@@ -188,15 +191,17 @@ itself.
 
 ### Undo a deletion
 
-After you delete a task, a file or a comment, the message that confirms it has
-an **Undo** button while it is shown. Ctrl+Z (Cmd+Z on macOS) does the same
+After you delete a task, an epic, a file or a comment, the message that
+confirms it has an **Undo** button while it is shown. Ctrl+Z (Cmd+Z on macOS) does the same
 while focus is not in a text field and no dialog is open. The message stays
 while the pointer or focus is on it. Undo puts the item back where it was,
 with its comments and files. A task goes back to the same place in its column,
 also when a new task took its place meanwhile; another item goes at the end of
 its list then. People who left the project meanwhile are no longer assigned to
-a restored task, unless it is done. The history keeps the deletion, the undo
-and these changes.
+a restored task, unless it is done. A restored epic takes back the tasks that
+are still on its track without an epic, and a restored task whose epic was
+deleted comes back without it. A task whose track was deleted meanwhile can't
+come back. The history keeps the deletion, the undo and these changes.
 
 If Undo fails because the connection dropped or the server was busy, the
 message that says so offers **Undo** again until the item can no longer be
