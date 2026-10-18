@@ -61,8 +61,10 @@ All notable changes to oneloop are recorded here. The format follows
 - A track can be deleted only when it has no tasks and no epics, and the
   message says how many it has. Moving an epic to another track moves its
   tasks with it.
-- A task's **Epic** offers the epics of the task's track. An epic on another
-  track than the task's is refused, also in MCP.
+- A task's **Epic** offers the epics of the task's track. Choosing an epic, on
+  a task's page or in **New task**, puts the task on the epic's track, also
+  when the epic moved to another track meanwhile. In MCP, an epic on another
+  track than the task's is refused.
 - A **Board** card names the task's epic, or its track when it has no epic.
 - The activity of a task says where it went: "moved the task to iOS", "added
   the task to Payments v2" or "removed the task from Payments v2", instead of

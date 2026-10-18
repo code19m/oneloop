@@ -309,20 +309,20 @@ test('task creation stays one interaction across acceptance and a slow follow-up
   assert.equal(state.closed,1);assert.equal(button.disabled,false);
 });
 
-test('a new task needs a track of its project, and an epic it names must be open and on that track',async()=>{
+test('a new task needs a track of its project, and an epic it names must be open and puts the task on its track',async()=>{
   const errors=[],sent=[];
   const state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task'}},{gateway:{execute:async(operation,payload)=>{sent.push([operation,payload]);return {entities:[],events:[]};}},app:{fieldError:(_form,name,message)=>errors.push([name,message])}});
   state.data.tracks.push({id:'t1',projectId:'p1',name:'Backend'},{id:'t2',projectId:'p1',name:'iOS'},{id:'other',projectId:'p2',name:'Elsewhere'});
   state.data.epics.push({id:'open',projectId:'p1',trackId:'t1',state:'planning'},{id:'closed',projectId:'p1',trackId:'t1',state:'done'});
   const create=values=>state.app.saveTask(submit(form(inputs({title:'Placed task',...values}))));
-  for(const values of [{trackId:''},{trackId:'other'},{trackId:'t1',epicId:'gone'},{trackId:'t1',epicId:'closed'},{trackId:'t2',epicId:'open'}])create(values);
+  for(const values of [{trackId:''},{trackId:'other'},{trackId:'t1',epicId:'gone'},{trackId:'t1',epicId:'closed'}])create(values);
   assert.deepEqual(errors,[
     ['trackId','Choose a track.'],['trackId','Choose a track.'],
     ['epicId','This epic is no longer available. Choose another one, or No epic.'],
     ['epicId','This epic is completed. Reopen it before adding tasks.'],
-    ['epicId','This epic is now on another track. Choose an epic on iOS, or No epic.'],
   ]);
-  create({trackId:'t1',epicId:'open'});await settle();
+  // The form still shows iOS, but the epic moved to Backend meanwhile: the task goes with the epic.
+  create({trackId:'t2',epicId:'open'});await settle();
   assert.deepEqual(sent,[['task.create',{projectId:'p1',trackId:'t1',epicId:'open',title:'Placed task',description:'',deadline:null,assigneeIds:[]}]]);
 });
 

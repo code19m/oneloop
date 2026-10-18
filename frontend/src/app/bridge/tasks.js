@@ -127,16 +127,14 @@ export function installTasks(ctx) {
     const source=uncertainSource||(modal?.poolId?poolItem(modal.poolId):null);
     if(modal?.poolId&&!source)return fieldError(form,'title','This Pool item is no longer available. Return to Pool to continue.');
     if(source&&!uncertainSource)promotionSource={id:source.id,scope:sessionScope(),entity:{...source,revision:recovery.expectedRevision(recovery.revisionKey(source),source.revision)}};
-    // A task without an epic sends none.
-    const epicId=String(values.get('epicId')||'');
-    const payload={projectId:context().projectId,trackId:String(values.get('trackId')||''),...(epicId?{epicId}:{}),title:text(values.get('title'),140),description:text(values.get('desc'),4000),deadline:values.get('deadline')||null,assigneeIds:[...new Set(values.getAll('assignees').map(String))]};
+    const projectId=context().projectId,epicId=String(values.get('epicId')||'');
+    const chosenEpic=epicId?data.epics.find((entry)=>entry.id===epicId&&entry.projectId===projectId):null;
+    // An epic puts the task on its track, also one the epic moved to meanwhile. A task without an epic sends none.
+    const payload={projectId,trackId:chosenEpic?.trackId??String(values.get('trackId')||''),...(epicId?{epicId}:{}),title:text(values.get('title'),140),description:text(values.get('desc'),4000),deadline:values.get('deadline')||null,assigneeIds:[...new Set(values.getAll('assignees').map(String))]};
     if(!payload.title)return fieldError(form,'title','Give the task a title.');
-    const destination=data.tracks.find((entry)=>entry.id===payload.trackId&&entry.projectId===payload.projectId);
-    if(!destination)return fieldError(form,'trackId','Choose a track.');
-    const chosenEpic=epicId?data.epics.find((entry)=>entry.id===epicId&&entry.projectId===payload.projectId):null;
     if(epicId&&!chosenEpic)return fieldError(form,'epicId','This epic is no longer available. Choose another one, or No epic.');
     if(chosenEpic?.state==='done')return fieldError(form,'epicId','This epic is completed. Reopen it before adding tasks.');
-    if(chosenEpic&&chosenEpic.trackId!==destination.id)return fieldError(form,'epicId',`This epic is now on another track. Choose an epic on ${destination.name}, or No epic.`);
+    if(!data.tracks.some((entry)=>entry.id===payload.trackId&&entry.projectId===projectId))return fieldError(form,'trackId','Choose a track.');
     if(!validOptionalDate(form,'deadline',payload.deadline))return false;
     const project=data.projects.find((entry)=>entry.id===payload.projectId),eligible=new Set((project?.members??[]).map((member)=>member.userId));
     if(payload.assigneeIds.some((id)=>!eligible.has(id)||data.users.find((user)=>user.id===id)?.active===false))return fieldError(form,'assignees','Choose active project members. A selected person is no longer available.');
