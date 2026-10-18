@@ -12,7 +12,10 @@ mod types;
 
 pub use crate::paging::PageQuery;
 pub use models::*;
-pub use reads::{BoardQuery, BoardViewQuery, BootstrapQuery, PoolQuery, TaskFilter};
+pub use reads::{
+    BoardQuery, BoardViewQuery, BootstrapQuery, LanesQuery, NAMED_TASKS_LIMIT, PoolQuery,
+    RoadmapPageQuery, RoadmapWindow, TaskFilter,
+};
 pub use service::DomainService;
 pub use types::*;
 

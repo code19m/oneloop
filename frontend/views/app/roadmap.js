@@ -8,7 +8,7 @@ import { UIMotion } from '../../src/app/motion.js';
 import { sortable } from '../../src/app/sortable.js';
 import { sessionKey } from '../../src/data/projection-store.js';
 import {
-  DAY, I, STATUS, UIAction, ago, d, esc, formatInstant, human, humanShort, setHTML, stIcon, today,
+  DAY, I, STATUS, UIAction, ago, d, esc, formatInstant, human, humanShort, instanceDateKey, iso, setHTML, stIcon, today,
 } from './format.js';
 import { descriptionReadHtml } from './forms.js';
 import {
@@ -22,7 +22,7 @@ import {
 import { announce } from './toasts.js';
 import {
   closeTimelineList, epicDated, epicStatus, focusTask, headFigure, isLate, laneBodyHtml, laneDates, laneEntry, laneFocus, laneModels,
-  layoutLane, mountLanes, numbers, roadmapLanes, roomAfterNow, setStyle, syncLaneEdges, textWidth,
+  laneTaskList, layoutLane, mountLanes, numbers, roadmapLanes, roomAfterNow, setStyle, syncLaneEdges, textWidth,
 } from './timeline.js';
 
 // ---------- roadmap geometry ----------
@@ -88,13 +88,16 @@ function fitScale(model, room, reserve) {
 /**
  * The days the timeline covers: `start` anchors day 0, and `end` is the last
  * date it must reach. It runs from seven weeks back to two months ahead, and
- * further for dated epics, milestones and the lanes' work.
+ * further for dated epics, milestones and the project's work, loaded or not.
  */
 function rmRange() {
   let min = new Date(today.getTime() - 50 * DAY), max = new Date(today.getTime() + 60 * DAY);
   const take = (date) => { if (date < min) min = date; if (date > max) max = date; };
   epics().forEach((e) => { if (epicDated(e)) { take(d(e.start)); take(d(e.end)); } });
   milestones().forEach((m) => take(d(m.date)));
+  // Every day the project's done work and dated plans fall on, so the timeline stays put as their pages load.
+  const lanes = roadmapLanes();
+  for (const day of [lanes?.firstDay, lanes?.lastDay]) if (day) take(d(day));
   const work = laneDates();
   if (work) { take(work.min); take(work.max); }
   return { start: new Date(min.getTime() - 10 * DAY), end: new Date(max.getTime() + 45 * DAY) };
@@ -116,10 +119,30 @@ function roadmapModel() {
     // A milestone marks its whole day: the line runs through the middle of it.
     return { m, past: days < 0, name, dateLabel, width, pole, compact, at: day(date) + 0.5 };
   });
-  // How far the loaded pages reach: done work back to `historyFrom`, dated plans up to `plansUntil`.
-  const items = timeline.lanes.flatMap((lane) => lane.sections).flatMap((section) => section.items);
-  const reach = (kind, pick) => { const at = items.filter((item) => item.kind === kind).map((item) => item.at); return at.length ? pick(...at) : timeline.now; };
-  return { start, span: day(end), today: timeline.now, lanes: timeline.lanes, ready: timeline.ready, goals, historyFrom: reach('done', Math.min), plansUntil: reach('planned', Math.max) };
+  return { start, span: day(end), today: timeline.now, lanes: timeline.lanes, ready: timeline.ready, goals, ...heldDays(day) };
+}
+
+/**
+ * The days the lanes hold in full, as day offsets: done work from
+ * `historyFrom` to `historyUntil`, and dated plans up to `plansUntil`; an
+ * edge with nothing beyond it is infinite. Also how many done tasks and dated
+ * plans they hold, and the latest day they hold done work on.
+ */
+function heldDays(day) {
+  const lanes = roadmapLanes();
+  if (!lanes) return { historyFrom: -Infinity, historyUntil: Infinity, plansUntil: Infinity, held: { done: 0, plans: 0 }, newestDone: -Infinity };
+  const held = { done: 0, plans: 0 };
+  let newest = null;
+  for (const task of laneTaskList()) {
+    if (task.state === 'done' && task.completedAt) { held.done++; if (!newest || task.completedAt > newest) newest = task.completedAt; }
+    else if (task.state === 'planning' && task.deadline) held.plans++;
+  }
+  return {
+    historyFrom: lanes.done.cursor ? day(d(lanes.done.reach)) : -Infinity,
+    historyUntil: lanes.window.to >= instanceDateKey() ? Infinity : day(d(lanes.window.to)) + 1,
+    plansUntil: lanes.plans.cursor ? day(d(lanes.plans.reach)) + 1 : Infinity,
+    held, newestDone: newest ? day(d(formatInstant(newest).slice(0, 10))) + 1 : -Infinity,
+  };
 }
 
 /** Whether anything dated lies ahead: a dated plan, a deadline of work in progress, or a milestone. */
@@ -164,10 +187,9 @@ function showMilestoneTip(anchor, id) {
 let renderedRoadmap = null;
 
 /** A track's lane: its head (its name and figures, with its grip and menu for people who manage the Roadmap) and its timeline. */
-function laneHtml(lane, laid, ppd, model, stacked, viewWidth) {
+function laneHtml(lane, laid, body, model, stacked, viewWidth) {
   const t = lane.track;
-  const body = model.ready ? laneBodyHtml(lane, laid, ppd, model.today, laneEntry(laid, laneFocus.get(t.id)))
-    : '<div class="rt-loading" aria-hidden="true"><span class="skeleton"></span><span class="skeleton"></span></div>';
+  body ??= '<div class="rt-loading" aria-hidden="true"><span class="skeleton"></span><span class="skeleton"></span></div>';
   const figure = headFigure(lane, model.ready);
   // A name cut off shows in full in its tip, on hover or, from its grip and ⋮, on keyboard focus.
   const nameTip = `data-tip="${esc(t.name)}" data-tip-overflow="track-name-${esc(t.id)}" data-tip-keyboard`;
@@ -191,8 +213,9 @@ export function renderRoadmap() {
   const model = roadmapModel(), ppd = state.pxPerDay;
   const width = document.querySelector('.content')?.clientWidth || window.innerWidth;
   const layout = roadmapLayout(model, ppd);
-  renderedRoadmap = { model, layout };
-  const lanes = model.lanes.map((lane, i) => laneHtml(lane, layout.lanes[i], ppd, model, stacked, width)).join('');
+  const bodies = model.lanes.map((lane, i) => model.ready ? laneBodyHtml(lane, layout.lanes[i], ppd, model.today, laneEntry(layout.lanes[i], laneFocus.get(lane.track.id))) : null);
+  renderedRoadmap = { model, layout, bodies };
+  const lanes = model.lanes.map((lane, i) => laneHtml(lane, layout.lanes[i], bodies[i], model, stacked, width)).join('');
 
   // Milestones: a card with the shiny diamond above the lanes, and a line from the card down through them.
   let lines = '', cards = '';
@@ -378,10 +401,14 @@ const lateTasks = () => {
 /** The late task "Overdue N" showed last, so the next press shows the next one. */
 let overdueShown = null;
 
-/** The Roadmap's one figure: what is overdue, when anything is. Each track's head says what it has in progress. */
+/**
+ * The Roadmap's one figure: what is overdue, when anything is. Each track's
+ * head says what it has in progress. When the view shows more days than the
+ * lanes can hold, what it leaves out follows.
+ */
 function roadmapStatsHtml() {
   const late = roadmapLanes()?.overdue ?? 0;
-  return `<span class="roadmap-structure-stats">${late ? `<button type="button" class="roadmap-stat rt-stat-late" aria-label="${esc(`Overdue: ${late} ${late === 1 ? 'task' : 'tasks'}. Show ${late === 1 ? 'it' : 'the next one'}`)}" ${UIAction('focusOverdue')}><span>Overdue</span><strong>${late}</strong></button>` : ''}</span>`;
+  return `<span class="roadmap-structure-stats">${late ? `<button type="button" class="roadmap-stat rt-stat-late" aria-label="${esc(`Overdue: ${late} ${late === 1 ? 'task' : 'tasks'}. Show ${late === 1 ? 'it' : 'the next one'}`)}" ${UIAction('focusOverdue')}><span>Overdue</span><strong>${late}</strong></button>` : ''}<span class="roadmap-stat rt-limit" role="status"${limitShown ? '' : ' hidden'}>${esc(limitShown ?? '')}</span></span>`;
 }
 
 /** The Roadmap's page header: what is overdue, the scale, Today and the add buttons. */
@@ -405,26 +432,78 @@ function bindRoadmap(sc, rendered) {
   const lines = all('.rt-lanes > .ms-line'), connectors = all('.goal-connector'), labels = all('.ms-label');
   const laneEls = all('.lane');
   return {
-    sc, canvas: sc.querySelector('.rm-canvas'), ...rendered, ppd: rendered.layout.ppd, calendar: null, zoomLeft: NaN,
-    lanes: rendered.model.lanes.map((lane, i) => ({ lane: laneEls[i], body: laneEls[i]?.querySelector('.rt-body'), data: lane })),
+    sc, canvas: sc.querySelector('.rm-canvas'), ...rendered, ppd: rendered.layout.ppd, calendar: null, zoomLeft: NaN, shape: roadmapShape(rendered.model),
+    lanes: rendered.model.lanes.map((lane, i) => ({ lane: laneEls[i], body: laneEls[i]?.querySelector('.rt-body'), data: lane, html: rendered.bodies[i] })),
     goals: rendered.model.goals.map((goal, i) => ({ goal, line: lines[i], connector: connectors[i], label: labels[i] })).filter((goal) => goal.line && goal.connector && goal.label),
     today: [sc.querySelector('.rt-lanes > .today-line'), sc.querySelector('.today-connector'), sc.querySelector(".rt-today")],
     cells: { lines: sc.querySelector('.rm-calendar-lines'), months: sc.querySelector('.rm-month-grid') },
   };
 }
 
-/** Draw each lane's marks for the view's zoom. Focus stays on the same task: on its own mark, or the count it merged into. */
+/**
+ * Draw each lane's marks for the view's zoom and data; a lane whose marks are
+ * the same stays as it is. Focus stays on the same task: on its own mark, or
+ * the count it merged into. A card or list shown from a lane drawn again
+ * closes, as its mark is gone.
+ */
 function drawLanes(view) {
   if (!view.model.ready) return;
   const active = document.activeElement;
   const focusedLane = active && view.sc.contains(active) && active.closest('.rt-body') ? active.closest('.lane') : null;
-  view.lanes.forEach(({ lane, body, data }, i) => {
+  view.lanes.forEach((entry, i) => {
+    const { lane, body, data } = entry;
     if (!body) return;
     const laid = view.layout.lanes[i], focus = laneEntry(laid, lane === focusedLane ? active.dataset.nav : laneFocus.get(data.track.id));
+    const html = laneBodyHtml(data, laid, view.ppd, view.model.today, focus);
+    if (html === entry.html) return;
+    if (EPIC_TIP.anchor && body.contains(EPIC_TIP.anchor)) hideEpicTip();
+    if (body.querySelector('[aria-expanded="true"]')) closeTimelineList();
     body.style.minHeight = `${laid.height}px`;
-    setHTML(body, laneBodyHtml(data, laid, view.ppd, view.model.today, focus));
+    setHTML(body, html);
+    entry.html = html;
     if (lane === focusedLane && focus) [...body.querySelectorAll('[data-nav]')].find((el) => el.dataset.nav === focus)?.focus({ preventScroll: true });
   });
+}
+
+/** What the page around the lanes shows: the tracks, the milestones, the layout and who may manage it. The lanes change in place while it stays. */
+const roadmapShape = (model) => JSON.stringify([model.ready, stackedLayout(), canRoadmap(), model.lanes.map(({ track }) => [track.id, track.name]), model.goals.map(({ m, name, dateLabel, at, past }) => [m.id, name, dateLabel, at, past])]);
+
+/**
+ * Draw again in place what changed in the lanes, when nothing else did: as
+ * when a page of them loads, or a teammate's change is read. The scroller,
+ * its position and its momentum stay. Returns false when the page has to be
+ * drawn again: the tracks, the milestones, the days the timeline spans or
+ * who may manage it changed.
+ */
+function patchLanes() {
+  const view = mountedRoadmap;
+  if (!view?.sc.isConnected) return false;
+  const model = roadmapModel();
+  if (+model.start !== +view.model.start || model.span !== view.model.span || roadmapShape(model) !== view.shape) return false;
+  view.model = model;
+  view.layout = roadmapLayout(model, view.ppd);
+  renderedRoadmap = { ...renderedRoadmap, model, layout: view.layout };
+  view.lanes.forEach((entry, index) => { entry.data = model.lanes[index]; });
+  drawLanes(view);
+  for (const { lane, data } of view.lanes) {
+    const head = lane?.querySelector('.lane-head'), shown = head?.querySelector('.lane-figure'), text = headFigure(data, true);
+    if (!head || shown?.textContent === text) continue;
+    if (!text) { shown?.remove(); continue; }
+    const figure = shown ?? head.appendChild(Object.assign(document.createElement('p'), { className: 'lane-figure' }));
+    figure.textContent = text;
+  }
+  view.place = { reserve: roomAfterNow(model, datedAhead(model)), ahead: datedAhead(model) };
+  syncEdges(view);
+  refreshStats();
+  loadMore(view);
+  App.refreshCounts();
+  return true;
+}
+
+/** The header's figures, as the lanes now count them. */
+function refreshStats() {
+  const stats = document.querySelector('.topbar .roadmap-structure-stats'), counted = roadmapStatsHtml();
+  if (stats && stats.outerHTML !== counted) { const template = document.createElement('template'); setHTML(template, counted); stats.replaceWith(template.content); }
 }
 
 /**
@@ -702,24 +781,73 @@ function windowScroll(sc, { from, to }, ppd, { reserve, ahead }, now) {
   return Math.max(Math.round(ahead ? left - Math.max(48, spare * 0.3) : right - room + spare * 0.3), 0);
 }
 
-/** The pages of dated plans or done tasks that failed to load for these lanes, which a scroll doesn't ask for again. */
-const failedPages = new WeakMap();
+/** The reads that failed for these lanes, which a scroll doesn't ask for again. */
+const failedReads = new WeakMap();
+/** A page holds at least this many tasks; with less room left, the lanes are full. */
+const PAGE_MIN = 100;
+/** The days loaded beyond each edge of the view, at most, so a scroll seldom shows days still loading. */
+const SPARE_DAYS = 60;
+/** The days the lanes were last read for in place of theirs, which a view that stays asks for once. */
+let lastDays = null;
+
 /**
- * Ask for the next page of done tasks while the view, with one view to
- * spare, reaches before the history the lanes have, and for the next page of
- * dated plans while it reaches past the last plan they have.
+ * Load what the view, with some days to spare, shows and the lanes don't
+ * hold yet: one page, as the view comes to those days. Done work goes back
+ * page by page, and dated plans forward; the lanes hold at most `limit` of
+ * each, so one read can give them all again. When the view leaves the days
+ * they were read for, they read the days around it instead. Full lanes,
+ * whose days hold more done work than that, keep the latest of it: they
+ * follow the view back once half of what they show is past its right edge,
+ * and the page says what they leave out.
  */
 function loadMore(view) {
   const lanes = roadmapLanes();
-  if (!lanes || !view.model.ready) return;
-  const { sc, model, ppd } = view, spare = sc.clientWidth / ppd;
-  const from = sc.scrollLeft / ppd - spare, to = (sc.scrollLeft + sc.clientWidth - RAIL) / ppd + spare;
-  const failed = failedPages.get(lanes) ?? new Set();
-  for (const [kind, needed] of [['done', from < model.historyFrom], ['plans', to > model.plansUntil]]) {
-    const cursor = lanes[kind].cursor;
-    if (!needed || !cursor || failed.has(cursor)) continue;
-    runtime().moreRoadmap(kind).catch((error) => { failed.add(cursor); failedPages.set(lanes, failed); report(error); });
+  if (!lanes || !view.model.ready || !view.sc.isConnected) { showLimit(null); return; }
+  const { sc, model, ppd } = view, room = (sc.clientWidth - RAIL) / ppd, spare = Math.min(room / 2, SPARE_DAYS);
+  const left = sc.scrollLeft / ppd, right = left + room, need = { from: left - spare, to: right + spare };
+  const date = (day) => iso(new Date(+model.start + Math.floor(day) * DAY));
+  const failed = failedReads.get(lanes) ?? new Set();
+  const ask = (key, load) => {
+    if (failed.has(key)) return;
+    load().catch((error) => { failed.add(key); failedReads.set(lanes, failed); report(error); });
+  };
+  const free = { done: lanes.limit - model.held.done, plans: lanes.limit - model.held.plans }, full = free.done < PAGE_MIN;
+  // Full lanes keep the latest done work of their days, so they read up to the view's right edge, not past it.
+  const reread = () => {
+    const days = { from: date(left - room), to: date(full ? right : right + room) }, key = `${lanes.projectId}:${days.from}:${days.to}`;
+    if (key === lastDays) return;
+    lastDays = key;
+    ask(`days:${key}`, () => runtime().roadmapDays(days));
+  };
+  const readHere = date(left) >= lanes.window.from && date(right) <= lanes.window.to;
+  let short = null;
+  // A view wholly outside the days of their done work.
+  if (!readHere && (right > model.historyUntil || right < model.historyFrom)) { reread(); showLimit(null); return; }
+  if (need.from < model.historyFrom) {
+    if (!full) ask(`done:${lanes.done.cursor}`, () => runtime().moreRoadmap('done', { from: date(need.from) }, free.done));
+    else if (Math.min(right, model.newestDone) - Math.max(left, model.historyFrom) < (model.newestDone - model.historyFrom) / 2) reread();
+    else if (left < model.historyFrom) short = { kind: 'done', day: date(model.historyFrom) };
   }
+  if (need.to > model.plansUntil) {
+    if (free.plans >= PAGE_MIN) ask(`plans:${lanes.plans.cursor}`, () => runtime().moreRoadmap('plans', { to: date(need.to) }, free.plans));
+    else if (right > model.plansUntil) short ??= { kind: 'plans', day: date(model.plansUntil - 1) };
+  }
+  showLimit(short);
+}
+
+/** What the lanes can't show of the view, as the page's header says it; null when they show it all. */
+let limitShown = null;
+function limitText(short) {
+  if (!short) return '';
+  const day = humanShort(d(short.day));
+  return short.kind === 'done' ? `Zoom in to see done tasks before ${day}` : `Dated plans after ${day} aren’t shown`;
+}
+function showLimit(short) {
+  const text = limitText(short);
+  if (text === (limitShown ?? '')) return;
+  limitShown = text || null;
+  const note = document.querySelector('.topbar .rt-limit');
+  if (note) { note.textContent = text; note.hidden = !text; }
 }
 
 export function mountRoadmap() {
@@ -924,10 +1052,12 @@ Object.assign(App, {
     if (focus && !peek.inert && !document.querySelector('.confirmation-layer,.file-overlay')) restoreOpener(focus);
   },
   /**
-   * Draw the Roadmap again in place: the same date stays at the left edge,
-   * the focused control stays, and lanes slide to their new places. A track
-   * moved here, `moved`, first comes into view with focus on its grip, so
-   * its lane slides from where it showed instead of jumping.
+   * Show the Roadmap as it is now. When only its lanes changed, they change
+   * in place (patchLanes). Otherwise the page is drawn again in place: the
+   * same date stays at the left edge, the focused control stays, and lanes
+   * slide to their new places. A track moved here, `moved`, first comes into
+   * view with focus on its grip, so its lane slides from where it showed
+   * instead of jumping.
    */
   refreshRoadmap(moved) {
     // A change from elsewhere waits for a press on the page to end, as on a
@@ -937,6 +1067,7 @@ Object.assign(App, {
     if(state.view!=='roadmap'){App.refreshBackground();return;}
     const content=document.querySelector('.content'),scroll=document.getElementById('rmScroll');
     if(!content||!scroll){App.refresh();return;}
+    if(!moved&&patchLanes())return;
     roadmapGestureCleanup();
     closeTimelineList();
     const before=UIMotion.positions('.lane'),top=scroll.scrollTop;
@@ -948,9 +1079,7 @@ Object.assign(App, {
     const next=document.getElementById('rmScroll');
     if(next){state.rmScrollLeft=Math.max(0,Math.round((leftDay-Number(next.dataset.rangeStart)/DAY)*state.pxPerDay));state.rmScrollTop=top;}
     mountRoadmap();
-    // The header counts what the lanes now show.
-    const stats=document.querySelector('.topbar .roadmap-structure-stats'),counted=roadmapStatsHtml();
-    if(stats&&stats.outerHTML!==counted){const template=document.createElement('template');setHTML(template,counted);stats.replaceWith(template.content);}
+    refreshStats();
     if(moved)focusMovedTrack(moved);
     else if(nav)([...content.querySelectorAll('.rt-body [data-nav][tabindex="0"]')].find((el)=>el.dataset.nav===nav)||[...content.querySelectorAll('.rt-body [data-nav]')].find((el)=>el.dataset.nav===nav))?.focus({preventScroll:true});
     else if(focus)restoreOpener(focus);

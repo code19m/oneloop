@@ -234,27 +234,40 @@ export function mergeAdminUsersPage(data, accounts, {append=false,nextCursor=nul
 
 /**
  * A project's tracks, epics and milestones, and its Roadmap's lanes when the
- * read has them, with the `more` pages read after its first.
- * @param {any} data @param {any} projection @param {Parameters<typeof replaceRoadmapLanes>[3]} [more]
+ * read has them: the tasks of their days, or the tasks `named`, which a
+ * change made elsewhere changed.
+ * @param {any} data @param {any} projection @param {string[]} [named]
  */
-export function replaceRoadmap(data, projection, more) {
+export function replaceRoadmap(data, projection, named = []) {
   const projectId=projection.projectId ?? projection.tracks?.[0]?.projectId ?? projection.epics?.[0]?.projectId ?? projection.milestones?.[0]?.projectId;
   if(!projectId)return data;
   replace(data.tracks,[...data.tracks.filter((item)=>item.projectId!==projectId),...(projection.tracks??[]).map(mapTrack)]);
   const history=new Map(data.epics.map((/** @type {ReturnType<typeof mapEpic>} */ item)=>[item.id,item.activity]));
   replace(data.epics,[...data.epics.filter((item)=>item.projectId!==projectId),...(projection.epics??[]).map((/** @type {{id:string}} */ view)=>({...mapEpic(view),activity:history.get(view.id)??[]}))]);
   replace(data.milestones,[...data.milestones.filter((item)=>item.projectId!==projectId),...(projection.milestones??[]).map(mapMilestone)]);
-  if(projection.trackCounts)replaceRoadmapLanes(data,projectId,projection,more);
+  if(projection.lanes?.tasks)patchRoadmapLanes(data,projectId,projection.lanes,named);
+  else if(projection.lanes)replaceRoadmapLanes(data,projectId,projection.lanes);
   return data;
 }
 
+/** The most tasks one read of the lanes' changed tasks names. */
+export const NAMED_TASKS_LIMIT = 50;
+
 /**
- * @typedef {{cursor:string|null,depth:number}} RoadmapPages
- * @typedef {{projectId:string,taskIds:string[],trackCounts:Record<string,{planning:number,progress:number,review:number,done:number}>,overdue:number,plans:RoadmapPages,done:RoadmapPages}} RoadmapLanes
+ * @typedef {{planning:number,progress:number,review:number,done:number}} StatusCounts
+ * @typedef {{cursor:string|null,reach:string}} RoadmapPages
+ * @typedef {{projectId:string,taskIds:string[],window:{from:string,to:string},limit:number,sections:Record<string,StatusCounts>,trackCounts:Record<string,StatusCounts>,overdue:number,firstDay:string|null,lastDay:string|null,plans:RoadmapPages,done:RoadmapPages}} RoadmapLanes
  * The tasks the Roadmap's lanes draw, which `data.tasks` holds, and what
- * they count. `plans` and `done` say where their pages go on and how many
- * were read, so a live read reads as many again.
+ * they count. `window` is the days they were read for, with those their
+ * later pages asked for, which a read of the same lanes asks for again: done
+ * tasks from its first day, and dated plans up to its last. `plans` and
+ * `done` say how far each covers in full, which is less when a read held as
+ * many as it could, and where its next page goes on. `sections` counts each
+ * track's own work, keyed `trackId/`, and each epic, keyed `trackId/epicId`.
  */
+
+/** The key of a track's own work, or of one of its epics, in `sections`. @param {string} trackId @param {string|null|undefined} epicId */
+export const sectionKey = (trackId, epicId) => `${trackId}/${epicId ?? ''}`;
 
 /** Put a page's tasks among the projection's, each with the details it already had. */
 function mergeTasks(data, taskViews) {
@@ -264,36 +277,72 @@ function mergeTasks(data, taskViews) {
 }
 
 /**
- * The Roadmap's lanes from a Roadmap read, with the later pages it read.
+ * The Roadmap's lanes from a Roadmap read.
  * @param {any} data @param {string} projectId
- * @param {{trackCounts:any[],overdue:number,open:any[],plans:{items:any[],nextCursor:string|null},done:{items:any[],nextCursor:string|null}}} timeline
- * @param {{plans?:{items:any[],nextCursor:string|null}[],done?:{items:any[],nextCursor:string|null}[]}} [more]
+ * @param {{from:string,to:string,limit:number,sections:{trackId:string,epicId:string|null,planning:number,inProgress:number,inReview:number,done:number}[],overdue:number,firstDay:string|null,lastDay:string|null,open:any[],plans:{items:any[],reach:string,nextCursor:string|null},done:{items:any[],reach:string,nextCursor:string|null}}} timeline
  */
-export function replaceRoadmapLanes(data, projectId, timeline, more = {}) {
-  const plans=[timeline.plans,...(more.plans??[])],done=[timeline.done,...(more.done??[])];
-  const views=[...timeline.open,...plans.flatMap((page)=>page.items),...done.flatMap((page)=>page.items)];
+export function replaceRoadmapLanes(data, projectId, timeline) {
+  const views=[...timeline.open,...timeline.plans.items,...timeline.done.items];
   mergeTasks(data,views);
   data.roadmap={
     projectId,taskIds:[...new Set(views.map((view)=>view.id))],
-    trackCounts:Object.fromEntries(timeline.trackCounts.map((counts)=>[counts.trackId,{planning:counts.planning,progress:counts.inProgress,review:counts.inReview,done:counts.done}])),
-    overdue:timeline.overdue,
-    plans:{cursor:plans.at(-1)?.nextCursor??null,depth:plans.length},
-    done:{cursor:done.at(-1)?.nextCursor??null,depth:done.length},
+    window:{from:timeline.from,to:timeline.to},limit:timeline.limit,...laneCounts(timeline),
+    plans:{cursor:timeline.plans.nextCursor??null,reach:timeline.plans.reach},
+    done:{cursor:timeline.done.nextCursor??null,reach:timeline.done.reach},
   };
   return data.roadmap;
 }
 
 /**
- * Add the next page of the Roadmap's dated plans or done tasks.
- * @param {any} data @param {'plans'|'done'} kind @param {{items:any[],nextCursor:string|null}} page
+ * A change made elsewhere in the Roadmap's lanes: their counts and work in
+ * progress again, and the tasks it `named`, which the lanes keep while they
+ * are in the project. The days the lanes hold, and their pages, stay.
+ * @param {any} data @param {string} projectId
+ * @param {{sections:any[],overdue:number,firstDay:string|null,lastDay:string|null,open:any[],tasks:any[]}} timeline @param {string[]} named
  */
-export function appendRoadmapPage(data, kind, page) {
+export function patchRoadmapLanes(data, projectId, timeline, named) {
+  const lanes=data.roadmap;
+  if(lanes?.projectId!==projectId)return null;
+  const views=[...timeline.open,...timeline.tasks],kept=new Set(timeline.tasks.map((view)=>view.id));
+  mergeTasks(data,views);
+  const gone=new Set(named.filter((id)=>!kept.has(id)));
+  lanes.taskIds=[...new Set([...lanes.taskIds.filter((id)=>!gone.has(id)),...views.map((view)=>view.id)])];
+  Object.assign(lanes,laneCounts(timeline));
+  return lanes;
+}
+
+/**
+ * What a read of the lanes counts: each section by status, each track by
+ * adding its sections up, what is overdue, and the days the project's work
+ * spans.
+ * @param {{sections:{trackId:string,epicId:string|null,planning:number,inProgress:number,inReview:number,done:number}[],overdue:number,firstDay:string|null,lastDay:string|null}} timeline
+ */
+function laneCounts(timeline) {
+  /** @type {Record<string,StatusCounts>} */ const sections={},trackCounts={};
+  for(const counts of timeline.sections){
+    const mapped={planning:counts.planning,progress:counts.inProgress,review:counts.inReview,done:counts.done};
+    sections[sectionKey(counts.trackId,counts.epicId)]=mapped;
+    const track=trackCounts[counts.trackId]??={planning:0,progress:0,review:0,done:0};
+    for(const [status,count] of Object.entries(mapped))track[/** @type {keyof StatusCounts} */ (status)]+=count;
+  }
+  return {sections,trackCounts,overdue:timeline.overdue,firstDay:timeline.firstDay??null,lastDay:timeline.lastDay??null};
+}
+
+/**
+ * Add the next page of the Roadmap's dated plans, asked for up to `bound.to`,
+ * or of its done tasks, from `bound.from` on: the lanes then hold those days
+ * too.
+ * @param {any} data @param {'plans'|'done'} kind @param {{items:any[],reach:string,nextCursor:string|null}} page @param {{from?:string,to?:string}} bound
+ */
+export function appendRoadmapPage(data, kind, page, bound) {
   const lanes=data.roadmap;
   if(!lanes)return null;
   mergeTasks(data,page.items);
   const known=new Set(lanes.taskIds);
   lanes.taskIds=[...lanes.taskIds,...page.items.map((view)=>view.id).filter((id)=>!known.has(id))];
-  lanes[kind]={cursor:page.nextCursor??null,depth:lanes[kind].depth+1};
+  lanes[kind]={cursor:page.nextCursor??null,reach:page.reach};
+  const {from=lanes.window.from,to=lanes.window.to}=bound;
+  lanes.window={from:from<lanes.window.from?from:lanes.window.from,to:to>lanes.window.to?to:lanes.window.to};
   return lanes;
 }
 

@@ -3,8 +3,8 @@ use super::board::{
     UNDATED_DONE_SQL,
 };
 use super::roadmap::{
-    EPIC_SUMMARY_SQL, OPEN_SQL, OVERDUE_SQL, PLANS_SQL, TRACK_COUNTS_SQL, epics_on, local_midnight,
-    timeline,
+    DONE_SQL, EPIC_SUMMARY_SQL, NAMED_SQL, OPEN_SQL, OVERDUE_SQL, PLANS_SQL, REACH_SQL,
+    SECTION_COUNTS_SQL, epics_on, local_midnight, timeline,
 };
 use super::*;
 use crate::db::{query_plan, query_plan_with};
@@ -230,14 +230,18 @@ fn checklist_counts_read_only_the_items_of_the_page() {
 fn analyzed_tracks() -> (tempfile::TempDir, rusqlite::Connection) {
     let (root, c) = crate::db::migrated_connection();
     c.execute_batch("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','ONE',1,1);
-        INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('a','p','A',0,1,1),('b','p','B',1,1,1),('c','p','C',2,1,1);").unwrap();
+        INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('a','p','A',0,1,1),('b','p','B',1,1,1),('c','p','C',2,1,1);
+        INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at) VALUES('ea','p','a','A work','2026-01-01',0,1,1),('eb','p','b','B work','2026-01-01',1,1,1),('ec','p','c','C work','2026-01-01',2,1,1);").unwrap();
     let statuses = ["planning", "in_progress", "in_review", "done"];
     for n in 0..450_i64 {
         let deleted = (n >= 400).then_some(n);
+        let track = ["a", "b", "c"][n as usize % 3];
+        // Every fifth task is in its track's epic.
+        let epic = (n % 5 == 0).then(|| format!("e{track}"));
         c.execute(
-            "INSERT INTO tasks(id,project_id,track_id,task_number,task_key,title,status,position,created_at,updated_at,deleted_at,deadline,completed_at)
-             VALUES(?1,'p',?2,?3,?1,'Task',?4,?3,1,1,?5,?6,CASE WHEN ?4='done' THEN ?3 END)",
-            params![format!("t{n}"), ["a", "b", "c"][n as usize % 3], n + 1, statuses[n as usize % 4], deleted, format!("2026-{:02}-10", n % 12 + 1)],
+            "INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,deleted_at,deadline,completed_at)
+             VALUES(?1,'p',?2,?3,?4,?1,'Task',?5,?4,1,1,?6,?7,CASE WHEN ?5='done' THEN 1781000000+?4 END)",
+            params![format!("t{n}"), track, epic, n + 1, statuses[n as usize % 4], deleted, format!("2026-{:02}-10", n % 12 + 1)],
         )
         .unwrap();
     }
@@ -298,7 +302,7 @@ fn reads_of_a_tracks_tasks_use_the_track_index_whatever_the_statistics() {
         .expect("the track filter");
     let plan = query_plan_with(&c, filtered, params!["p", "in_progress", r#"["a"]"#, 51]);
     assert!(
-        plan.contains("SEARCH t USING INDEX tasks_project_track_status_idx (project_id=? AND track_id=? AND status=? AND deleted_at=?)"),
+        plan.contains("SEARCH t USING INDEX tasks_project_track_status_idx (project_id=? AND track_id=? AND status=?)"),
         "{plan}"
     );
 }
@@ -313,7 +317,7 @@ fn roadmap_reads_use_their_indexes_whatever_the_statistics() {
         };
         for (sql, parameters, expected) in [
             (
-                TRACK_COUNTS_SQL,
+                SECTION_COUNTS_SQL,
                 params!["p"],
                 &[
                     "SEARCH tasks USING COVERING INDEX tasks_project_track_status_idx (project_id=?)",
@@ -328,6 +332,20 @@ fn roadmap_reads_use_their_indexes_whatever_the_statistics() {
                 ],
             ),
             (
+                REACH_SQL,
+                params!["p"],
+                &[
+                    // The earliest done task is one row, at the end of the index.
+                    "SEARCH tasks USING INDEX tasks_project_done_completed_idx (project_id=? AND completed_at>?)",
+                    "SEARCH tasks USING COVERING INDEX tasks_dated_plans_idx (project_id=? AND deadline>?)",
+                ],
+            ),
+            (
+                NAMED_SQL,
+                params!["p", r#"["t1","t2"]"#],
+                &["SEARCH t USING INDEX sqlite_autoindex_tasks_1 (id=?)"],
+            ),
+            (
                 OPEN_SQL,
                 params!["p", 500],
                 &[
@@ -336,9 +354,16 @@ fn roadmap_reads_use_their_indexes_whatever_the_statistics() {
             ),
             (
                 PLANS_SQL,
-                params!["p", "", "", 201],
+                params!["p", "", "", "2026-12-31", 2001],
                 &[
-                    "SEARCH tasks USING COVERING INDEX tasks_dated_plans_idx (project_id=? AND (deadline,id)>(?,?))",
+                    "SEARCH tasks USING COVERING INDEX tasks_dated_plans_idx (project_id=? AND (deadline,id)>(?,?) AND deadline<?)",
+                ],
+            ),
+            (
+                DONE_SQL,
+                params!["p", 1781000000, i64::MAX, i64::MIN, "", 2001],
+                &[
+                    "SEARCH tasks USING INDEX tasks_project_done_completed_idx (project_id=? AND completed_at>? AND (completed_at,completion_order,id)<(?,?,?))",
                 ],
             ),
         ] {
@@ -361,27 +386,36 @@ fn the_roadmap_read_runs_the_same_statements_for_any_number_of_tracks_and_tasks(
         INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('a','p','A',0,1,1);
         INSERT INTO tasks(id,project_id,track_id,task_number,task_key,title,status,position,created_at,updated_at,deadline,completed_at)
         VALUES('t1','p','a',1,'ONE-1','Task','in_progress',0,1,1,NULL,NULL),('t2','p','a',2,'ONE-2','Task','planning',0,1,1,'2026-01-10',NULL),
-              ('t3','p','a',3,'ONE-3','Task','done',0,1,1,NULL,3);").unwrap();
+              ('t3','p','a',3,'ONE-3','Task','done',0,1,1,NULL,1781000000);").unwrap();
     let (_large_root, large) = analyzed_tracks();
     let today = date(2026, 6, 10);
+    let zone = TimeZone::built_in("UTC").unwrap();
+    let window = LanesQuery::Days(RoadmapWindow {
+        from: Some("2026-01-01".into()),
+        to: None,
+    });
     let run = |c: &rusqlite::Connection| {
         let mut read = None;
-        let sql = statements(c, || read = Some(timeline(c, "p", today).unwrap()));
+        let sql = statements(c, || {
+            read = Some(timeline(c, "p", &zone, today, &window).unwrap())
+        });
         (sql.len(), read.unwrap())
     };
     let (small_count, small_read) = run(&small);
     let (large_count, large_read) = run(&large);
+    let (small_days, large_days) = (small_read.days.unwrap(), large_read.days.unwrap());
     assert_eq!(
         (
             small_read.open.len(),
-            small_read.plans.items.len(),
-            small_read.done.items.len()
+            small_days.plans.items.len(),
+            small_days.done.items.len()
         ),
         (1, 1, 1)
     );
-    assert_eq!(large_read.track_counts.len(), 3);
+    // Each track's own work and its epic.
+    assert_eq!(large_read.sections.len(), 6);
     assert!(
-        large_read.open.len() + large_read.plans.items.len() + large_read.done.items.len() > 250
+        large_read.open.len() + large_days.plans.items.len() + large_days.done.items.len() > 250
     );
     assert_eq!(small_count, large_count);
 }

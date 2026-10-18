@@ -13,7 +13,6 @@ use roadmap::{epics, local_date, milestones, timeline, timeline_page, tracks};
 
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 
 use crate::{
     access::{self, McpScope, Need, require_project},
@@ -55,6 +54,40 @@ pub struct BootstrapQuery {
     pub switched_by: Option<String>,
     /// The filter and Done order of the Board pages, when the bootstrap has them.
     pub filter: TaskFilter,
+    /// The days of the Roadmap's lanes, when the bootstrap is for the Roadmap.
+    pub roadmap: RoadmapWindow,
+}
+
+/// The days the Roadmap's lanes hold, `from` to `to`: the tasks done in them,
+/// and the dated plans due by `to`. Each left out is the one the Roadmap
+/// opens with, counted from today.
+#[derive(Clone, Debug, Default)]
+pub struct RoadmapWindow {
+    pub from: Option<String>,
+    pub to: Option<String>,
+}
+
+/// What a read of the Roadmap's lanes gives besides their counts and work in
+/// progress: the dated plans and done tasks of a window of days, or the
+/// tasks a change made elsewhere named, at most `NAMED_TASKS_LIMIT`.
+#[derive(Clone, Debug)]
+pub enum LanesQuery {
+    Days(RoadmapWindow),
+    Tasks(Vec<String>),
+}
+
+/// The most tasks one read of changed tasks names.
+pub const NAMED_TASKS_LIMIT: usize = 50;
+
+/// The next page of the Roadmap's dated plans, up to `to`, or of its done
+/// tasks, from `from` on: as many as `limit`.
+#[derive(Clone, Debug)]
+pub struct RoadmapPageQuery {
+    pub project_id: String,
+    pub cursor: String,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub limit: Option<usize>,
 }
 
 /// The size of a page of tasks or Pool items, and the most one may hold.
@@ -192,32 +225,29 @@ impl DomainService {
         .await
     }
 
-    /// A project's tracks, epics with their task counts, and milestones.
-    pub async fn roadmap(&self, actor: &Actor, project_id: String) -> AppResult<Value> {
-        let time_zone = self.time_zone.clone();
-        access::read(&self.db, actor, move |connection, actor| {
-            require_project(connection, actor, &project_id, Need::Read, false)?;
-            Ok(json!({
-            "projectId":project_id,
-            "tracks":tracks(connection,&project_id)?,
-            "epics":epics(connection,&project_id,&time_zone,Some(unix_now()?))?,
-            "milestones":milestones(connection,&project_id)?
-            }))
-        })
-        .await
-    }
-
-    /// The Roadmap page: what `roadmap` gives, and the tasks its lanes draw.
-    pub async fn roadmap_view(&self, actor: &Actor, project_id: String) -> AppResult<RoadmapView> {
+    /// A project's tracks, its epics with their task counts, and its
+    /// milestones; with `lanes`, also what the Roadmap's lanes draw.
+    pub async fn roadmap(
+        &self,
+        actor: &Actor,
+        project_id: String,
+        lanes: Option<LanesQuery>,
+    ) -> AppResult<RoadmapView> {
         let time_zone = self.time_zone.clone();
         access::read(&self.db, actor, move |connection, actor| {
             require_project(connection, actor, &project_id, Need::Read, false)?;
             let now = unix_now()?;
+            let lanes = lanes
+                .map(|query| {
+                    let today = local_date(&time_zone, now)?;
+                    timeline(connection, &project_id, &time_zone, today, &query)
+                })
+                .transpose()?;
             Ok(RoadmapView {
                 tracks: tracks(connection, &project_id)?,
                 epics: epics(connection, &project_id, &time_zone, Some(now))?,
                 milestones: milestones(connection, &project_id)?,
-                timeline: timeline(connection, &project_id, local_date(&time_zone, now)?)?,
+                lanes,
                 project_id,
             })
         })
@@ -228,12 +258,12 @@ impl DomainService {
     pub async fn roadmap_tasks(
         &self,
         actor: &Actor,
-        project_id: String,
-        cursor: String,
+        query: RoadmapPageQuery,
     ) -> AppResult<RoadmapPage> {
+        let time_zone = self.time_zone.clone();
         access::read(&self.db, actor, move |connection, actor| {
-            require_project(connection, actor, &project_id, Need::Read, false)?;
-            timeline_page(connection, &project_id, &cursor)
+            require_project(connection, actor, &query.project_id, Need::Read, false)?;
+            timeline_page(connection, &time_zone, &query)
         })
         .await
     }

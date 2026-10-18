@@ -55,6 +55,19 @@ test('a tab where no one is signed in takes no bootstrap', async () => {
   assert.deepEqual(foreign,[]);assert.equal(data.session,null);assert.equal(data.timeZone,'UTC');
 });
 
+test('a Roadmap bootstrap reads the days its project\'s lanes hold again, and none for a tab that shows no lanes', async () => {
+  const asked=[],data=signedIn();
+  const controller=createBootstrapController({api:{bootstrap:async(scope)=>{asked.push(scope.roadmap);return projection('UTC');}},data});
+  // The first load of the Roadmap's address, which names no project.
+  assert.equal((await controller.load({view:'roadmap'})).stale,false);
+  // Each load starts from lanes of p1, which a bootstrap without lanes forgets.
+  for(const scope of [{view:'roadmap',projectId:'p1'},{view:'roadmap',projectId:'p2'},{view:'board',projectId:'p1'}]){
+    data.roadmap={projectId:'p1',window:{from:'2026-01-01',to:'2026-12-31'}};
+    await controller.load(scope);
+  }
+  assert.deepEqual(asked,[undefined,{from:'2026-01-01',to:'2026-12-31'},undefined,undefined]);
+});
+
 /** A task as the server sends it, in Planning at `position`. */
 const card = (id, position, revision = 1) => ({id,projectId:'p1',epicId:'e1',taskKey:id.toUpperCase(),title:id,description:'',status:'planning',position,createdAt:1,updatedAt:1,revision,assigneeIds:[],activeBlock:null});
 const withTasks = (tasks) => ({...projection('UTC'),tasks});

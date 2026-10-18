@@ -19,12 +19,20 @@ test('each track\'s lane shows its work, and a teammate\'s changes reach it', { 
   expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
   // A teammate starts the task, late: it shows as a bar with the error icon, and the header counts it.
   const [moved] = (await command(instance.writer, 'task.move', { taskId: task.id, status: 'in_progress' }, task.revision)).entities;
-  await command(instance.writer, 'task.update', { taskId: task.id, deadline: day(-2) }, moved.revision);
+  const [dated] = (await command(instance.writer, 'task.update', { taskId: task.id, deadline: day(-2) }, moved.revision)).entities;
   const bar = lane.locator(`.rt-bar[data-task="${task.taskKey}"]`);
   await expect(bar).toHaveClass(/rt-late/);
   await expect(bar.locator('.rt-icon-late')).toBeVisible();
   await expect(lane.locator('.lane-figure')).toHaveText('1 in progress');
   await expect(page.getByRole('button', { name: /^Overdue: 1 task/ })).toBeVisible();
+  // A rename reads only the task it names, with the lanes' counts, and the lane changes in place.
+  const reads = [];
+  page.on('request', request => { const url = new URL(request.url()); if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/events')) reads.push(url); });
+  await page.evaluate(() => { window.shownScroller = document.getElementById('rmScroll'); });
+  await command(instance.writer, 'task.update', { taskId: task.id, title: 'Renamed by a teammate' }, dated.revision);
+  await expect(bar.locator('.rt-title')).toHaveText('Renamed by a teammate');
+  expect(reads.map(url => [url.pathname, url.searchParams.get('tasks')])).toEqual([[`/api/projects/${task.projectId}/roadmap/lanes`, task.id]]);
+  expect(await page.evaluate(() => document.getElementById('rmScroll') === window.shownScroller)).toBe(true);
 });
 
 test('an epic created on the Roadmap shows at once with its dates and its progress', async ({ page, instance }) => {

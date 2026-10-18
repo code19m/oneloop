@@ -1,7 +1,7 @@
-//! Calendar dates in commands, which must be exactly `YYYY-MM-DD`.
+//! Calendar dates in commands and reads, which must be exactly `YYYY-MM-DD`.
 use super::*;
 
-pub(super) fn date(value: &str, field: &'static str) -> AppResult<String> {
+pub(in crate::domain) fn date(value: &str, field: &'static str) -> AppResult<String> {
     // Only the exact form round-trips: no other ISO 8601 spelling.
     let exact = value.len() == 10
         && value

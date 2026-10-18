@@ -22,7 +22,7 @@ function page(context){
     calls.push({name,args,options:args.at(-1),resolve,reject});
     for(const waiter of waiting.filter(item=>calls.length>=item.count)){waiting.splice(waiting.indexOf(waiter),1);waiter.resolve();}
   });
-  const api={bootstrap:held('bootstrap'),task:held('task'),epicTasks:held('epicTasks'),epicActivity:held('epicActivity'),roadmap:held('roadmap'),boardView:held('boardView'),board:held('board')};
+  const api={bootstrap:held('bootstrap'),task:held('task'),epicTasks:held('epicTasks'),epicActivity:held('epicActivity'),roadmap:held('roadmap'),roadmapLanes:held('roadmapLanes'),boardView:held('boardView'),board:held('board')};
   const bootstrap=createBootstrapController({api,data}),reads=createReadController({api,data});
   const app={context:()=>context,refresh(){},refreshCounts(){},refreshRoadmap(){},refreshTask(){},updateDocumentTitle(){}};
   const recovery={refreshSucceeded(){},refreshFailed(){},handleRouteError(){}};
@@ -62,7 +62,7 @@ test('a full live refresh keeps its answer when a refresh of the same page\'s vi
   const full=t.reload({background:true,projectId:'p1'});
   await waitFor(()=>t.calls.length===1);
   t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'epic'}]});
-  await waitFor(()=>t.calls.length===2);assert.equal(t.calls[1].name,'roadmap');
+  await waitFor(()=>t.calls.length===2);assert.equal(t.calls[1].name,'roadmapLanes');
   t.next('bootstrap').resolve(projection('after-reconnect'));
   assert.equal((await full).stale,false);
   assert.equal(t.data.timeZone,'after-reconnect','the changes made while the tab was away arrive');
@@ -313,6 +313,17 @@ test('a switch to a project its person can no longer open is forgotten, but only
   assert.equal(remembered.values.has('oneloop.project'),false);
 });
 
+test('a teammate\'s change to a task reads that task with the Roadmap\'s counts, and none of the pages its lanes hold',async()=>{
+  const t=page({view:'roadmap',projectId:'p1'});
+  t.data.roadmap={projectId:'p1',taskIds:['t1'],window:{from:'2025-01-01',to:'2027-01-01'},limit:2000,sections:{},trackCounts:{},overdue:0,firstDay:null,lastDay:null,plans:{cursor:null,reach:'2027-01-01'},done:{cursor:'older',reach:'2025-01-01'}};
+  const live=t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'task',entityId:'t1'},{entityType:'task_block',entityId:'b1',taskId:'t2'}]});
+  await t.called(1);await settle();
+  assert.deepEqual(t.calls.map(call=>[call.name,call.args[1]]),[['roadmapLanes',{tasks:['t1','t2']}]]);
+  t.next('roadmapLanes').resolve({...projection('p1'),lanes:{sections:[],overdue:1,firstDay:null,lastDay:null,open:[],tasks:[view('t1')]}});
+  assert.equal((await live).stale,false);
+  assert.deepEqual([t.data.roadmap.taskIds,t.data.roadmap.overdue],[['t1'],1]);
+});
+
 // Without the drawer read, the fourth call never comes and the test times out.
 test('a live task change re-reads the open epic drawer with the Roadmap, after a Load more someone started',{timeout:5_000},async()=>{
   const t=page({view:'roadmap',projectId:'p1',peek:'e1'});
@@ -325,8 +336,8 @@ test('a live task change re-reads the open epic drawer with the Roadmap, after a
   loading.resolve({items:[view('t3')],nextCursor:null,total:3});
   assert.equal((await more).stale,false);assert.equal(loading.options.signal.aborted,false,'Load more is never cancelled');
   await t.called(4);
-  assert.deepEqual(t.calls.map(call=>call.name).sort(),['epicActivity','epicTasks','epicTasks','roadmap'],'the Roadmap and the drawer are read again');
-  t.next('roadmap').resolve(projection('p1'));
+  assert.deepEqual(t.calls.map(call=>call.name).sort(),['epicActivity','epicTasks','epicTasks','roadmapLanes'],'the Roadmap and the drawer are read again');
+  t.next('roadmapLanes').resolve(projection('p1'));
   const drawer=t.next('epicTasks');assert.equal(drawer.options.cursor,undefined,'the drawer reads its tasks again from the first');
   drawer.resolve({items:[{...view('t1'),title:'Renamed by a teammate'},view('t2'),view('t3')],nextCursor:null,total:3});
   t.next('epicActivity').resolve({items:[],nextCursor:null});

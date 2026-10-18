@@ -215,8 +215,8 @@ pub struct BoardView {
     pub counts: BoardCounts,
 }
 
-/// The Roadmap page: the project's tracks, epics with their progress and
-/// milestones, and the tasks its lanes draw.
+/// A project's Roadmap: its tracks, its epics with their progress, its
+/// milestones and, for the Roadmap page, the tasks its lanes draw.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoadmapView {
@@ -224,43 +224,79 @@ pub struct RoadmapView {
     pub tracks: Vec<TrackView>,
     pub epics: Vec<EpicView>,
     pub milestones: Vec<MilestoneView>,
-    #[serde(flatten)]
-    pub timeline: RoadmapTimeline,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lanes: Option<RoadmapTimeline>,
 }
 
-/// The tasks the Roadmap's lanes draw, and what they count. Plans without a
-/// deadline stay on the Board, and the counts include them.
+/// The tasks the Roadmap's lanes draw, and what they count: the work in
+/// progress, and the dated plans and done tasks of a window of days, or the
+/// tasks a change made elsewhere named. Plans without a deadline stay on the
+/// Board, and the counts include them.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoadmapTimeline {
-    /// Each track's tasks by status; a track without tasks is left out.
-    pub track_counts: Vec<TrackCounts>,
+    /// The tasks of each track's own work and of each of its epics, by
+    /// status; a section without tasks is left out.
+    pub sections: Vec<SectionCounts>,
     /// Tasks past their deadline and not done.
     pub overdue: i64,
-    /// Tasks in progress and in review, in the Board's order, up to a limit.
+    /// The first and last day that any done task or dated plan of the project
+    /// falls on, so the timeline spans them before their pages load.
+    pub first_day: Option<String>,
+    pub last_day: Option<String>,
+    /// Tasks in progress and in review, in the Board's order, up to a limit;
+    /// a read of named tasks has only those among `tasks`.
     pub open: Vec<TaskView>,
-    /// Planned tasks with a deadline, the earliest first.
+    /// The window's dated plans and done tasks; a read of named tasks has none.
+    #[serde(flatten)]
+    pub days: Option<RoadmapDays>,
+    /// The named tasks that are still in the project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<Vec<TaskView>>,
+}
+
+/// The dated plans and done tasks of a window of days.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoadmapDays {
+    /// The first and last day of the window, which a read of the same lanes
+    /// asks for again.
+    pub from: String,
+    pub to: String,
+    /// The most dated plans, and the most done tasks, that one read gives and
+    /// the lanes hold.
+    pub limit: usize,
+    /// Planned tasks with a deadline by the window's last day, the earliest
+    /// first, late ones included.
     pub plans: RoadmapPage,
-    /// Done tasks, the latest finished first.
+    /// Tasks done in the window, the latest finished first.
     pub done: RoadmapPage,
 }
 
+/// How many tasks a track's own work (without `epic_id`) or one of its epics
+/// has in each status.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TrackCounts {
+pub struct SectionCounts {
     pub track_id: String,
+    pub epic_id: Option<String>,
     pub planning: i64,
     pub in_progress: i64,
     pub in_review: i64,
     pub done: i64,
 }
 
-/// A page of the Roadmap's dated plans or done tasks, and where the next one
-/// starts.
+/// A page of the Roadmap's dated plans or done tasks: every one from where
+/// the page starts to `reach`, or as many as fit.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoadmapPage {
     pub items: Vec<TaskView>,
+    /// The day the page covers in full: done tasks from it on, or dated plans
+    /// up to it. It is the day asked for unless the page was full.
+    pub reach: String,
+    /// Where the next page goes on, earlier for done tasks and later for
+    /// plans; null when no task is left that way.
     pub next_cursor: Option<String>,
 }
 
@@ -288,7 +324,7 @@ pub struct BootstrapView {
     pub board_counts: Option<BoardCounts>,
     #[serde(default)]
     pub board_pages: std::collections::BTreeMap<String, PageSummary>,
-    /// The Roadmap's tasks and counts, when the bootstrap is for the Roadmap.
+    /// The Roadmap's lanes, when the bootstrap is for the Roadmap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roadmap: Option<RoadmapTimeline>,
     #[serde(default)]

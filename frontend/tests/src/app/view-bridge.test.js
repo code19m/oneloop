@@ -40,7 +40,7 @@ function fixture(context,overrides={}){
   const data={session:{id:'s1',userId:'u1'},users:[],projects:[{id:'p1',members:[]}],tracks:[],epics:[],milestones:[],tasks:[],pool:[],browserSessions:[],appGrants:[],adminUsers:{loaded:false,ids:[],nextCursor:null}};
   const reads={
     async task(id){calls.push(['task',id]);const task={id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:1};data.tasks.push(task);return {stale:false,task};},
-    async counts(id){calls.push(['counts',id]);},async board(){},adoptBoard:()=>false,async roadmap(){},async pool(){},cancel(){},async epic(){},async moreEpicTasks(){},async moreEpicActivity(){},
+    async counts(id){calls.push(['counts',id]);},async board(){},adoptBoard:()=>false,async roadmap(){},async roadmapStructure(){},async pool(){},cancel(){},async epic(){},async moreEpicTasks(){},async moreEpicActivity(){},
     ...overrides.reads,
   };
   const bridge=installViewBridge({app,data,reads,api:overrides.api??{},gateway:{hasUncertain:()=>false,...overrides.gateway},auth:overrides.auth??{},recovery:{...quietRecovery,...overrides.recovery},reloadBootstrap:overrides.reloadBootstrap??(async()=>({}))});
@@ -910,7 +910,7 @@ test('deleting a track that has tasks or epics says what to move first and delet
   const state=fixture({view:'roadmap',projectId:'p1'},{gateway:{execute:async(operation)=>{sent.push(operation);return {entities:[],events:[]};}},app:{confirm(options){confirmation=options;},showBlocked:(title,text)=>blocked.push([title,text])}});
   state.data.tracks.push({id:'t1',projectId:'p1',name:'Design',revision:1},{id:'t2',projectId:'p1',name:'Empty',revision:1});
   state.data.epics.push({id:'e1',projectId:'p1',trackId:'t1'});
-  state.data.roadmap={projectId:'p1',taskIds:[],trackCounts:{t1:{planning:15,progress:3,review:1,done:3}},overdue:0,plans:{cursor:null,depth:1},done:{cursor:null,depth:1}};
+  state.data.roadmap={projectId:'p1',taskIds:[],trackCounts:{t1:{planning:15,progress:3,review:1,done:3}},sections:{},overdue:0,plans:{cursor:null,reach:'2027-01-01'},done:{cursor:null,reach:'2026-01-01'}};
   state.app.deleteTrack('t1');
   // The server refuses with the same words when the track gained work meanwhile.
   assert.deepEqual(blocked,[['“Design” isn’t empty','Move or delete its 22 tasks and 1 epic first.']]);

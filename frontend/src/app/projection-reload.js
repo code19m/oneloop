@@ -115,10 +115,12 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
         // reads its cards again.
         if(previous.view==='board')return complete(scope.hints?.every(hint=>['task','task_block','checklist'].includes(hint.entityType)&&!hint.respaced)?await reads.patchBoard(previous.projectId,previous.board,scope.hints):await reads.board(previous.projectId,previous.board,{background:!!scope.background}));
         if(previous.view==='roadmap'){
-          // An open epic drawer lists tasks, so it reads them again too. A
-          // live read waits for a Load more someone started instead of
-          // cancelling it.
-          const views=[reads.roadmap(previous.projectId,{background:!!scope.background})];
+          // Hints of tasks and their blocks name what changed in the lanes,
+          // which read those tasks again with their counts. An open epic
+          // drawer lists tasks, so it reads them again too. A live read waits
+          // for a Load more someone started instead of cancelling it.
+          const named=scope.hints?.every(hint=>['task','task_block'].includes(hint.entityType)&&!hint.respaced&&(hint.taskId??hint.entityId))?scope.hints.map(hint=>hint.taskId??hint.entityId):null;
+          const views=[named?reads.patchRoadmap(previous.projectId,named,{background:!!scope.background}):reads.roadmap(previous.projectId,{background:!!scope.background})];
           if(previous.peek&&data.epics.some((item)=>item.id===previous.peek))views.push(reads.epic(previous.peek,{background:!!scope.background}));
           const results=await Promise.all(views);
           return complete(results.find((result)=>result?.stale)??results[0]);

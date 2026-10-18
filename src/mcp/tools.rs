@@ -431,12 +431,12 @@ impl OneloopMcp {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<Json<Value>, ToolError> {
-        let value = self
-            .state
-            .domain
-            .roadmap(&actor(&parts)?, input.project_id)
-            .await?;
-        Ok(Json(value))
+        json(
+            self.state
+                .domain
+                .roadmap(&actor(&parts)?, input.project_id, None)
+                .await?,
+        )
     }
 
     #[tool(

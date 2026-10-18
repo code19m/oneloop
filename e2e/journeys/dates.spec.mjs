@@ -140,7 +140,7 @@ test.describe('with an instance time zone ahead of the browser', () => {
     await page.locator('.rt-epic-label[data-epic]').first().click();
     await expect(page.locator('[data-epic-throughput]')).toBeVisible();
     let reads = 0;
-    await page.route('**/api/projects/*/roadmap', async route => {
+    await page.route('**/api/projects/*/roadmap/lanes*', async route => {
       reads++;
       const response = await route.fetch(), body = await response.json();
       for (const epic of body.epics) { epic.completedThisWeek = 17; epic.weeklyCompletions = [0, 0, 0, 0, 0, 0, 17]; }

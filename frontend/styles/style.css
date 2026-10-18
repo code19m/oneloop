@@ -447,6 +447,8 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .rt-stat-late { margin: 0; padding: 2px 6px; border: 0; border-radius: var(--radius-xs); background: none; font: inherit; color: inherit; cursor: pointer; }
 .rt-stat-late strong { font-size: var(--text-label); font-weight: 500; color: var(--err); }
 .rt-stat-late:hover { background: var(--fill-hover); }
+/* What the view shows but its lanes can't hold. */
+.rt-limit[hidden] { display: none; }
 /* The lanes end with a quiet way to add one more. */
 .rt-add-track { display: flex; height: 40px; }
 .rt-add-track .rail-cell { display: flex; align-items: center; padding: 0 8px; border-right: 0; }

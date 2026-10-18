@@ -378,14 +378,18 @@ test('each lane\'s timeline is one Tab stop; arrows move inside the lane and Up 
 
 // ---------- loading more ----------
 
+/** Lanes that hold done work from Sep 10 on, with more before it. */
+const heldFromSep10 = D => { D.roadmap.done = { cursor: 'older', reach: '2026-09-10' }; D.roadmap.window.from = '2026-09-10'; };
+
 test('a view that reaches before the done work the lanes have asks for the next page once, and one that failed is not asked again', async () => {
   const pages = [];
   const t = boot('roadmap/p1?scale=months', {
-    prepare: D => { D.roadmap.done.cursor = 'older'; },
-    reads: { moreRoadmap: async (projectId, kind) => { pages.push([projectId, kind]); throw new Error('offline'); } },
+    prepare: heldFromSep10,
+    reads: { moreRoadmap: async (projectId, kind, bound, limit) => { pages.push([projectId, kind, Object.keys(bound), limit]); throw new Error('offline'); } },
   });
   await settle();
-  assert.deepEqual(pages, [['p1', 'done']], 'the view reaches back past Sep 10');
+  // As many as the lanes have room for: they hold 6 done tasks.
+  assert.deepEqual(pages, [['p1', 'done', ['from'], 1994]], 'the view reaches back past Sep 10');
   const sc = t.d.getElementById('rmScroll');
   sc.scrollLeft -= 50; sc.dispatchEvent(new t.w.Event('scroll')); await nextFrame(t.w); await settle();
   assert.equal(pages.length, 1, 'the page that failed waits for the next read of the Roadmap');
@@ -397,6 +401,47 @@ test('a view that reaches past the last dated plan the lanes have asks for the n
   const sc = t.d.getElementById('rmScroll');
   sc.scrollLeft = parseFloat(t.d.querySelector('.rm-canvas').style.width); sc.dispatchEvent(new t.w.Event('scroll')); await nextFrame(t.w);
   assert(t.reads.calls.some(([name, projectId, kind]) => name === 'moreRoadmap' && projectId === 'p1' && kind === 'plans'));
+});
+
+test('a view within the done work the lanes hold asks for no page', async () => {
+  const t = boot('roadmap/p1?scale=months', { prepare: D => { D.roadmap.done = { cursor: 'older', reach: '2026-05-01' }; D.roadmap.window.from = '2026-05-01'; } });
+  await settle();
+  assert.deepEqual(t.reads.calls.filter(([name]) => name === 'moreRoadmap'), []);
+});
+
+test('a page that loads joins its lane in place: the scroller, its place and the other lanes stay', async () => {
+  const t = boot('roadmap/p1?scale=months', { prepare: heldFromSep10 });
+  await settle();
+  const sc = t.d.getElementById('rmScroll'), left = sc.scrollLeft, canvas = t.d.querySelector('.rm-canvas');
+  const untouched = lane(t.d, 't3').querySelector('.rt-body').firstElementChild;
+  assert.deepEqual(t.reads.calls.filter(([name]) => name === 'moreRoadmap').map(call => call.slice(1, 3)), [['p1', 'done']]);
+  // The page lands as the read controller adds it: an older done task of Web Apps.
+  const older = { ...t.D.tasks.find(task => task.internalId === 'bir-052'), id: 'BIR-040', internalId: 'bir-040', completedAt: Date.parse('2026-09-03T05:00:00Z') };
+  t.D.tasks.push(older); t.D.roadmap.taskIds.push('bir-040');
+  t.D.roadmap.done = { cursor: null, reach: '2026-08-01' }; t.D.roadmap.window.from = '2026-08-01';
+  t.A.refreshRoadmap();
+  assert.equal(t.d.getElementById('rmScroll'), sc, 'the same scroller'); assert.equal(t.d.querySelector('.rm-canvas'), canvas); assert.equal(sc.scrollLeft, left);
+  assert(lane(t.d, 't2').querySelector('[data-task="BIR-040"],[data-cluster~="BIR-040"]'), 'the page\'s task shows');
+  assert.equal(lane(t.d, 't3').querySelector('.rt-body').firstElementChild, untouched, 'a lane the page leaves alone stays as it is');
+  assert.equal(t.reads.calls.filter(([name]) => name === 'moreRoadmap').length, 1, 'no more done work to ask for');
+});
+
+test('full lanes say what the view shows that they leave out, and read the days around a view wholly before theirs once', async () => {
+  const full = D => { heldFromSep10(D); D.roadmap.limit = 6; };
+  const t = boot('roadmap/p1?scale=months', { prepare: full });
+  await settle();
+  const note = t.d.querySelector('.topbar .rt-limit');
+  assert.deepEqual([note.hidden, note.textContent], [false, 'Zoom in to see done tasks before Sep 10']);
+  assert.deepEqual(t.reads.calls.filter(([name]) => ['moreRoadmap', 'roadmap'].includes(name)), [], 'they hold the latest done work in view');
+  // At Weeks, a view of late July and August, wholly before Sep 10.
+  const w = boot('roadmap/p1?scale=weeks', { prepare: full });
+  await settle();
+  const sc = w.d.getElementById('rmScroll');
+  for (let step = 0; step < 2; step++) { sc.scrollLeft = 0; sc.dispatchEvent(new w.w.Event('scroll')); await nextFrame(w.w); await settle(); }
+  const reads = w.reads.calls.filter(([name]) => name === 'roadmap');
+  assert.equal(reads.length, 1, 'once for these days');
+  // Full lanes keep the latest done work of the days they read, so those end at the view's right edge.
+  assert.deepEqual([reads[0][2].window.from, reads[0][2].window.to], ['2026-06-25', '2026-08-17']);
 });
 
 // ---------- the opening scale and the address ----------

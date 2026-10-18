@@ -206,6 +206,8 @@ test('the task heading keeps focus while a slow task load shows its skeleton', a
 test('Escape returns focus to a track menu button that a change made elsewhere drew again', () => {
   const t=boot('roadmap'),kebab=t.d.querySelector('.lane[data-track="t2"] .kebab');
   kebab.focus();t.A.trackMenu({currentTarget:kebab,clientX:0,clientY:0,stopPropagation(){}},'t2');
+  // A track renamed elsewhere draws the page again.
+  t.D.tracks.find(track=>track.id==='t1').name='Renamed elsewhere';
   t.A.refreshRoadmap();assert(!kebab.isConnected,'the redraw replaced the button');
   key(t,'Escape');
   assert.equal(t.d.querySelector('#overlay-root > .menu'),null);

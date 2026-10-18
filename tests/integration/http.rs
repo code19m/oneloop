@@ -671,6 +671,8 @@ const BROWSER_ROUTES: &[(&str, &str, bool)] = &[
     ("GET", "/api/projects/missing/board-view", false),
     ("GET", "/api/projects/missing/counts", false),
     ("GET", "/api/projects/missing/roadmap", false),
+    ("GET", "/api/projects/missing/roadmap/lanes", false),
+    ("GET", "/api/projects/missing/roadmap/tasks?cursor=x", false),
     ("GET", "/api/projects/missing/pool?scope=personal", false),
     ("GET", "/api/epics/missing/tasks", false),
     ("GET", "/api/epics/missing/activity", false),

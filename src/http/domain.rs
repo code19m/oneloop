@@ -12,9 +12,9 @@ use crate::{
     AppError, AppState,
     auth::Actor,
     domain::{
-        BoardCounts, BoardQuery, BoardView, BoardViewQuery, BootstrapQuery, DoneOrder, Page,
-        PageQuery, PoolItemView, PoolQuery, RoadmapPage, RoadmapView, TaskFilter, TaskStatus,
-        TaskView,
+        BoardCounts, BoardQuery, BoardView, BoardViewQuery, BootstrapQuery, DoneOrder, LanesQuery,
+        Page, PageQuery, PoolItemView, PoolQuery, RoadmapPage, RoadmapPageQuery, RoadmapView,
+        RoadmapWindow, TaskFilter, TaskStatus, TaskView,
     },
     error::AppResult,
 };
@@ -28,6 +28,10 @@ pub(crate) fn read_router() -> Router<AppState> {
         .route("/api/projects/{project_id}/board-view", get(board_view))
         .route("/api/projects/{project_id}/counts", get(board_counts))
         .route("/api/projects/{project_id}/roadmap", get(roadmap))
+        .route(
+            "/api/projects/{project_id}/roadmap/lanes",
+            get(roadmap_lanes),
+        )
         .route(
             "/api/projects/{project_id}/roadmap/tasks",
             get(roadmap_tasks),
@@ -99,6 +103,8 @@ with_board_filter! {
         view: Option<String>,
         switched_to: Option<String>,
         switched_by: Option<String>,
+        roadmap_from: Option<String>,
+        roadmap_to: Option<String>,
     }
 }
 
@@ -148,6 +154,10 @@ async fn bootstrap(
         switched_to: query.switched_to,
         switched_by: query.switched_by,
         filter,
+        roadmap: RoadmapWindow {
+            from: query.roadmap_from,
+            to: query.roadmap_to,
+        },
     };
     state.domain.bootstrap(&actor, query).await.map(Json)
 }
@@ -170,6 +180,7 @@ async fn board(
     state.domain.board_page(&actor, query).await.map(Json)
 }
 
+/// A project's tracks, epics and milestones.
 async fn roadmap(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
@@ -177,7 +188,44 @@ async fn roadmap(
 ) -> AppResult<Json<RoadmapView>> {
     state
         .domain
-        .roadmap_view(&actor, project_id)
+        .roadmap(&actor, project_id, None)
+        .await
+        .map(Json)
+}
+
+/// The Roadmap page: what `roadmap` gives, and what its lanes draw: the
+/// tasks of a window of days, or only the tasks that `tasks` names, as for a
+/// change made elsewhere.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RoadmapLanesParams {
+    from: Option<String>,
+    to: Option<String>,
+    tasks: Option<String>,
+}
+
+async fn roadmap_lanes(
+    State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
+    Path(project_id): Path<String>,
+    ApiQuery(query): ApiQuery<RoadmapLanesParams>,
+) -> AppResult<Json<RoadmapView>> {
+    let lanes = match query.tasks {
+        Some(_) if query.from.is_some() || query.to.is_some() => {
+            return Err(AppError::validation(
+                "tasks",
+                "is read without a window of days",
+            ));
+        }
+        Some(tasks) => LanesQuery::Tasks(id_list(Some(&tasks))),
+        None => LanesQuery::Days(RoadmapWindow {
+            from: query.from,
+            to: query.to,
+        }),
+    };
+    state
+        .domain
+        .roadmap(&actor, project_id, Some(lanes))
         .await
         .map(Json)
 }
@@ -186,6 +234,9 @@ async fn roadmap(
 #[serde(deny_unknown_fields)]
 struct RoadmapTasksParams {
     cursor: String,
+    from: Option<String>,
+    to: Option<String>,
+    limit: Option<usize>,
 }
 
 async fn roadmap_tasks(
@@ -194,11 +245,14 @@ async fn roadmap_tasks(
     Path(project_id): Path<String>,
     ApiQuery(query): ApiQuery<RoadmapTasksParams>,
 ) -> AppResult<Json<RoadmapPage>> {
-    state
-        .domain
-        .roadmap_tasks(&actor, project_id, query.cursor)
-        .await
-        .map(Json)
+    let query = RoadmapPageQuery {
+        project_id,
+        cursor: query.cursor,
+        from: query.from,
+        to: query.to,
+        limit: query.limit,
+    };
+    state.domain.roadmap_tasks(&actor, query).await.map(Json)
 }
 
 #[derive(Deserialize)]

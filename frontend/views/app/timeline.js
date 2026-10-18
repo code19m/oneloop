@@ -79,7 +79,7 @@ function taskItem(task, scale, now) {
 export const epicDated = (epic) => !!epic?.end;
 
 /** The tasks of the project on screen that its lanes draw. */
-function laneTasks() {
+export function laneTaskList() {
   const lanes = roadmapLanes(), ids = new Set(lanes?.taskIds), tracked = new Set(tracks().map((track) => track.id));
   return lanes ? D.tasks.filter((task) => ids.has(task.internalId) && tracked.has(task.trackId)) : [];
 }
@@ -88,7 +88,7 @@ function laneTasks() {
 export function laneDates() {
   let min = null, max = null;
   const take = (date) => { if (!min || date < min) min = date; if (!max || date > max) max = date; };
-  for (const task of laneTasks()) {
+  for (const task of laneTaskList()) {
     if (task.state === 'done') { if (task.completedAt) take(instantDay(task.completedAt).date); continue; }
     if (task.state !== 'planning') take(instantDay(startOf(task)).date);
     if (task.deadline) take(task.deadline);
@@ -104,7 +104,7 @@ export function laneDates() {
 export function laneModels(start) {
   const scale = dayScale(start), now = scale.ofInstant(instanceNow()), lanes = roadmapLanes();
   const byTrack = new Map(tracks().map((track) => [track.id, []]));
-  for (const task of laneTasks()) byTrack.get(task.trackId).push(task);
+  for (const task of laneTaskList()) byTrack.get(task.trackId).push(task);
   const all = epics();
   return {
     now, ready: !!lanes,

@@ -199,7 +199,7 @@ function wire(dom, { api: answers = {}, reads: readAnswers = {}, reloadBootstrap
       w.DATA.boardPageInfo = { ...w.DATA.boardPageInfo, projectId, filters: normalizeBoardFilters(filters) };
       return app().context().view === 'board' ? app().refreshBoard() : app().refreshCounts();
     },
-    counts: () => app().refreshCounts(), roadmap: () => app().refreshRoadmap(),
+    counts: () => app().refreshCounts(), roadmap: () => app().refreshRoadmap(), roadmapStructure: () => app().refreshRoadmap(),
     pool: () => app().refreshPool(), morePool: () => app().refreshPool(),
     epic: () => app().refreshEpic(), moreEpicTasks: () => app().refreshEpic(), moreEpicActivity: () => app().refreshEpic(),
     task() {}, moreBoard() {}, moreRoadmap() {},

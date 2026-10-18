@@ -111,7 +111,14 @@ async fn skipped_local_dates_do_not_break_roadmap_or_bootstrap() {
         .unwrap();
         let zone = oneloop::timezone::TimeZone::built_in(zone).unwrap();
         let service = DomainService::new(f.db.clone(), zone);
-        service.roadmap(&f.manager, "p1".into()).await.unwrap();
+        service
+            .roadmap(
+                &f.manager,
+                "p1".into(),
+                Some(oneloop::domain::LanesQuery::Days(Default::default())),
+            )
+            .await
+            .unwrap();
         service
             .bootstrap(
                 &f.manager,
@@ -244,7 +251,13 @@ async fn epic_task_counts_come_only_with_the_roadmap() {
         }
         assert_eq!(epic["title"], "Open epic");
     }
-    let roadmap = f.service.roadmap(&f.member, "p1".into()).await.unwrap();
+    let roadmap = serde_json::to_value(
+        f.service
+            .roadmap(&f.member, "p1".into(), None)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let epic = epic(&roadmap["epics"]);
     assert_eq!(epic["completedThisWeek"], 1);
     assert_eq!(epic["weeklyCompletions"][6], 1);
@@ -320,8 +333,12 @@ async fn hidden_and_missing_resources_have_identical_http_errors() {
             "/api/projects/missing/roadmap".into(),
         ),
         (
-            format!("/api/projects/p2/roadmap/tasks?cursor={cursor}"),
-            format!("/api/projects/missing/roadmap/tasks?cursor={cursor}"),
+            "/api/projects/p2/roadmap/lanes".into(),
+            "/api/projects/missing/roadmap/lanes".into(),
+        ),
+        (
+            format!("/api/projects/p2/roadmap/tasks?cursor={cursor}&from=2026-01-01"),
+            format!("/api/projects/missing/roadmap/tasks?cursor={cursor}&from=2026-01-01"),
         ),
     ] {
         let mut responses = Vec::new();

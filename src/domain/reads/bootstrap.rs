@@ -92,7 +92,9 @@ pub(super) fn bootstrap_snapshot(
             result.roadmap = Some(timeline(
                 connection,
                 project_id,
+                time_zone,
                 local_date(time_zone, now)?,
+                &LanesQuery::Days(query.roadmap.clone()),
             )?);
         }
         let counts = if result.view == "board" {

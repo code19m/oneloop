@@ -8,7 +8,7 @@ mod pool;
 mod project;
 mod roadmap;
 mod task;
-mod validation;
+pub(super) mod validation;
 
 use block::{block_task, unblock_task, update_block_reason};
 use checklist::{
