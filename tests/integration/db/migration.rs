@@ -459,11 +459,13 @@ fn a_schema_eight_database_puts_every_task_on_its_epics_track() {
         .unwrap();
     assert_eq!(integrity, "ok");
     // Every index and trigger is back as it was; the rule that a task's epic
-    // is in its project gives way to the rules of tracks.
+    // is in its project gives way to the rules of tracks, and an epic's move
+    // no longer changes Board pages by itself.
     let mut schema_after = indexes_and_triggers(&connection);
     for replaced in [
         "tasks_require_epic_in_project_insert",
         "tasks_require_epic_in_project_update",
+        "task_page_epic_update",
     ] {
         assert!(schema_before.remove(replaced).is_some());
     }

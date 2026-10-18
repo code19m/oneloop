@@ -256,6 +256,36 @@ async fn moving_an_epic_moves_its_tasks_with_one_live_update() {
 }
 
 #[tokio::test]
+async fn an_epic_without_tasks_moves_without_ending_board_pages_read_so_far() {
+    let f = fixture().await;
+    second_track(&f).await;
+    for title in ["One", "Two"] {
+        task(&f, title, json!({"trackId":"tr1"})).await;
+    }
+    let mut first = board_query("planning", None);
+    first.limit = Some(1);
+    let cursor = f
+        .service
+        .board_page(&f.member, first)
+        .await
+        .unwrap()
+        .next_cursor;
+    run(
+        &f,
+        DomainOperation::UpdateEpic,
+        json!({"epicId":"e3","trackId":"tr1"}),
+        "move-empty-epic",
+        Some(1),
+    )
+    .await
+    .unwrap();
+    let mut next = board_query("planning", cursor);
+    next.limit = Some(1);
+    let page = f.service.board_page(&f.member, next).await.unwrap();
+    assert_eq!(page.items.len(), 1);
+}
+
+#[tokio::test]
 async fn deleting_an_epic_keeps_its_tasks_and_undo_takes_back_those_still_without_one() {
     let f = fixture().await;
     second_track(&f).await;

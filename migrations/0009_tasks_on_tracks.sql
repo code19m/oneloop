@@ -256,5 +256,10 @@ CREATE TRIGGER task_page_assignee_delete AFTER DELETE ON task_assignees BEGIN
     UPDATE project_task_versions SET generation=generation+1 WHERE project_id=(SELECT project_id FROM tasks WHERE id=OLD.task_id);
 END;
 
+-- Board pages of a track read each task's own track now, and an epic that
+-- moves moves its tasks, which changes their pages through
+-- `task_page_update`. An epic's own move changes no page.
+DROP TRIGGER task_page_epic_update;
+
 -- Tracks have only a name.
 ALTER TABLE tracks DROP COLUMN description;
