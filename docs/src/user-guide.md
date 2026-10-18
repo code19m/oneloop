@@ -13,8 +13,8 @@
 Every task is on a track. An epic is optional: put a task in one when it is
 part of that piece of work. A task without an epic stays on its track.
 
-An epic without an end date is **ongoing**. Use ongoing epics for recurring
-work, such as "Small fixes".
+Give an epic an end date when its work has one. Work that never ends, such as
+small fixes, needs no epic: keep those tasks on their track.
 
 The address of the **Board**, the **Roadmap**, **Knowledge** and **Settings**
 names the project, so a refresh, a bookmark or a link opens the same project.
@@ -30,30 +30,65 @@ still comment. See [Permissions](admin-guide.md#permissions).
 
 ## Roadmap
 
-![The Roadmap: tracks on the left, epics as bars on a timeline, milestones as vertical lines and a marker for today](assets/screenshots/roadmap.png)
+![The Roadmap: a lane for each track with its done work as dots, its work in progress as bars and its dated plans as rings, epics as boxes around their work, and milestones above the lanes](assets/screenshots/roadmap.png)
 
-The Roadmap shows epics and milestones on a timeline, with one row for each
-track. It is the first page you see after you sign in.
+The Roadmap shows what each track has finished, is working on and has
+planned with a date, on a timeline with one lane for each track. It is the
+first page you see after you sign in.
 
-- Scroll to move through time. **Weeks**, **Months** and **Quarters** set the
-  scale, and so do the keys W, M and Q. A new scale keeps the epic you last
-  opened, or today, in view. To zoom freely, hold Ctrl (Cmd on macOS) while you
-  scroll, or pinch on a touchpad or touch screen. On a narrow screen, the scale
-  buttons make room for the others; pinch or use the keys instead. **Today**
-  takes you back to today.
-- The scale is part of the page's address, so a refresh keeps it and you can
-  share the Roadmap at that scale as a link. After a free zoom, the address
-  keeps the nearest scale. Changing the scale adds no step to the browser's
-  history.
-- Hover over an epic or a milestone to see its details. Click an epic to open
-  its progress, tasks and activity, or to edit it. Click a milestone to edit it.
-- Add work with **+ Track**, **+ Epic** and **Milestone**. To reorder tracks,
-  drag the grip next to a track's name, or focus the grip and use the arrow
-  keys, Home and End. A track's **⋮** menu renames or deletes it.
-- You can delete a track only when it has no tasks and no epics. Moving an epic
-  to another track moves its tasks with it. Deleting an epic keeps its tasks
-  on its track, without an epic, and **Undo** right after brings it back with
-  them.
+- **Done work** shows as dots on the day it was finished. Dots too close to
+  tell apart become a number; click it to list them.
+- **Work in progress**, in progress or in review, shows as one row per task: a
+  thin bar from when work started to its deadline, or to today, fading out,
+  without one. Each lane, and each epic, shows three at most: late work
+  first, then blocked work, then the nearest deadline. **+2 in progress**
+  lists the rest. Blocked work is amber. Late work has a red error icon and a
+  red end past its deadline.
+- **Plans with a deadline** show as dashed rings on their deadline, with their
+  title where it fits. Plans without a deadline stay on the **Board**.
+- A track's name says how many of its tasks are in progress and how many are
+  planned, with a deadline or not. A lane without any of this says **No dated
+  work**, or **No tasks yet** when its track has no tasks.
+- An **epic** is a box around its work, with its dates when it has an end
+  date, and how many of its tasks are done. An epic without an end date runs
+  from its first work to today. An epic with nothing on the timeline yet
+  shows just its name after today, or at its start when that is later.
+- **Milestones** are cards above the lanes, with a line down through them.
+  **Today** is the thin line under its label. When tasks are late, **Overdue**
+  and their number show next to the page's title; each click shows the next
+  late task, the longest overdue first.
+- Hover over a task, an epic or a milestone, or move the keyboard focus to it,
+  to see its details. Click it, or press Enter, to open the task, the epic's
+  progress, tasks and activity, or the milestone. Deadlines are set on the
+  task's page.
+- The Roadmap opens at the scale that shows the last three weeks of done work,
+  the work in progress and the next six weeks of dates. **Weeks**, **Months**
+  and **Quarters** set the scale, and so do the keys W, M and Q. A new scale
+  keeps the task or epic you last focused, or today, in view. To zoom freely,
+  hold Ctrl (Cmd on macOS) while you scroll, or pinch on a touchpad or touch
+  screen. On a narrow screen, the scale buttons make room for the others;
+  pinch or use the keys instead. **Today** takes you back to today.
+- A scale you choose is part of the page's address, so a refresh keeps it
+  and you can share the Roadmap at that scale as a link. After a free zoom,
+  the address keeps the nearest scale. Changing the scale adds no step to the
+  browser's history. Another project opens at the scale that fits its work.
+- Older done work and later plans load as you scroll to them.
+- With the keyboard, Tab reaches each track's grip, its **⋮** menu and its
+  timeline. In a timeline, the arrow keys, Home and End move between the
+  lane's epics and tasks, Up and Down move to the next lane, and Esc closes a
+  list.
+- On a phone, each track's name sits above its lane, and the Roadmap opens at
+  **Weeks**.
+- Add work with **+ Epic**, **Milestone** and **+ Add track** under the lanes.
+  To reorder tracks, drag the grip next to a track's name, or focus the grip
+  and use the arrow keys, Home and End. A track's **⋮** menu renames or
+  deletes it.
+- You can delete a track only when it has no tasks and no epics; **Delete
+  track** says how many to move or delete first. Moving an epic to another
+  track moves its tasks with it. Deleting an epic keeps its tasks on its
+  track, without an epic, and **Undo** right after brings it back with them.
+  With the **Board** permission, **New task** in an epic's details adds a task
+  to it.
 
 ### Epic status
 
@@ -68,9 +103,9 @@ epic can't get new tasks, but its existing tasks can still change. **Reopen**
 moves an epic back to In progress if some of its tasks are in progress or in
 review, and to Planning otherwise.
 
-An epic with an end date shows how many of its tasks are done. An ongoing epic
-shows the tasks closed this week, closed since it started, and still open.
-Weeks start on Monday.
+An epic with an end date shows how many of its tasks are done. An epic
+without one shows the tasks closed this week, closed since it started, and
+still open. Weeks start on Monday.
 
 ## Board
 

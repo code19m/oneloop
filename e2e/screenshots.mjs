@@ -373,15 +373,8 @@ async function capture(browser, url, password, taskKey) {
 
   const shots = {
     board: { route: 'board', ready: '.col .card' },
-    roadmap: {
-      route: 'roadmap', ready: '.bar',
-      // Show the timeline from its first day, as after scrolling back.
-      arrange: () => page.evaluate(() => {
-        const timeline = document.getElementById('rmScroll');
-        timeline.scrollLeft = 0;
-        timeline.dispatchEvent(new Event('scroll'));
-      }),
-    },
+    // The Roadmap opens at the scale that fits the work, with that work in view.
+    roadmap: { route: 'roadmap', ready: '.rt-body .rt-bar' },
     task: {
       route: `task/${taskKey}`, ready: '.tl-cmt',
       // The discussion sits below the fold: scroll until the upload area has
