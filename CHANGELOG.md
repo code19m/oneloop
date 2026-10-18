@@ -49,6 +49,7 @@ All notable changes to oneloop are recorded here. The format follows
   filtered to, or the track of the last task you created in the project in
   that tab. Epic offers the open epics of that track, and choosing an epic
   also chooses its track. A project without tracks offers **Create track**.
+  Before, New task asked for an epic.
 - A task's page shows its **Track** beside its **Epic**. Moving the task to
   another track takes it out of its epic, and a note under **Epic** says why.
   **No epic** takes a task out of its epic.
@@ -62,7 +63,6 @@ All notable changes to oneloop are recorded here. The format follows
   tasks with it.
 - A task's **Epic** offers the epics of the task's track. An epic on another
   track than the task's is refused, also in MCP.
-- A new task no longer needs an epic. Before, **New task** asked for one.
 - A **Board** card names the task's epic, or its track when it has no epic.
 - The activity of a task says where it went: "moved the task to iOS", "added
   the task to Payments v2" or "removed the task from Payments v2", instead of
