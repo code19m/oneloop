@@ -9,7 +9,7 @@
 
 import { ApiError } from '../../data/api-client.js';
 import { clientField } from '../../data/projection-store.js';
-import { toWireScope } from '../../data/wire.js';
+import { statusLabel, toWireScope } from '../../data/wire.js';
 import {
   actionErrorFeedback,
   commandInteractionKey,
@@ -102,7 +102,8 @@ export function createCommands(ctx) {
     if(!field)return undefined;
     const entityType=operation.startsWith('task.block')?'taskBlock':operation.startsWith('pool.')?'poolItem':operation.split('.')[0];
     const value=item===payload?payload[field]:item?.[clientField(entityType,field)];
-    // A track or an epic reads as its select names it.
+    // A status, a track or an epic reads as its select names it.
+    if(field==='status')return statusLabel(value);
     if(field==='trackId')return track(value)?.name??value;
     if(field==='epicId')return value?epic(value)?.title??value:'No epic';
     return value;

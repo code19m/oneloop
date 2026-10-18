@@ -13,6 +13,8 @@ const LEGACY_SCOPE = Object.freeze({ personal: 'mine', team: 'project' });
 export const toLegacyStatus = (status) => LEGACY_STATUS[/** @type {keyof typeof LEGACY_STATUS} */ (status)] ?? status;
 /** @param {string} status */
 export const toWireStatus = (status) => WIRE_STATUS[/** @type {keyof typeof WIRE_STATUS} */ (status)] ?? status;
+/** What a status reads as, by the server's name or the client's. @param {string} status */
+export const statusLabel = (status) => ({ planning: 'Planning', in_progress: 'In Progress', in_review: 'In Review', done: 'Done' })[toWireStatus(status)] ?? status;
 /** @param {string} scope */
 export const toLegacyScope = (scope) => LEGACY_SCOPE[/** @type {keyof typeof LEGACY_SCOPE} */ (scope)] ?? scope;
 /** The server's scope of a Pool tab: `project` is the team's Pool, anything else the person's own. @param {string} scope */

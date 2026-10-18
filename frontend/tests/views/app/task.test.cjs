@@ -471,6 +471,14 @@ test('a track pick that meets a change made elsewhere stays in Track beside the 
   assert.equal(t.d.getElementById('tpEpic-note').textContent, 'Epic cleared: “Search relevance” is on Backend & API, not Mobile experience.');
 });
 
+test('a Status pick that meets a change made elsewhere names the latest status by its label', async () => {
+  const t = conflictPage({ state: 'progress' });
+  pick(t, 'tpState', 'In Review');
+  t.commands[0].reject(conflict(t));
+  await waitFor(() => promptButton(t, 'Use latest'), 'the conflict prompt appears');
+  assert.match(t.d.querySelector('[data-recovery-conflict]').textContent, /Latest saved value: In Progress/);
+});
+
 test('Use latest on a description shows the saved description, not the typed one', async () => {
   const t = conflictPage({ desc: 'Their description' }), description = t.d.getElementById('task-description');
   description.focus(); description.value = 'My description'; description.blur(); t.A.updTask(t.task.id, 'desc', description.value);
