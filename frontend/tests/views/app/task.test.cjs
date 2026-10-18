@@ -91,15 +91,25 @@ test('New task starts on its epic\'s track, else the only track, else the Board\
   const only = bootApp({ route: 'board/p1', prepare: D => { D.tracks = D.tracks.filter(item => item.projectId !== 'p1' || item.id === 't4'); } });
   only.A.openModal('task');
   assert.equal(track(only), 't4', 'the project has one track');
-  const t = bootApp({ route: 'board/p1' });
-  t.A.openModal('task');
-  assert.equal(track(t), ''); assert.equal(shown(t, 'mTaskTrack'), 'Choose a track');
-  pick(t, 'mTaskTrack', 'Integrations');
-  const form = t.d.querySelector('.modal form'); form.querySelector('[name="title"]').value = 'On integrations';
-  t.A.saveTask(event(form));
-  await accept(t, [{ entityType: 'task', id: 'new-task', taskKey: 'BIR-300', projectId: 'p1', trackId: 't4', epicId: null, title: 'On integrations', status: 'planning', position: 0, revision: 1, assigneeIds: [] }]);
-  t.A.openModal('task');
-  assert.equal(track(t), 't4', 'the last task created in this project went there');
+  const t = bootApp({ route: 'board/p1', prepare: D => { D.tracks.push({ id: 'p2-web', projectId: 'p2', name: 'Web', order: 1, revision: 1 }, { id: 'p2-api', projectId: 'p2', name: 'API', order: 2, revision: 1 }); } });
+  const create = async (trackName, projectId, trackId) => {
+    t.A.openModal('task');
+    assert.equal(track(t), '', `nothing says where a task in ${projectId} goes`); assert.equal(shown(t, 'mTaskTrack'), 'Choose a track');
+    pick(t, 'mTaskTrack', trackName);
+    const form = t.d.querySelector('.modal form'); form.querySelector('[name="title"]').value = `On ${trackName}`;
+    t.A.saveTask(event(form));
+    await accept(t, [{ entityType: 'task', id: `new-${trackId}`, taskKey: `NEW-${trackId}`, projectId, trackId, epicId: null, title: `On ${trackName}`, status: 'planning', position: 0, revision: 1, assigneeIds: [] }]);
+  };
+  await create('Integrations', 'p1', 't4');
+  t.A.selectProject('p2');
+  await create('API', 'p2', 'p2-api');
+  t.A.selectProject('p1'); t.A.openModal('task');
+  assert.equal(track(t), 't4', 'the last task created in this project went there'); t.A.closeOverlays();
+  // The memory is this person's, in this tab: someone else signing in here starts with no track.
+  t.D.session.userId = 'robin'; t.A.openModal('task');
+  assert.equal(track(t), '', 'another person'); t.A.closeOverlays();
+  t.D.session.userId = 'taylorwu'; t.D.tracks = t.D.tracks.filter(item => item.id !== 't4'); t.A.openModal('task');
+  assert.equal(track(t), '', 'a track deleted meanwhile');
 });
 
 test('New task\'s Epic offers the open epics of its track, or every open epic with its track, and an epic puts the task on its track', () => {
