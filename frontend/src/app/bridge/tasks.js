@@ -39,7 +39,8 @@ export function installTasks(ctx) {
         while(!sameAssignees(state.persisted,state.desired)){
           const target=[...state.desired],current=task(id);if(sessionScope()!==scope||!current)break;
           const comparison={...current,assignees:[...state.persisted]};
-          const result=await execute('task.update',{taskId:id,assigneeIds:target},current,null,{compareEntity:comparison,paint:false});
+          // The picks start from the assignees the task has now, so the save builds on its revision now.
+          const result=await execute('task.update',{taskId:id,assigneeIds:target},current,null,{compareEntity:comparison,paint:false,expectedRevision:current.revision});
           if(result?.stale)break;
           changed ||= !result?.skipped;state.persisted=target;
           if(task(id))task(id).assignees=[...state.desired];

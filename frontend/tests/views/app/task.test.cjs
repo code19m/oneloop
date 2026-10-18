@@ -579,6 +579,13 @@ test('a pick after a change made elsewhere builds on the revision the page shows
     pick(t, key, label);
     assert.deepEqual([t.commands.at(-1).operation, t.commands.at(-1).expectedRevision], [operation, 2], key);
   }
+  // Assignees too: their list lists the task's assignees as they are now.
+  const t = changedElsewhere(), assignees = t.d.querySelector('[data-filter-key="tpAssign"]');
+  assignees.focus(); t.A.popMulti({ currentTarget: assignees, preventDefault() {} }, 'tpAssign');
+  t.change(['task'], { title: 'Renamed elsewhere' });
+  await waitFor(() => t.D.tasks.find(item => item.id === 'BIR-079').revision === 2, 'the change arrives (assignees)');
+  t.d.querySelector('.pop [data-v="robin"]').click();
+  assert.deepEqual([t.commands.at(-1).payload, t.commands.at(-1).expectedRevision], [{ taskId: 'bir-079', assigneeIds: ['robin'] }, 2]);
 });
 
 test('a description changed elsewhere shows at once while focus is elsewhere on the page, and once focus leaves its text', async () => {
