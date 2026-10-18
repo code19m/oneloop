@@ -21,7 +21,7 @@ import {
 } from './overlays.js';
 import { announce } from './toasts.js';
 import {
-  closeTimelineList, epicDated, epicStatus, focusTask, headFigure, laneBodyHtml, laneDates, laneEntry, laneFocus, laneModels,
+  closeTimelineList, epicDated, epicStatus, focusTask, headFigure, laneBodyHtml, laneDates, laneEntry, laneFocus, laneModels, refocus,
   layoutLane, mountLanes, numbers, roadmapLanes, roomAfterNow, setStyle, syncLaneEdges, textWidth,
 } from './timeline.js';
 
@@ -479,12 +479,13 @@ function drawLanes(view) {
     const laid = view.layout.lanes[i], focus = laneEntry(laid, lane === focusedLane ? active.dataset.nav : laneFocus.get(data.track.id));
     const html = laneBodyHtml(data, laid, view.ppd, view.model.today, focus);
     if (html === entry.html) return;
-    if (EPIC_TIP.anchor && body.contains(EPIC_TIP.anchor)) hideEpicTip();
-    if (body.querySelector('[aria-expanded="true"]')) closeTimelineList();
+    const card = !!EPIC_TIP.anchor && body.contains(EPIC_TIP.anchor), list = !!body.querySelector('[aria-expanded="true"]');
+    if (card) hideEpicTip();
+    if (list) closeTimelineList();
     body.style.minHeight = `${laid.height}px`;
     setHTML(body, html);
     entry.html = html;
-    if (lane === focusedLane && focus) [...body.querySelectorAll('[data-nav]')].find((el) => el.dataset.nav === focus)?.focus({ preventScroll: true });
+    if (lane === focusedLane && focus) refocus([...body.querySelectorAll('[data-nav]')].find((el) => el.dataset.nav === focus), card || list);
   });
 }
 
@@ -1125,6 +1126,8 @@ Object.assign(App, {
     if(!content||!scroll){App.refresh();return;}
     if(!moved&&patchLanes())return;
     roadmapGestureCleanup();
+    // The focused mark's card or list shows again on it once drawn again, if one showed.
+    const shown=!!document.getElementById('roadmap-list')||!!EPIC_TIP.anchor&&content.contains(EPIC_TIP.anchor);
     closeTimelineList();
     const before=UIMotion.positions('.lane'),top=scroll.scrollTop;
     // More done work can move day 0 earlier: the same date stays at the left edge, not the same pixels.
@@ -1137,7 +1140,7 @@ Object.assign(App, {
     mountRoadmap();
     refreshStats();
     if(moved)focusMovedTrack(moved);
-    else if(nav)([...content.querySelectorAll('.rt-body [data-nav][tabindex="0"]')].find((el)=>el.dataset.nav===nav)||[...content.querySelectorAll('.rt-body [data-nav]')].find((el)=>el.dataset.nav===nav))?.focus({preventScroll:true});
+    else if(nav)refocus([...content.querySelectorAll('.rt-body [data-nav][tabindex="0"]')].find((el)=>el.dataset.nav===nav)||[...content.querySelectorAll('.rt-body [data-nav]')].find((el)=>el.dataset.nav===nav),shown);
     else if(focus)restoreOpener(focus);
     App.updateDocumentTitle();
     // Lanes slide up or down to their new places. Every lane shares its left edge, which a new scroll

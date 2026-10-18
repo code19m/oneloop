@@ -729,6 +729,14 @@ const OPENS_LIST = '[data-list],[data-more]';
 const CARD = '[data-task],.rt-epic-label';
 const DETAIL = `${CARD},${OPENS_LIST}`;
 
+/** While focus is put back on a mark drawn again that showed no card or list: it shows none then either. */
+let quietFocus = false;
+/** Put focus back on `el`, a mark drawn again; its card or list shows again only if one showed (`shown`). */
+export function refocus(el, shown) {
+  quietFocus = !shown;
+  try { el?.focus({ preventScroll: true }); } finally { quietFocus = false; }
+}
+
 /** Move focus to `next`, which becomes its lane's Tab stop, and bring it into view. */
 function moveFocus(sc, next, rail) {
   const lane = next.closest('.lane');
@@ -795,7 +803,7 @@ export function mountLanes(sc, rail) {
     laneFocus.set(lane.dataset.track, target.dataset.nav);
     for (const el of lane.querySelectorAll('[data-nav][tabindex="0"]')) if (el !== target) el.tabIndex = -1;
     target.tabIndex = 0;
-    if (event.timeStamp - pressedAt < 600) return;
+    if (quietFocus || event.timeStamp - pressedAt < 600) return;
     requestAnimationFrame(() => {
       if (document.activeElement !== target) return;
       if (target.matches(CARD)) showCard(target);

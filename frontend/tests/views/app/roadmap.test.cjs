@@ -246,6 +246,27 @@ test('done work shows as dots at the day it finished; close ones merge into a co
   assert.equal(lane(d, 't2').querySelector('.rt-count-done').textContent, '2');
 });
 
+test('a lane drawn again keeps focus on its count, and shows its list again only if it showed', async () => {
+  const asked = [];
+  const { w, d, D, A } = boot('roadmap/p1?scale=months', { actions: true, reads: { roadmapList: async (_projectId, query) => { asked.push(query); return { items: [], total: 4 }; } } });
+  const count = () => lane(d, 't2').querySelector('[data-nav="c:t2/e5:done:2026-09-22"]');
+  count().focus(); count().click(); await tick();
+  d.getElementById('roadmap-list').querySelector('.rt-pop-note').dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert.equal(d.activeElement, count());
+  // A teammate finishes another task on Sep 10: the lane is drawn again.
+  D.roadmap.days['t2/e5']['2026-09-10'].done = 2;
+  A.refreshRoadmap(); await nextFrame(w); await nextFrame(w);
+  assert.equal(d.activeElement, count(), 'focus stays on the count');
+  assert.equal(d.getElementById('roadmap-list'), null, 'the list closed stays closed');
+  assert.equal(asked.length, 1);
+  // With its list open, the count shows it again, read again.
+  count().click(); await tick();
+  D.roadmap.days['t2/e5']['2026-09-10'].done = 3;
+  A.refreshRoadmap(); await nextFrame(w); await nextFrame(w); await tick();
+  assert(d.getElementById('roadmap-list'));
+  assert.equal(asked.length, 3);
+});
+
 test('a count whose tasks the lanes hold lists them at once, and a list that fails to load says so', async () => {
   const { d } = boot('roadmap/p1?scale=months', { actions: true, reads: { roadmapList: async () => { throw new Error('offline'); } }, prepare: D => {
     // Sep 22 has one done task, which the lanes hold.
