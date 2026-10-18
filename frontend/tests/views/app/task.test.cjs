@@ -165,6 +165,16 @@ test('a track change that does not go through shows the saved track and epic aga
   assert.equal(t.d.getElementById('tpEpic-note'), null);
 });
 
+test('a track change that lands after the person left the task leaves no note on it', async () => {
+  const t = taskPage(), task = t.D.tasks.find(x => x.id === 'BIR-079');
+  pick(t, 'tpTrack', 'Mobile experience');
+  t.A.nav('board');
+  await accept(t, [{ entityType: 'task', id: task.internalId, trackId: 't3', epicId: null, revision: 2 }]);
+  t.A.openTask('BIR-079');
+  assert.equal(shown(t, 'tpTrack'), 'Mobile experience');
+  assert.equal(t.d.getElementById('tpEpic-note'), null);
+});
+
 test('new epics require an explicit track', async () => {
  const t=taskPage();t.A.openModal('epic');let form=t.d.querySelector('.modal form');assert.equal(form.querySelector('[name="trackId"]').value,'');assert(form.textContent.includes('Choose a track'));form.querySelector('[name="title"]').value='Explicit track';t.A.saveEpic(event(form),'');assert.equal(t.commands.length,0);assert(form.textContent.includes('Choose a track.'));
  form.querySelector('[name="trackId"]').value='t1';t.A.saveEpic(event(form),'');assert.deepEqual([t.commands[0].operation,t.commands[0].payload.trackId,t.commands[0].payload.title],['epic.create','t1','Explicit track']);

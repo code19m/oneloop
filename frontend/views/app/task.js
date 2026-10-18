@@ -207,8 +207,8 @@ function savePlace(id, field, value) {
   const t = taskById(id), epic = epicById(t?.epicId), from = trackById(t?.trackId);
   Promise.resolve(App.updTask(id, field, value)).then((saved) => {
     const moved = taskById(id), to = field === 'trackId' && trackById(value);
-    // A task that left its epic for another track says why.
-    if (saved && to && epic && from && from !== to && moved && !moved.epicId && moved.trackId === value) {
+    // A task that left its epic for another track says why, while its page is open.
+    if (saved && to && epic && from && from !== to && moved && !moved.epicId && moved.trackId === value && state.view === 'task' && taskById(state.taskId) === moved) {
       clearedEpic = { taskId: moved.internalId, userId: me()?.id, trackId: value, text: `Epic cleared: “${epic.title}” is on ${from.name}, not ${to.name}.` };
       announce(clearedEpic.text);
     }
