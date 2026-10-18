@@ -103,10 +103,11 @@ CREATE INDEX tasks_project_done_completed_idx
     ON tasks(project_id, completed_at DESC, completion_order DESC, id DESC)
     WHERE deleted_at IS NULL AND status = 'done';
 
--- A track's tasks by status, in Board order: the Board's track filter, the
--- check before a track is deleted, and the Roadmap's lanes.
+-- A track's tasks by status: the Board's track filter, the check before a
+-- track is deleted, and the Roadmap's lanes. Without the position, moving a
+-- card within its column leaves the index as it is.
 CREATE INDEX tasks_project_track_status_idx
-    ON tasks(project_id, track_id, status, position) WHERE deleted_at IS NULL;
+    ON tasks(project_id, track_id, status) WHERE deleted_at IS NULL;
 
 -- A task that is not deleted is on a track of its project that is not
 -- deleted, and its epic, when it has one, is on that track and not deleted.
