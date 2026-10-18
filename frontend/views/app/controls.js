@@ -46,16 +46,19 @@ function failField(form, name, msg) {
 
 /**
  * Show `value` as the select `key`'s value: its label and tip, its form value
- * and the option its list marks. While its list is open, the select stays as
- * the person sees it.
+ * and the option its list marks, with `options` as its list when given, as
+ * when another field narrows it. A new value takes away the field's error.
+ * While its list is open, the select stays as the person sees it.
  */
-export function setSelectValue(key, value) {
+export function setSelectValue(key, value, options) {
   const def = SELS[key], button = document.getElementById(`select-${key}`);
   if (!def || !button || POP.id === 'sel:' + key) return;
+  if (options) def.options = options;
   const option = def.options.find((o) => o.v === value), label = option ? option.l : (def.placeholder || 'Select');
+  if (value !== def.value) clearFieldError(button);
   def.value = value;
   const hidden = button.parentNode.querySelector('input[type="hidden"]'); if (hidden) hidden.value = value ?? '';
-  button.classList.toggle('empty', value === '' || value == null);
+  button.classList.toggle('empty', !option);
   button.querySelector('.sel-label').textContent = label; button.dataset.tip = label;
 }
 

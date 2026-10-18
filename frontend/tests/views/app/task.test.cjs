@@ -58,13 +58,81 @@ test('the deadline field saves on blur and rejects invalid text, and task action
 test('new tasks and Pool promotions send their deadline and assignees and validate both', () => {
  const t=taskPage(),existing=t.D.tasks.find(x=>x.id==='BIR-079'),created=existing.created;
  assert(!t.d.querySelector('[data-date-key="tpStart"]'));assert.match(t.d.querySelector('.task-created-at').firstChild.textContent,/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);assert.equal(t.A.updTask(existing.id,'created',created+1),false);assert.equal(existing.created,created);assert.equal(t.A.updTask(existing.id,'start','2026-01-01'),false);assert.equal(t.commands.length,0);
- const fill=(deadline,assignee)=>{const form=t.d.querySelector('.modal form');form.querySelector('[name="epicId"]').value='e4';const input=form.querySelector('.date-text');input.value=deadline;const button=form.querySelector('[data-filter-key="mTaskAssignees"]');t.A.popMulti({currentTarget:button,preventDefault(){}},'mTaskAssignees');t.d.querySelector(`[data-v="${assignee}"]`).click();t.d.dispatchEvent(new t.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return form;};
+ const fill=(deadline,assignee)=>{const form=t.d.querySelector('.modal form');form.querySelector('[name="trackId"]').value='t1';form.querySelector('[name="epicId"]').value='e4';const input=form.querySelector('.date-text');input.value=deadline;const button=form.querySelector('[data-filter-key="mTaskAssignees"]');t.A.popMulti({currentTarget:button,preventDefault(){}},'mTaskAssignees');t.d.querySelector(`[data-v="${assignee}"]`).click();t.d.dispatchEvent(new t.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return form;};
  t.A.openModal('task');let form=fill('2026-10-15','robin');form.querySelector('[name="title"]').value='Assigned at creation';t.A.saveTask(event(form));
- assert.deepEqual(sent(t),[['task.create',{projectId:'p1',epicId:'e4',title:'Assigned at creation',description:'',deadline:'2026-10-15',assigneeIds:['robin']}]]);t.A.closeOverlays();
+ assert.deepEqual(sent(t),[['task.create',{projectId:'p1',trackId:'t1',epicId:'e4',title:'Assigned at creation',description:'',deadline:'2026-10-15',assigneeIds:['robin']}]]);t.A.closeOverlays();
  t.A.openModal('task');form=fill('2026-99-99','robin');form.querySelector('[name="title"]').value='Invalid';t.A.saveTask(event(form));assert.equal(t.commands.length,1);assert(t.d.querySelector('.date-error'));form.querySelector('.date-text').value='';t.D.users.find(u=>u.id==='robin').active=false;t.A.saveTask(event(form));assert.equal(t.commands.length,1);assert(t.d.querySelector('.modal').textContent.includes('no longer available'));t.D.users.find(u=>u.id==='robin').active=true;t.A.closeOverlays();
  // The title and description the person left as the item had them follow the item.
  t.A.openModal('pool');t.A.promotePool('pl1');form=fill('2026-11-01','taylorwu');const item=t.D.pool.find(x=>x.id==='pl1');assert.equal(form.querySelector('[name="title"]').value,item.title);assert.equal(form.querySelector('[name="desc"]').value,item.desc);t.A.saveTask(event(form));
- assert.deepEqual(sent(t)[1],['pool.promote',{poolItemId:'pl1',epicId:'e4',deadline:'2026-11-01',assigneeIds:['taylorwu']}]);
+ assert.deepEqual(sent(t)[1],['pool.promote',{poolItemId:'pl1',trackId:'t1',epicId:'e4',deadline:'2026-11-01',assigneeIds:['taylorwu']}]);
+});
+
+/** The labels the select `key` offers, read by opening its list and closing it again. */
+function choices(t, key) {
+  t.A.popSelect({ currentTarget: t.d.getElementById(`select-${key}`), preventDefault() {} }, key);
+  const labels = [...t.d.querySelectorAll('.pop-opt')].map(option => option.textContent.trim());
+  t.d.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  return labels;
+}
+/** Choose `label` in the select `key`, as a click on its option does. */
+function pick(t, key, label) {
+  t.A.popSelect({ currentTarget: t.d.getElementById(`select-${key}`), preventDefault() {} }, key);
+  [...t.d.querySelectorAll('.pop-opt')].find(option => option.textContent.trim() === label).click();
+}
+const shown = (t, key) => t.d.querySelector(`#select-${key} .sel-label`).textContent;
+
+test('New task starts on its epic\'s track, else the only track, else the Board\'s one track, else the track of the last task created there', async () => {
+  const track = t => t.d.querySelector('.modal [name="trackId"]').value;
+  const filtered = bootApp({ route: 'board/p1?track=t2' });
+  filtered.A.openModal('task', undefined, 'e7');
+  assert.deepEqual([track(filtered), filtered.d.querySelector('.modal [name="epicId"]').value], ['t3', 'e7'], 'started from an epic');
+  filtered.A.closeOverlays(); filtered.A.openModal('task');
+  assert.equal(track(filtered), 't2', 'the Board shows one track');
+  const only = bootApp({ route: 'board/p1', prepare: D => { D.tracks = D.tracks.filter(item => item.projectId !== 'p1' || item.id === 't4'); } });
+  only.A.openModal('task');
+  assert.equal(track(only), 't4', 'the project has one track');
+  const t = bootApp({ route: 'board/p1' });
+  t.A.openModal('task');
+  assert.equal(track(t), ''); assert.equal(shown(t, 'mTaskTrack'), 'Choose a track');
+  pick(t, 'mTaskTrack', 'Integrations');
+  const form = t.d.querySelector('.modal form'); form.querySelector('[name="title"]').value = 'On integrations';
+  t.A.saveTask(event(form));
+  await accept(t, [{ entityType: 'task', id: 'new-task', taskKey: 'BIR-300', projectId: 'p1', trackId: 't4', epicId: null, title: 'On integrations', status: 'planning', position: 0, revision: 1, assigneeIds: [] }]);
+  t.A.openModal('task');
+  assert.equal(track(t), 't4', 'the last task created in this project went there');
+});
+
+test('New task\'s Epic offers the open epics of its track, or every open epic with its track, and an epic puts the task on its track', () => {
+  const t = bootApp({ route: 'board/p1' }), trackButton = () => t.d.getElementById('select-mTaskTrack');
+  t.A.openModal('task');
+  const all = choices(t, 'mEpic');
+  assert.equal(all[0], 'No epic'); assert(all.includes('Reading list load test · Mobile experience'));
+  assert(!all.some(label => label.startsWith('Library catalog API')), 'a done epic takes no new tasks');
+  const form = t.d.querySelector('.modal form'); form.querySelector('[name="title"]').value = 'No epic yet';
+  form.dispatchEvent(new t.w.Event('submit', { bubbles: true, cancelable: true }));
+  assert.equal(trackButton().getAttribute('aria-invalid'), 'true', 'Track is required');
+  pick(t, 'mEpic', 'Reading list load test · Mobile experience');
+  assert.deepEqual([shown(t, 'mTaskTrack'), shown(t, 'mEpic')], ['Mobile experience', 'Reading list load test']);
+  assert.equal(trackButton().hasAttribute('aria-invalid'), false, 'the epic gave the task a track');
+  assert.deepEqual(choices(t, 'mEpic'), ['No epic', 'Reader app build', 'Reading list load test']);
+  // The epic is on another track, so it goes.
+  pick(t, 'mTaskTrack', 'Backend & API');
+  assert.deepEqual([shown(t, 'mEpic'), t.d.querySelector('.modal [name="epicId"]').value], ['No epic', '']);
+  t.A.saveTask(event(form));
+  assert.deepEqual(sent(t), [['task.create', { projectId: 'p1', trackId: 't1', title: 'No epic yet', description: '', deadline: null, assigneeIds: [] }]]);
+});
+
+test('with no tracks, New task says so and offers Create track to people who can change the Roadmap', () => {
+  const t = bootApp({ route: 'board/p1', actions: true, prepare: D => { D.tracks = D.tracks.filter(item => item.projectId !== 'p1'); } });
+  t.A.openModal('task');
+  assert.equal(t.d.querySelector('.modal .sub').textContent, 'Every task goes on a track. Create one first.');
+  [...t.d.querySelectorAll('.modal button')].find(button => button.textContent === 'Create track').click();
+  assert.equal(t.A.context().modal.type, 'track');
+  t.A.closeOverlays();
+  t.D.users.find(user => user.id === 'taylorwu').admin = false; t.D.projects[0].members.find(member => member.userId === 'taylorwu').permissions = ['manage_board'];
+  t.A.openModal('task');
+  assert.match(t.d.querySelector('.modal .sub').textContent, /Ask someone who can change the Roadmap/);
+  assert.deepEqual([...t.d.querySelectorAll('.modal button')].map(button => button.textContent), ['Cancel']);
 });
 
 test('new epics require an explicit track', async () => {

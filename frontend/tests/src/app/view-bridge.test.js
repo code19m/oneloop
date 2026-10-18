@@ -298,8 +298,8 @@ test('routine member actions never invoke password confirmation',async()=>{
 test('task creation stays one interaction across acceptance and a slow follow-up read',async()=>{
   const write=deferred(),read=deferred();let writes=0;
   const state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task'}},{gateway:{execute:()=>{writes++;return write.promise;}},reloadBootstrap:()=>read.promise});
-  state.data.epics.push({id:'e1',projectId:'p1',state:'planning'});
-  const element=form(inputs({epicId:'e1',title:'One task'})+'<button type="submit">Save</button>'),button=element.querySelector('button'),event=submit(element);
+  state.data.tracks.push({id:'t1',projectId:'p1'});
+  const element=form(inputs({trackId:'t1',title:'One task'})+'<button type="submit">Save</button>'),button=element.querySelector('button'),event=submit(element);
   state.app.saveTask(event);state.app.saveTask(event);
   assert.equal(writes,1);assert.equal(button.disabled,true);
   write.resolve({entities:[],events:[]});await settle();
@@ -309,11 +309,28 @@ test('task creation stays one interaction across acceptance and a slow follow-up
   assert.equal(state.closed,1);assert.equal(button.disabled,false);
 });
 
+test('a new task needs a track of its project, and an epic it names must be open and on that track',async()=>{
+  const errors=[],sent=[];
+  const state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task'}},{gateway:{execute:async(operation,payload)=>{sent.push([operation,payload]);return {entities:[],events:[]};}},app:{fieldError:(_form,name,message)=>errors.push([name,message])}});
+  state.data.tracks.push({id:'t1',projectId:'p1',name:'Backend'},{id:'t2',projectId:'p1',name:'iOS'},{id:'other',projectId:'p2',name:'Elsewhere'});
+  state.data.epics.push({id:'open',projectId:'p1',trackId:'t1',state:'planning'},{id:'closed',projectId:'p1',trackId:'t1',state:'done'});
+  const create=values=>state.app.saveTask(submit(form(inputs({title:'Placed task',...values}))));
+  for(const values of [{trackId:''},{trackId:'other'},{trackId:'t1',epicId:'gone'},{trackId:'t1',epicId:'closed'},{trackId:'t2',epicId:'open'}])create(values);
+  assert.deepEqual(errors,[
+    ['trackId','Choose a track.'],['trackId','Choose a track.'],
+    ['epicId','This epic is no longer available. Choose another one, or No epic.'],
+    ['epicId','This epic is completed. Reopen it before adding tasks.'],
+    ['epicId','This epic is now on another track. Choose an epic on iOS, or No epic.'],
+  ]);
+  create({trackId:'t1',epicId:'open'});await settle();
+  assert.deepEqual(sent,[['task.create',{projectId:'p1',trackId:'t1',epicId:'open',title:'Placed task',description:'',deadline:null,assigneeIds:[]}]]);
+});
+
 test('an accepted create closes successfully even when refreshing the view fails',async()=>{
   const failure=new Error('Read unavailable'),refreshFailures=[];let writes=0;
   const state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task'}},{gateway:{execute:async()=>{writes++;return {entities:[],events:[]};}},reloadBootstrap:async()=>{throw failure;},recovery:{refreshFailed:error=>refreshFailures.push(error)}});
-  state.data.epics.push({id:'e1',projectId:'p1',state:'planning'});
-  state.app.saveTask(submit(form(inputs({epicId:'e1',title:'Saved task'}))));await settle();
+  state.data.tracks.push({id:'t1',projectId:'p1'});
+  state.app.saveTask(submit(form(inputs({trackId:'t1',title:'Saved task'}))));await settle();
   assert.equal(writes,1);assert.equal(state.closed,1);
   assert.deepEqual(state.toasts,[['Task created']]);assert.deepEqual(refreshFailures,[failure]);
 });
@@ -672,9 +689,9 @@ test('Keep my changes in Edit milestone saves only the fields the person changed
 
 test('a Pool promotion sends the item\'s title and description only when the person changed them',async()=>{
   const sent=[],state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task',poolId:'i1',title:'Idea',desc:'Notes'}},{recovery:keepMine(),gateway:conflictOnce(sent)});
-  state.data.pool.push({id:'i1',projectId:'p1',scope:'project',title:'Idea',desc:'Notes',revision:1});state.data.epics.push({id:'e1',projectId:'p1',state:'planning'});
-  state.app.saveTask(submit(dialogForm({epicId:'e1',title:'Idea',desc:'My own notes',deadline:'2026-12-01'})));await settle();await settle();
-  assert.deepEqual(sent.map(payload=>Object.keys(payload).sort()),[['assigneeIds','deadline','description','epicId','poolItemId'],['assigneeIds','deadline','description','epicId','poolItemId']]);
+  state.data.pool.push({id:'i1',projectId:'p1',scope:'project',title:'Idea',desc:'Notes',revision:1});state.data.tracks.push({id:'t1',projectId:'p1'});state.data.epics.push({id:'e1',projectId:'p1',trackId:'t1',state:'planning'});
+  state.app.saveTask(submit(dialogForm({trackId:'t1',epicId:'e1',title:'Idea',desc:'My own notes',deadline:'2026-12-01'})));await settle();await settle();
+  assert.deepEqual(sent.map(payload=>Object.keys(payload).sort()),[['assigneeIds','deadline','description','epicId','poolItemId','trackId'],['assigneeIds','deadline','description','epicId','poolItemId','trackId']]);
 });
 
 test('a conflict over a dialog\'s date draws the dialog again, since its picker can\'t show the saved date by itself',async()=>{
@@ -716,8 +733,8 @@ test('a Pool promotion whose conflict prompt closed without a choice saves again
   const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'pool:i1',expectedRevision:(key,latest)=>remembered.get(key)??latest,finishRevision:key=>remembered.delete(key),handleCommandFailure:async()=>{},
     resolveConflict:async()=>{state.data.pool[0].revision=2;return {handled:true,saved:false};}};
   const state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task',poolId:'i1'}},{recovery,gateway:{execute:async(_operation,_payload,options)=>{sent.push(options.expectedRevision);throw changedElsewhere();}}});
-  state.data.pool.push({id:'i1',projectId:'p1',scope:'project',title:'Idea',desc:'',revision:1});state.data.epics.push({id:'e1',projectId:'p1',state:'planning'});
-  const dialog=dialogForm({epicId:'e1',title:'Idea',desc:'My notes',deadline:''}),promote=()=>state.app.saveTask(submit(dialog));
+  state.data.pool.push({id:'i1',projectId:'p1',scope:'project',title:'Idea',desc:'',revision:1});state.data.tracks.push({id:'t1',projectId:'p1'});
+  const dialog=dialogForm({trackId:'t1',title:'Idea',desc:'My notes',deadline:''}),promote=()=>state.app.saveTask(submit(dialog));
   promote();await settle();await settle();promote();await settle();await settle();
   assert.deepEqual(sent,[1,1],'the dialog still shows the typed text, so it meets the change to the item again');
 });

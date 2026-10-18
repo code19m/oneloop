@@ -17,6 +17,10 @@ export function installTasks(ctx) {
   const { app, data, gateway, reads, recovery, task, poolItem, context, sessionScope, nav, execute, offerRestore, fire, accepted, refusedAtOnce, formValues, fieldError, validOptionalDate, skipped, ifCurrent, drafts, draftKey, pruneDrafts, dropDrafts, taskBusy, unsavedDraft, paintDrafts } = ctx;
   const assigneeSaves=new Map();
   const pendingTaskForms = new WeakSet();
+  // The track of the last task each person created in each project in this
+  // tab, where the next new task starts when nothing else says where it goes.
+  /** @type {Map<string,string>} */
+  const lastTracks=new Map();
   let promotionSource=null;
 
   function noteTaskSaved(result,id){const item=task(id);if(!result?.stale&&!result?.skipped&&!recovery.isSavingTask()&&!(item&&(taskBusy(item.internalId)||unsavedDraft(item.internalId))))app.noteTaskSaved(id);return result;}
@@ -115,11 +119,16 @@ export function installTasks(ctx) {
     const source=uncertainSource||(modal?.poolId?poolItem(modal.poolId):null);
     if(modal?.poolId&&!source)return fieldError(form,'title','This Pool item is no longer available. Return to Pool to continue.');
     if(source&&!uncertainSource)promotionSource={id:source.id,scope:sessionScope(),entity:{...source,revision:recovery.expectedRevision(recovery.revisionKey(source),source.revision)}};
-    const payload={projectId:context().projectId,epicId:String(values.get('epicId')||''),title:text(values.get('title'),140),description:text(values.get('desc'),4000),deadline:values.get('deadline')||null,assigneeIds:[...new Set(values.getAll('assignees').map(String))]};
+    // A task without an epic sends none.
+    const epicId=String(values.get('epicId')||'');
+    const payload={projectId:context().projectId,trackId:String(values.get('trackId')||''),...(epicId?{epicId}:{}),title:text(values.get('title'),140),description:text(values.get('desc'),4000),deadline:values.get('deadline')||null,assigneeIds:[...new Set(values.getAll('assignees').map(String))]};
     if(!payload.title)return fieldError(form,'title','Give the task a title.');
-    const destination=data.epics.find((entry)=>entry.id===payload.epicId&&entry.projectId===payload.projectId);
-    if(!destination)return fieldError(form,'epicId','Choose an epic.');
-    if(destination.state==='done')return fieldError(form,'epicId','This epic is completed. Reopen it before adding tasks.');
+    const destination=data.tracks.find((entry)=>entry.id===payload.trackId&&entry.projectId===payload.projectId);
+    if(!destination)return fieldError(form,'trackId','Choose a track.');
+    const chosenEpic=epicId?data.epics.find((entry)=>entry.id===epicId&&entry.projectId===payload.projectId):null;
+    if(epicId&&!chosenEpic)return fieldError(form,'epicId','This epic is no longer available. Choose another one, or No epic.');
+    if(chosenEpic?.state==='done')return fieldError(form,'epicId','This epic is completed. Reopen it before adding tasks.');
+    if(chosenEpic&&chosenEpic.trackId!==destination.id)return fieldError(form,'epicId',`This epic is now on another track. Choose an epic on ${destination.name}, or No epic.`);
     if(!validOptionalDate(form,'deadline',payload.deadline))return false;
     const project=data.projects.find((entry)=>entry.id===payload.projectId),eligible=new Set((project?.members??[]).map((member)=>member.userId));
     if(payload.assigneeIds.some((id)=>!eligible.has(id)||data.users.find((user)=>user.id===id)?.active===false))return fieldError(form,'assignees','Choose active project members. A selected person is no longer available.');
@@ -127,7 +136,7 @@ export function installTasks(ctx) {
     // Text the person left as the Pool item had it follows the item, so Keep
     // my changes never puts back a title or description changed meanwhile.
     const ownTitle=payload.title!==text(modal?.title,140),ownDescription=payload.description!==text(modal?.desc,4000);
-    const body=source?{poolItemId:source.id,epicId:payload.epicId,...(ownTitle?{title:payload.title}:{}),...(ownDescription?{description:payload.description}:{}),deadline:payload.deadline,assigneeIds:payload.assigneeIds}:payload;
+    const body=source?{poolItemId:source.id,trackId:payload.trackId,...(epicId?{epicId}:{}),...(ownTitle?{title:payload.title}:{}),...(ownDescription?{description:payload.description}:{}),deadline:payload.deadline,assigneeIds:payload.assigneeIds}:payload;
     pendingTaskForms.add(form);
     const buttons=/** @type {HTMLButtonElement[]} */([...form.querySelectorAll('button[type="submit"],input[type="submit"]')]);
     const disabled=buttons.map(button=>button.disabled);
@@ -150,7 +159,7 @@ export function installTasks(ctx) {
     }:{};
     return fire(execute(operation,body,source,source?'Task planning':'Task created',{
       create:!source,reload:true,interactionKey,form,...promotion,
-      onAccepted:()=>{if(promotionSource?.id===source?.id)promotionSource=null;completeForm(form,()=>app.closeOverlays());},
+      onAccepted:()=>{lastTracks.set(`${data.session?.userId}:${payload.projectId}`,payload.trackId);if(promotionSource?.id===source?.id)promotionSource=null;completeForm(form,()=>app.closeOverlays());},
     }).finally(()=>{
       pendingTaskForms.delete(form);
       if(!isFormRetryPending(form))buttons.forEach((button,index)=>button.disabled=disabled[index]);
@@ -172,6 +181,8 @@ export function installTasks(ctx) {
   };
 
   return {
+    /** @param {string} projectId @returns {string|null} the track of the last task this person created in the project in this tab */
+    lastTaskTrack(projectId){return lastTracks.get(`${data.session?.userId}:${projectId}`)??null;},
     /** The unsaved value of a task field, which the task page shows instead of the saved one. */
     taskDraft(taskId,field){pruneDrafts();const draft=drafts.get(draftKey(taskId,field));return draft?{value:draft.value,unsaved:draft.unsaved}:null;},
     /** Keep typed text that cannot be saved now, such as after edit rights ended, as a Not saved draft. */

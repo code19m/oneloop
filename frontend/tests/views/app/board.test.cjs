@@ -366,21 +366,21 @@ test('Pool descriptions are optional, cancel cleanly, move into promotion and re
  t.A.togglePoolDescription();t.d.getElementById('poolNewDesc').value='Unsent context';t.A.setPoolTab('project');t.A.setPoolTab('mine');assert.equal(t.d.getElementById('poolNewDesc').value,'');assert(!t.d.querySelector('.pool-capture').classList.contains('is-expanded'));
  t.A.promotePool(item.id);assert.equal(t.d.querySelector('.pool-editor [name=desc]').value,'Saved context');t.A.returnToPool();assert(t.D.pool.includes(item));assert.equal(item.desc,'Saved context');
  // Text left as the item has it follows the item, so the promotion sends neither title nor description.
- t.A.promotePool(item.id);form=t.d.querySelector('.pool-editor form');const epicId=t.D.epics.find(e=>e.state!=='done').id;form.querySelector('[name=epicId]').value=epicId;t.A.saveTask({target:form,preventDefault(){}});
- assert.deepEqual(sent()[2],['pool.promote',{poolItemId:item.id,epicId,deadline:null,assigneeIds:[]}]);
+ t.A.promotePool(item.id);form=t.d.querySelector('.pool-editor form');form.querySelector('[name=trackId]').value='t1';t.A.saveTask({target:form,preventDefault(){}});
+ assert.deepEqual(sent()[2],['pool.promote',{poolItemId:item.id,trackId:'t1',deadline:null,assigneeIds:[]}]);
  const locked=bootApp({route:'board'});locked.D.users.find(u=>u.id==='taylorwu').admin=false;locked.D.projects[0].members.find(m=>m.userId==='taylorwu').permissions=[];locked.A.openModal('pool');locked.A.setPoolTab('project');assert(locked.d.querySelector('.pool-capture').hidden);
 });
 
 test('a Pool item turned into a task reads the Board and the Pool once, and the hints of the change read nothing more', async t => {
   // Each tab records its reloads; the bootstrap carries the Board's cards, as a real one does.
   const tab = () => { const reloads = []; return { reloads, ...bootApp({ route: 'board', reads: { adoptBoard: () => true }, reloadBootstrap: async scope => { reloads.push(scope ?? {}); return { stale: false }; } }) }; };
-  const acting = tab(), other = tab(), epicId = acting.D.epics.find(e => e.state !== 'done').id;
+  const acting = tab(), other = tab();
   t.mock.timers.enable({ apis: ['setTimeout'] });
   acting.A.openModal('pool'); acting.A.setPoolTab('project'); acting.reads.calls.length = 0;
   acting.A.promotePool('pl3');
-  const form = acting.d.querySelector('.pool-editor form'); form.querySelector('[name=epicId]').value = epicId;
+  const form = acting.d.querySelector('.pool-editor form'); form.querySelector('[name=trackId]').value = 't1';
   acting.A.saveTask({ target: form, preventDefault() {} });
-  const task = { id: 'promoted', taskKey: 'BIR-200', projectId: 'p1', trackId: acting.D.epics.find(e => e.id === epicId).trackId, epicId, title: 'Branch map overview', description: '', status: 'planning', position: -1024, createdAt: 1, updatedAt: 1, revision: 1, assigneeIds: [], activeBlock: null };
+  const task = { id: 'promoted', taskKey: 'BIR-200', projectId: 'p1', trackId: 't1', epicId: null, title: 'Branch map overview', description: '', status: 'planning', position: -1024, createdAt: 1, updatedAt: 1, revision: 1, assigneeIds: [], activeBlock: null };
   acting.commands[0].resolve({ entities: [{ entityType: 'task', ...task }, { entityType: 'poolItem', id: 'pl3', projectId: 'p1', deleted: true, revision: 2, promoted: true }], events: [] });
   await settle(); await settle();
   // The hints of the change: the new task and the Pool item it came from.

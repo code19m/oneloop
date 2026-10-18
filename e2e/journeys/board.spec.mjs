@@ -39,9 +39,9 @@ test('creation stays single while its post-save read is delayed', { tag: '@smoke
   await page.getByRole('button', { name: 'Task', exact: true }).click();
   const modal = page.locator('.modal');
   await modal.locator('input[name="title"]').fill('Create once through delayed loading');
-  await expect(modal.getByRole('button', { name: /^Epic / })).toContainText('Choose an epic');
-  await modal.getByRole('button', { name: /^Epic / }).click();
-  await page.locator('.pop-opt').filter({ hasText: instance.projects[0].epic.title }).click();
+  // The project's only track is filled in, and the task needs no epic.
+  await expect(modal.getByRole('button', { name: /^Track / })).toContainText(instance.projects[0].track.name);
+  await expect(modal.getByRole('button', { name: /^Epic / })).toContainText('No epic');
   const reads = await holdResponses(page, '**/api/bootstrap**');
   const accepted = await holdResponses(page, '**/api/commands');
   let creates = 0;
