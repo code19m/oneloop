@@ -216,11 +216,13 @@ function saveProperty(id, field, value) {
   });
 }
 const trackOptions = () => tracks().map((x) => ({ v: x.id, l: x.name }));
+// A select skips changes from elsewhere while its list is open, so it shows them once the list closes.
+const showSaved = () => App.refreshTaskHeader();
 /** The task's Track and Epic, with the Epic cleared note. */
 function trackEpicHtml(t, canEdit) {
   const note = epicNote(t);
-  return `<div class="task-property"><dt>Track</dt><dd>${selectHtml('tpTrack', { label: 'Track', cls: 'prop', disabled: !canEdit, icon: I.track, value: t.trackId, options: trackOptions(), pick: (v) => saveProperty(t.id, 'trackId', v) })}</dd></div>
-        <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: t.epicId ?? '', search: true, describedBy: note ? 'tpEpic-note' : '', options: epicOptions(t.trackId, t.epicId), pick: (v) => saveProperty(t.id, 'epicId', v) })}${note ? `<p class="task-property-note" id="tpEpic-note">${esc(note)}</p>` : ''}</dd></div>`;
+  return `<div class="task-property"><dt>Track</dt><dd>${selectHtml('tpTrack', { label: 'Track', cls: 'prop', disabled: !canEdit, icon: I.track, value: t.trackId, options: trackOptions(), pick: (v) => saveProperty(t.id, 'trackId', v), onClose: showSaved })}</dd></div>
+        <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: t.epicId ?? '', search: true, describedBy: note ? 'tpEpic-note' : '', options: epicOptions(t.trackId, t.epicId), pick: (v) => saveProperty(t.id, 'epicId', v), onClose: showSaved })}${note ? `<p class="task-property-note" id="tpEpic-note">${esc(note)}</p>` : ''}</dd></div>`;
 }
 /** Show the open task's track and epic in place: their choices, values and the Epic cleared note. */
 function paintTrackEpic(t, page) {
@@ -253,7 +255,7 @@ export function renderTask() {
     <aside class="tp-rail" aria-labelledby="task-properties-heading">
       ${taskPropertiesHeadingHtml(t, canEdit)}
       <dl class="task-properties">
-        <div class="task-property"><dt>Status</dt><dd>${selectHtml('tpState', { label: 'Status', cls: 'prop', disabled: !canEdit, icon: stIcon(t.state), value: t.state, options: Object.entries(STATUS).map(([v, l]) => ({ v, l, icon: stIcon(v) })), pick: (v) => saveProperty(t.id, 'state', v) })}</dd></div>
+        <div class="task-property"><dt>Status</dt><dd>${selectHtml('tpState', { label: 'Status', cls: 'prop', disabled: !canEdit, icon: stIcon(t.state), value: t.state, options: Object.entries(STATUS).map(([v, l]) => ({ v, l, icon: stIcon(v) })), pick: (v) => saveProperty(t.id, 'state', v), onClose: showSaved })}</dd></div>
         ${trackEpicHtml(t, canEdit)}
         <div class="task-property"><dt>Assignees</dt><dd>${msHtml('tpAssign', t.id, !canEdit)}</dd></div>
         <div class="task-property task-property-date prop-row${late ? ' late' : ''}"><dt>Deadline</dt><dd>${dateHtml('tpDl', { hideLabel: true, cls: 'prop', disabled: !canEdit, icon: I.clock, name: '_dl', value: t.deadline || '', clearable: true, autosave: true, pick: (v) => App.updTask(t.id, 'deadline', v) })}<span class="task-overdue" ${late ? '' : 'hidden'}>Overdue</span></dd></div>

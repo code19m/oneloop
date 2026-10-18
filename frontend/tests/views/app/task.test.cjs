@@ -530,6 +530,20 @@ test('a track changed elsewhere shows at once in Track and Epic, with the epics 
   }
 });
 
+test('a change made elsewhere while the Status, Track or Epic list is open shows in that select once its list closes', async () => {
+  const before = { tpState: 'Planning', tpTrack: 'Backend & API', tpEpic: 'Reading summaries' };
+  for (const key of Object.keys(before)) {
+    const t = changedElsewhere(), select = t.d.getElementById(`select-${key}`);
+    select.focus(); t.A.popSelect({ currentTarget: select, preventDefault() {} }, key);
+    t.change(['task'], { status: 'in_progress', trackId: 't3', epicId: null });
+    await waitFor(() => t.d.querySelector('.task-status-chip').textContent === 'In Progress', `the change arrives (${key})`);
+    assert.equal(shown(t, key), before[key], `the open list stays as the person sees it (${key})`);
+    t.d.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert.deepEqual([shown(t, 'tpState'), shown(t, 'tpTrack'), shown(t, 'tpEpic')], ['In Progress', 'Mobile experience', 'No epic'], key);
+    assert.deepEqual(choices(t, 'tpEpic'), ['No epic', 'Reader app build', 'Reading list load test'], key);
+  }
+});
+
 test('a description changed elsewhere shows at once while focus is elsewhere on the page, and once focus leaves its text', async () => {
   for (const hints of hintsOfAChange) {
     const t = changedElsewhere({ prepare: D => { D.tasks.find(item => item.id === 'BIR-079').desc = 'The first text'; } });
