@@ -47,9 +47,10 @@ async fn place(f: &Fixture, id: &str) -> (String, Option<String>, i64) {
     .await
 }
 
-fn invalid_field(result: oneloop::AppResult<oneloop::command::CommandResult>) -> String {
+/// The field and message of a validation error.
+fn invalid(result: oneloop::AppResult<oneloop::command::CommandResult>) -> (String, String) {
     match result {
-        Err(AppError::Validation { field, .. }) => field,
+        Err(AppError::Validation { field, message }) => (field, message),
         other => panic!("expected a validation error: {other:?}"),
     }
 }
@@ -88,7 +89,7 @@ async fn a_new_task_goes_on_its_track_and_its_epic_must_be_on_that_track() {
         payload["projectId"] = json!("p1");
         payload["title"] = json!("Refused");
         let refused = run(&f, DomainOperation::CreateTask, payload, key, None).await;
-        assert_eq!(invalid_field(refused), field, "{key}");
+        assert_eq!(invalid(refused).0, field, "{key}");
     }
 
     // A Pool item becomes a task on a track the same way.
@@ -124,16 +125,22 @@ async fn moving_a_task_to_another_track_clears_its_epic_unless_one_there_is_name
     let f = fixture().await;
     second_track(&f).await;
     let id = task(&f, "Mover", json!({"epicId":"e1"})).await;
-    // An epic must be on the task's track, so choosing one elsewhere names its track too.
-    for (payload, key) in [
-        (json!({"taskId":id,"epicId":"e3"}), "epic-elsewhere"),
+    // An epic must be on the task's track, so choosing one elsewhere names its
+    // track too, and the refusal says which track the epic doesn't match.
+    for (payload, key, message) in [
+        (
+            json!({"taskId":id,"epicId":"e3"}),
+            "epic-elsewhere",
+            "epic is on another track than the task; send the epic's trackId to move the task",
+        ),
         (
             json!({"taskId":id,"trackId":"tr3","epicId":"e1"}),
             "epic-left-behind",
+            "epic is on another track than trackId",
         ),
     ] {
         let refused = run(&f, DomainOperation::UpdateTask, payload, key, Some(1)).await;
-        assert_eq!(invalid_field(refused), "epicId", "{key}");
+        assert_eq!(invalid(refused), ("epicId".into(), message.into()), "{key}");
     }
     assert_eq!(place(&f, &id).await, ("tr1".into(), Some("e1".into()), 1));
 

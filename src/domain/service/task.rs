@@ -106,6 +106,7 @@ pub(super) fn update_task(
     let before = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &before.project_id, Need::Board, false)?;
     check_revision(expected, before.revision)?;
+    let track_sent = input.track_id.is_some();
     let track_id = input.track_id.unwrap_or_else(|| before.track_id.clone());
     if track_id != before.track_id {
         roadmap::ensure_track_project(tx, &track_id, &before.project_id)?;
@@ -127,7 +128,11 @@ pub(super) fn update_task(
         if epic_track != track_id {
             return Err(AppError::validation(
                 "epicId",
-                "epic is on another track than the task; send the epic's trackId to move the task",
+                if track_sent {
+                    "epic is on another track than trackId"
+                } else {
+                    "epic is on another track than the task; send the epic's trackId to move the task"
+                },
             ));
         }
     }
