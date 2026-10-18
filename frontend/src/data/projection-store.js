@@ -280,7 +280,7 @@ export const NAMED_TASKS_LIMIT = 50;
 export const sectionKey = (trackId, epicId) => `${trackId}/${epicId ?? ''}`;
 
 /** The day `count` days after `day`, both `YYYY-MM-DD`. @param {string} day @param {number} count */
-export const dayAfter = (day, count) => new Date(Date.parse(`${day}T00:00:00Z`) + count * 86400000).toISOString().slice(0, 10);
+const dayAfter = (day, count) => new Date(Date.parse(`${day}T00:00:00Z`) + count * 86400000).toISOString().slice(0, 10);
 
 /** Put a read's tasks among the projection's, each with the details it already had. */
 function mergeTasks(data, taskViews) {
@@ -308,7 +308,7 @@ export function mapRoadmapMark(data, view) {
  * The Roadmap's lanes from a Roadmap read.
  * @param {any} data @param {string} projectId @param {any} timeline
  */
-export function replaceRoadmapLanes(data, projectId, timeline) {
+function replaceRoadmapLanes(data, projectId, timeline) {
   mergeTasks(data,timeline.open);
   const previous=data.roadmap?.projectId===projectId?data.roadmap:null;
   /** @type {RoadmapLanes} */
@@ -382,7 +382,7 @@ export function changedSections(timeline, sections) {
  * stay as they are.
  * @param {any} data @param {string} projectId @param {any} timeline @param {string[]} named @param {string[]} sections
  */
-export function patchRoadmapLanes(data, projectId, timeline, named, sections) {
+function patchRoadmapLanes(data, projectId, timeline, named, sections) {
   const lanes=data.roadmap;
   if(lanes?.projectId!==projectId)return null;
   mergeTasks(data,[...timeline.open,...timeline.tasks]);

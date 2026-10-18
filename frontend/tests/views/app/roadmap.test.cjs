@@ -1128,3 +1128,18 @@ test('a track moved with the keyboard comes into view below the date axis, then 
   assert.deepEqual(laneOrder(t.d)[0], 't1');
   assert.deepEqual(view(), { grip: true, below: true, above: true }, 'moved back to the top');
 });
+
+// ---------- the modules ----------
+
+test('the Roadmap\'s modules export only what other modules use', () => {
+  const { readFileSync, readdirSync } = require('node:fs'), path = require('node:path');
+  const root = path.join(__dirname, '../../..');
+  const files = ['views', 'src', 'tests'].flatMap(folder => readdirSync(path.join(root, folder), { recursive: true }).filter(name => /\.(c?js|mjs)$/.test(name)).map(name => path.join(folder, name)));
+  const unused = [];
+  for (const file of ['views/app/timeline.js', 'views/app/roadmap.js', 'src/data/projection-store.js']) {
+    const names = [...readFileSync(path.join(root, file), 'utf8').matchAll(/^export (?:async )?(?:function|const|let|class) (\w+)/gm)].map(match => match[1]);
+    const others = files.filter(other => other !== path.normalize(file)).map(other => readFileSync(path.join(root, other), 'utf8'));
+    for (const name of names) if (!others.some(source => new RegExp(`\\b${name}\\b`).test(source))) unused.push(`${file}: ${name}`);
+  }
+  assert.deepEqual(unused, []);
+});

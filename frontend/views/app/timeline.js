@@ -56,7 +56,7 @@ function dayScale(start) {
   return { ofDate, ofInstant };
 }
 
-export const isLate = (task) => !!task.deadline && task.state !== 'done' && d(task.deadline) < today;
+const isLate = (task) => !!task.deadline && task.state !== 'done' && d(task.deadline) < today;
 const daysLate = (task) => Math.round((today - d(task.deadline)) / DAY);
 const blockedOf = (task) => !!task.block && task.state !== 'done';
 /** When work on a task started: when it first entered In Progress, or its last change for data from before that was kept. */
@@ -86,7 +86,7 @@ function openTasks() {
 }
 
 /** The task `key` names, as the page holds it or as a mark of the lanes or their late tasks shows it. */
-export function laneTask(key) {
+function laneTask(key) {
   const lanes = roadmapLanes();
   return taskById(key) ?? (lanes && (Object.values(lanes.marks).find((mark) => mark.id === key) ?? lanes.late.find((mark) => mark.id === key))) ?? null;
 }
