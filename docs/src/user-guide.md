@@ -49,7 +49,8 @@ first page you see after you sign in.
   its deadline.
 - **Plans with a deadline** show as dashed rings on their deadline, with their
   title where it fits. Rings too close to tell apart become a number, as done
-  work does. Plans without a deadline stay on the **Board**.
+  work does. While a ring's task loads, a short grey bar holds the place of
+  its title. Plans without a deadline stay on the **Board**.
 - A track's name says how many of its tasks are in progress and how many are
   planned, with a deadline or not. A lane without any of this says **No dated
   work**, or **No tasks yet** when its track has no tasks.
@@ -66,8 +67,8 @@ first page you see after you sign in.
   days the Roadmap hasn't loaded yet comes into view first.
 - Hover over a task, an epic or a milestone, or move the keyboard focus to it,
   to see its details. Click it, or press Enter, to open the task, the epic's
-  progress, tasks and activity, or the milestone. Deadlines are set on the
-  task's page.
+  progress, tasks and activity, or the milestone. A dot, a ring and a row of
+  a list open their task the same way. Deadlines are set on the task's page.
 - The Roadmap opens at the scale that shows the last three weeks of done work,
   the work in progress and the next six weeks of dates. **Weeks**, **Months**
   and **Quarters** set the scale, and so do the keys W, M and Q. A new scale

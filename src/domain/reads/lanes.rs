@@ -35,9 +35,9 @@ pub(super) const MARKS_MAX: usize = 400;
 /// The most days apart a read's marks may ask for: farther than the page
 /// ever draws marks merged.
 pub(super) const APART_MAX: f64 = 60.0;
-/// The days the Roadmap opens with: what its first view shows at Months on
-/// a wide screen (about seven weeks back to three months ahead), with the 60
-/// days to spare on each side that the page keeps loaded.
+/// The days the Roadmap opens with: what its first view draws at Months on
+/// a wide screen (about seven weeks back to three months ahead, with half a
+/// view to spare on each side).
 const DAYS_BACK: i64 = 120;
 const DAYS_AHEAD: i64 = 165;
 

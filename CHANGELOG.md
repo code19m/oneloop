@@ -71,9 +71,10 @@ All notable changes to oneloop are recorded here. The format follows
   arrow keys move through a lane. Plans without a deadline stay on the Board.
 - The **Roadmap** opens at the scale that fits the recent work, unless you
   chose a scale, and another project opens at its own fit. It loads the days
-  around what it shows, and more days as you scroll to them. Each day shows
-  all of its done work and plans at any scale, a number for those too close
-  to tell apart, whose list shows 50 tasks. **Overdue** steps through the 20
+  around what it shows, and more days as you scroll to them, and draws only
+  what is near the view. Each day shows all of its done work and plans at
+  any scale, a number for those too close to tell apart, whose list shows 50
+  tasks. **Overdue** steps through the 20
   longest overdue. A change made elsewhere reads only what it changed, and a
   change to a track or milestone reads no tasks. Its header no longer counts
   tracks, epics and milestones.
