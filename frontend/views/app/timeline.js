@@ -566,7 +566,7 @@ export function syncLaneEdges(sc, rail) {
     else if (side === 'after') x = to - compact - left;
     else {
       x = Math.max(BOX_PAD, from + 6 - left);
-      short = left + x + full > Math.min(to, right + 64);
+      short = left + x + full > Math.min(to, right - 6);
       const width = short ? compact - 20 : full;
       if (left + x + width > to) x = Math.max(from + 6 - left, to - width - left);
     }

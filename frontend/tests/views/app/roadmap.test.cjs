@@ -319,6 +319,14 @@ test('an epic with nothing on the timeline is its header alone just after Today,
   assert.equal(box(D => { D.epics.find(epic => epic.id === 'e11').state = 'done'; }), undefined);
 });
 
+test('an epic\'s header drops its dates and bar where they would pass its box', () => {
+  // The epic's box is 279 px at Months, with the title of its dated plan; its full header is some 20 px wider.
+  const { d } = boot('roadmap/p1?scale=months', { prepare: D => { D.epics.find(epic => epic.id === 'e7').title = 'Load test review'; } });
+  const header = id => d.querySelector(`.rt-epic-label[data-epic="${id}"]`);
+  assert(header('e7').classList.contains('rt-epic-short'));
+  assert(!header('e5').classList.contains('rt-epic-short'), 'a box as wide as its work keeps them');
+});
+
 test('a done epic\'s box has a green edge and its header a check', () => {
   const { d } = boot();
   const header = d.querySelector('.rt-epic-label[data-epic="e8"]');
