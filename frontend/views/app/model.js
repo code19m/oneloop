@@ -23,7 +23,7 @@ export const ROADMAP_SCALES = [
   { key: 'months', label: 'Months', ppd: 8.5, shortcut: 'M' },
   { key: 'quarters', label: 'Quarters', ppd: 2.6, shortcut: 'Q' },
 ];
-/** Months, the scale a Roadmap opens at. */
+/** Months: the zoom the Roadmap draws at until its lanes load and it fits their work, or a scale is picked. */
 export const OPENING_SCALE = ROADMAP_SCALES.find((scale) => scale.key === 'months');
 
 export const state = {

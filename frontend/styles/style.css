@@ -16,7 +16,6 @@
   --segment-track: rgba(0,0,0,0.12);
   --segment-selected: rgb(var(--tone-rgb) / 0.09);
   --scrim: rgba(0,0,0,0.28);
-  --today-ink: #212121;
   /* oneloop neutral surface and typography tokens. */
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --text-xs: 12px;
@@ -113,7 +112,6 @@
   --err: #b83b35;
   --review: #7950a4;
   --warn: #94650c;
-  --today-ink: #ffffff;
   --segment-track: rgba(0,0,0,0.04);
   --segment-selected: #ffffff;
   --scrim: rgba(24,28,32,0.14);

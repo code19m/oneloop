@@ -69,7 +69,8 @@ export function readAddress(hash) {
 /**
  * The address of a project's Board, Roadmap or Settings. The Board's adds the
  * filters that are on, each list as comma-separated IDs in a fixed order, and
- * the Roadmap's a scale, which the Roadmap leaves out at the one it opens at.
+ * the Roadmap's the scale picked there, which it leaves out while it fits
+ * its work.
  * Knowledge builds its own (`routeHash`).
  * @param {'board'|'roadmap'|'settings'} page @param {string} projectId
  * @param {{filters?:import('../data/board-filters.js').BoardFilters|null,scale?:string|null}} [shown] what the page shows
