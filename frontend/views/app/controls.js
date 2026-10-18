@@ -67,7 +67,7 @@ export function selectHtml(key, def) {
   const cur = def.options.find((o) => o.v === def.value);
   return `<div class="sel"${def.width ? ` style="width:${def.width}px"` : ''}>
     ${def.name ? `<input type="hidden" name="${def.name}" value="${esc(def.value ?? '')}">` : ''}
-    <button type="button" id="select-${esc(key)}" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${def.label ? `select-${key}-name ` : ''}select-${key}-value" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${cur ? '' : ' empty'}" data-tip="${esc(cur ? cur.l : (def.placeholder || 'Select'))}" data-tip-overflow ${def.disabled ? 'disabled' : UIAction('popSelect', UIAction.event, key)}>${def.label ? `<span class="sr-only" id="select-${esc(key)}-name">${esc(def.label)}</span>` : ''}${def.icon || ''}<span id="select-${esc(key)}-value" class="sel-label">${esc(cur ? cur.l : (def.placeholder || 'Select'))}</span>${def.cls ? '' : I.chev}</button>
+    <button type="button" id="select-${esc(key)}" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${def.label ? `select-${key}-name ` : ''}select-${key}-value"${def.describedBy ? ` aria-describedby="${esc(def.describedBy)}"` : ''} class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${cur ? '' : ' empty'}" data-tip="${esc(cur ? cur.l : (def.placeholder || 'Select'))}" data-tip-overflow ${def.disabled ? 'disabled' : UIAction('popSelect', UIAction.event, key)}>${def.label ? `<span class="sr-only" id="select-${esc(key)}-name">${esc(def.label)}</span>` : ''}${def.icon || ''}<span id="select-${esc(key)}-value" class="sel-label">${esc(cur ? cur.l : (def.placeholder || 'Select'))}</span>${def.cls ? '' : I.chev}</button>
   </div>`;
 }
 export const MULTI = {};

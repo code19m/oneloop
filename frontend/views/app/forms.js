@@ -99,7 +99,7 @@ export function mountDescription() {
  * epics on that track, and `current`, the task's own epic, even when it is
  * done, in start order. Without a track, every open epic, named with its track.
  */
-function epicOptions(trackId, current = null) {
+export function epicOptions(trackId, current = null) {
   const open = epics().filter((e) => e.state !== 'done' || e.id === current).sort((a, b) => d(a.start) - d(b.start));
   const choices = trackId ? open.filter((e) => e.trackId === trackId).map((e) => ({ v: e.id, l: e.title }))
     : tracks().flatMap((t) => open.filter((e) => e.trackId === t.id).map((e) => ({ v: e.id, l: `${e.title} · ${t.name}` })));

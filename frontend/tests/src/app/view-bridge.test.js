@@ -568,6 +568,15 @@ test('an epic chosen on the task page from another track moves the task there wi
   assert.deepEqual(state.requests[2].command.payload,{taskId:'t1',epicId:'beside'});
 });
 
+test('the task page moves a task only to a track of its project',async()=>{
+  const state=taskPage();
+  state.data.tracks.push({id:'t2',projectId:'p1'},{id:'other',projectId:'p2'});
+  for(const trackId of ['gone','other'])assert.equal(state.app.updTask('ONE-1','trackId',trackId),false);
+  assert.deepEqual(state.toasts,[['This track is no longer available. Choose another one.','error'],['This track is no longer available. Choose another one.','error']]);
+  state.app.updTask('ONE-1','trackId','t2');
+  assert.deepEqual(state.requests.map(request=>request.command.payload),[{taskId:'t1',trackId:'t2'}]);
+});
+
 test('two task fields saved close together build on each other instead of conflicting',async()=>{
   const state=taskPage();
   state.app.updTask('ONE-1','title','New title');state.app.updTask('ONE-1','desc','New description');state.app.updTask('ONE-1','state','progress');

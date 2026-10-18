@@ -12,13 +12,15 @@ import { renderBoard } from './board.js';
 import { blockText, composerHtml, feedHtml, retryTaskPage, sizeCommentBodies, taskFeedState } from './collaboration.js';
 import { dateHtml, multiHtml, selectHtml, setSelectValue } from './controls.js';
 import {
-  I, STATUS, UIAction, ago, avatarHtml, d, esc, formatInstant, overdue, setHTML, stIcon,
+  I, STATUS, UIAction, ago, avatarHtml, esc, formatInstant, overdue, setHTML, stIcon,
 } from './format.js';
-import { mountDescription, sizeDescription, sizeTaskTitle } from './forms.js';
+import { epicOptions, mountDescription, sizeDescription, sizeTaskTitle } from './forms.js';
 import {
-  App, canBoard, epics, me, projectMembers, recovery, report, runtime, state, taskById, userById, userHandle,
+  App, canBoard, epicById, me, projectMembers, recovery, report, runtime, state, taskById, trackById, tracks, userById,
+  userHandle,
 } from './model.js';
 import { openMenu } from './overlays.js';
+import { announce } from './toasts.js';
 
 let taskSaveFeedback = null, taskSaveTimer;
 function clearTaskSaved() {
@@ -185,6 +187,49 @@ document.addEventListener('focusout', (event) => {
   // An editor that stays, such as one whose text waits for its save, stays as it is.
   if (showsDescriptionEditor(t, canBoard())) placeEditButton(t); else paintDescription(t);
 });
+
+// ---------- track and epic ----------
+// An epic stays on its track, so moving a task to another track takes it out
+// of its epic. The person who moved it sees why under Epic until they leave
+// the task, or until it has an epic again or moves on.
+let clearedEpic = null;
+/** What the Epic cleared note under `t`'s Epic says, or nothing. */
+function epicNote(t) {
+  if (clearedEpic && (clearedEpic.taskId !== t.internalId || clearedEpic.userId !== me()?.id || t.epicId || t.trackId !== clearedEpic.trackId)) clearedEpic = null;
+  return clearedEpic?.text ?? '';
+}
+/** Move the task to `trackId`. Once that saves, a task that was in an epic says why it no longer is. */
+function moveToTrack(id, trackId) {
+  const t = taskById(id), epic = epicById(t?.epicId), from = trackById(t?.trackId), to = trackById(trackId);
+  const saved = App.updTask(id, 'trackId', trackId);
+  if (!epic || !from || !to || from === to || typeof saved?.then !== 'function') return saved;
+  return saved.then((ok) => {
+    const moved = taskById(id);
+    if (!ok || !moved || moved.epicId || moved.trackId !== trackId) return ok;
+    clearedEpic = { taskId: moved.internalId, userId: me()?.id, trackId, text: `Epic cleared: “${epic.title}” is on ${from.name}, not ${to.name}.` };
+    App.refreshTaskHeader(); announce(clearedEpic.text);
+    return ok;
+  });
+}
+const trackOptions = () => tracks().map((x) => ({ v: x.id, l: x.name }));
+/** The task's Track and Epic, with the Epic cleared note. */
+function trackEpicHtml(t, canEdit) {
+  const note = epicNote(t);
+  return `<div class="task-property"><dt>Track</dt><dd>${selectHtml('tpTrack', { label: 'Track', cls: 'prop', disabled: !canEdit, icon: I.track, value: t.trackId, options: trackOptions(), pick: (v) => moveToTrack(t.id, v) })}</dd></div>
+        <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: t.epicId ?? '', search: true, describedBy: note ? 'tpEpic-note' : '', options: epicOptions(t.trackId, t.epicId), pick: (v) => App.updTask(t.id, 'epicId', v) })}${note ? `<p class="task-property-note" id="tpEpic-note">${esc(note)}</p>` : ''}</dd></div>`;
+}
+/** Show the open task's track and epic in place: their choices, values and the Epic cleared note. */
+function paintTrackEpic(t, page) {
+  setSelectValue('tpTrack', t.trackId, trackOptions());
+  setSelectValue('tpEpic', t.epicId ?? '', epicOptions(t.trackId, t.epicId));
+  const button = page.querySelector('#select-tpEpic'), note = epicNote(t), old = page.querySelector('#tpEpic-note');
+  if (!button || (old?.textContent ?? '') === note) return;
+  old?.remove();
+  if (!note) { button.removeAttribute('aria-describedby'); return; }
+  const element = document.createElement('p'); element.className = 'task-property-note'; element.id = 'tpEpic-note'; element.textContent = note;
+  button.closest('dd').append(element); button.setAttribute('aria-describedby', element.id);
+}
+
 /** The task page's status and Blocked badge in the top bar, and its Properties heading with Block task. */
 const taskStatusHtml = (t) => `<span class="chip idle task-status-chip">${stIcon(t.state)}${STATUS[t.state]}</span>${t.block ? `<span class="blocked-badge">${I.blocked}Blocked</span>` : ''}`;
 const taskPropertiesHeadingHtml = (t, canEdit) => `<div class="task-properties-heading"><h2 id="task-properties-heading">Properties</h2>${canEdit && t.state !== 'done' && !t.block ? `<button class="btn block-task-action" ${UIAction('openModal', 'block', t.id)}>${I.blocked}Block task</button>` : ''}</div>`;
@@ -205,7 +250,7 @@ export function renderTask() {
       ${taskPropertiesHeadingHtml(t, canEdit)}
       <dl class="task-properties">
         <div class="task-property"><dt>Status</dt><dd>${selectHtml('tpState', { label: 'Status', cls: 'prop', disabled: !canEdit, icon: stIcon(t.state), value: t.state, options: Object.entries(STATUS).map(([v, l]) => ({ v, l, icon: stIcon(v) })), pick: (v) => App.updTask(t.id, 'state', v) })}</dd></div>
-        <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: t.epicId, placeholder: 'No epic', search: true, options: epics().filter(e => e.state !== 'done' || e.id === t.epicId).slice().sort((a, b) => d(a.start) - d(b.start)).map((e) => ({ v: e.id, l: e.title })), pick: (v) => App.updTask(t.id, 'epicId', v) })}</dd></div>
+        ${trackEpicHtml(t, canEdit)}
         <div class="task-property"><dt>Assignees</dt><dd>${msHtml('tpAssign', t.id, !canEdit)}</dd></div>
         <div class="task-property task-property-date prop-row${late ? ' late' : ''}"><dt>Deadline</dt><dd>${dateHtml('tpDl', { hideLabel: true, cls: 'prop', disabled: !canEdit, icon: I.clock, name: '_dl', value: t.deadline || '', clearable: true, autosave: true, pick: (v) => App.updTask(t.id, 'deadline', v) })}<span class="task-overdue" ${late ? '' : 'hidden'}>Overdue</span></dd></div>
         <div class="task-property"><dt>Created at</dt><dd>${Number.isFinite(t.created)?`<time class="task-created-at" datetime="${new Date(t.created).toISOString()}">${formatInstant(t.created)}</time>`:'<span class="task-created-at">Unavailable</span>'}</dd></div>
@@ -259,9 +304,10 @@ export function mountTaskPage() {
   sizeCommentBodies();
 }
 
-/** Clear a Saved status that belongs to another page or person. */
+/** Clear a Saved status, and an Epic cleared note, that belong to another page or person. */
 export function clearStaleTaskSave() {
   if(taskSaveFeedback&&(state.view!=='task'||state.taskId!==taskSaveFeedback.id||me()?.id!==taskSaveFeedback.owner))clearTaskSaved();
+  if(clearedEpic&&(state.view!=='task'||taskById(state.taskId)?.internalId!==clearedEpic.taskId))clearedEpic=null;
 }
 
 document.addEventListener('input', (e) => { if(e.target.closest('.task-page'))clearTaskSaved(); }, true);
@@ -334,6 +380,7 @@ Object.assign(App, {
     if (heading && !heading.contains(document.activeElement)) heading.replaceWith(html(taskPropertiesHeadingHtml(t, canBoard())));
     page.querySelector('#select-tpState > svg')?.replaceWith(html(stIcon(t.state)));
     setSelectValue('tpState', t.state);
+    paintTrackEpic(t, page);
     const late = overdue(t);
     page.querySelector('.task-property-date')?.classList.toggle('late', late);
     page.querySelector('.task-overdue')?.toggleAttribute('hidden', !late);

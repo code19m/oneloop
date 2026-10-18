@@ -72,13 +72,15 @@ export function installTasks(ctx) {
     // the Status menu has returned focus, so it takes focus and gives it back.
     if(field==='state'&&value==='done'&&item.block){app.refresh();queueMicrotask(()=>app.openModal('completeBlocked',item.id));return false;}
     if(field==='state')return accepted(execute('task.move',{taskId:item.internalId,status:toWireStatus(value)},item,null,{reload:true,coalesce:true}).then((result)=>noteTaskSaved(result,item.id)));
-    const names={title:'title',desc:'description',deadline:'deadline',epicId:'epicId'};
+    const names={title:'title',desc:'description',deadline:'deadline',trackId:'trackId',epicId:'epicId'};
     if(!names[field])return false;
-    const next=field==='deadline'?(value||null):text(value,field==='title'?140:4000);
+    // No deadline and No epic are null.
+    const next=field==='deadline'||field==='epicId'?(value||null):field==='trackId'?String(value??''):text(value,field==='title'?140:4000);
     if(field==='title'&&!next)return fieldError(form,'title','Enter a task title.');
     if(field==='deadline'&&next&&!validDate(next)){app.toast('Enter a valid deadline in YYYY-MM-DD format.','error');return false;}
-    const chosenEpic=field==='epicId'?data.epics.find((entry)=>entry.id===next&&entry.projectId===item.projectId&&entry.state!=='done'):null;
-    if(field==='epicId'&&!chosenEpic){app.toast('Choose an open epic. Completed epics must be reopened first.','error');return false;}
+    if(field==='trackId'&&!data.tracks.some((entry)=>entry.id===next&&entry.projectId===item.projectId)){app.toast('This track is no longer available. Choose another one.','error');return false;}
+    const chosenEpic=field==='epicId'&&next?data.epics.find((entry)=>entry.id===next&&entry.projectId===item.projectId&&entry.state!=='done'):null;
+    if(field==='epicId'&&next&&!chosenEpic){app.toast('Choose an open epic. Completed epics must be reopened first.','error');return false;}
     let draft;pruneDrafts();
     if(field==='title'||field==='desc'){
       draft=draftKey(item.internalId,field);
@@ -89,9 +91,11 @@ export function installTasks(ctx) {
       if(next===(field==='title'?item.title:item.desc??'')&&!previous)draft=undefined;
       else{drafts.set(draft,{taskId:item.internalId,field,value:next,base,scope:sessionScope(),unsaved:false,retryOnline:false});if(previous?.unsaved)paintDrafts(item.internalId);}
     }else if(refusedAtOnce(form))return false;
-    // An epic on another track moves the task there with it.
+    // An epic on another track moves the task there with it; another track
+    // takes the task out of its epic, which the server does.
     const payload={taskId:item.internalId,[names[field]]:next,...(chosenEpic&&chosenEpic.trackId!==item.trackId?{trackId:chosenEpic.trackId}:{})};
-    return accepted(execute('task.update',payload,item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>document.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
+    const control={desc:'#task-description',title:'.task-title-field textarea',trackId:'#select-tpTrack',epicId:'#select-tpEpic'}[field]??`[name="${field}"]`;
+    return accepted(execute('task.update',payload,item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>document.querySelector(control)}).then((result)=>noteTaskSaved(result,item.id)));
   }
   function retryDrafts(){
     for(const draft of [...drafts.values()]){

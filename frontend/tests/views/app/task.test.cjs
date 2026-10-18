@@ -135,6 +135,27 @@ test('with no tracks, New task says so and offers Create track to people who can
   assert.deepEqual([...t.d.querySelectorAll('.modal button')].map(button => button.textContent), ['Cancel']);
 });
 
+test('another track takes the task out of its epic and says why under Epic, until it has an epic again, and No epic sends none', async () => {
+  const t = taskPage(), task = t.D.tasks.find(x => x.id === 'BIR-079'), note = () => t.d.getElementById('tpEpic-note');
+  assert.deepEqual([shown(t, 'tpTrack'), shown(t, 'tpEpic')], ['Backend & API', 'Reading summaries']);
+  assert.deepEqual(choices(t, 'tpEpic'), ['No epic', 'Reading summaries', 'Search relevance', 'Catalog sync recovery']);
+  pick(t, 'tpTrack', 'Mobile experience');
+  assert.deepEqual(sent(t).at(-1), ['task.update', { taskId: task.internalId, trackId: 't3' }]);
+  await accept(t, [{ entityType: 'task', id: task.internalId, trackId: 't3', epicId: null, revision: 2 }]);
+  assert.equal(note().textContent, 'Epic cleared: “Reading summaries” is on Backend & API, not Mobile experience.');
+  assert.equal(t.d.getElementById('select-tpEpic').getAttribute('aria-describedby'), note().id);
+  assert.deepEqual([shown(t, 'tpTrack'), shown(t, 'tpEpic')], ['Mobile experience', 'No epic']);
+  assert.deepEqual(choices(t, 'tpEpic'), ['No epic', 'Reader app build', 'Reading list load test']);
+  pick(t, 'tpEpic', 'Reading list load test');
+  assert.deepEqual(sent(t).at(-1), ['task.update', { taskId: task.internalId, epicId: 'e7' }]);
+  await accept(t, [{ entityType: 'task', id: task.internalId, epicId: 'e7', revision: 3 }]);
+  assert.equal(note(), null);
+  pick(t, 'tpEpic', 'No epic');
+  assert.deepEqual(sent(t).at(-1), ['task.update', { taskId: task.internalId, epicId: null }]);
+  await accept(t, [{ entityType: 'task', id: task.internalId, epicId: null, revision: 4 }]);
+  assert.equal(shown(t, 'tpEpic'), 'No epic'); assert.equal(note(), null, 'the note told of the track change only');
+});
+
 test('new epics require an explicit track', async () => {
  const t=taskPage();t.A.openModal('epic');let form=t.d.querySelector('.modal form');assert.equal(form.querySelector('[name="trackId"]').value,'');assert(form.textContent.includes('Choose a track'));form.querySelector('[name="title"]').value='Explicit track';t.A.saveEpic(event(form),'');assert.equal(t.commands.length,0);assert(form.textContent.includes('Choose a track.'));
  form.querySelector('[name="trackId"]').value='t1';t.A.saveEpic(event(form),'');assert.deepEqual([t.commands[0].operation,t.commands[0].payload.trackId,t.commands[0].payload.title],['epic.create','t1','Explicit track']);
@@ -472,6 +493,18 @@ test('a status changed elsewhere shows at once in the header and Status, while t
     assert.equal(t.d.activeElement, description); assert.equal(description.value, 'Typed while a teammate works');
     t.A.popSelect({ currentTarget: status, preventDefault() {} }, 'tpState');
     assert.equal(t.d.querySelector('.pop-opt[aria-selected="true"]').textContent, 'In Progress', 'its list marks the new status');
+  }
+});
+
+test('a track changed elsewhere shows at once in Track and Epic, with the epics of the new track, while the description being typed in stays', async () => {
+  for (const hints of hintsOfAChange) {
+    const t = changedElsewhere(), description = t.d.getElementById('task-description');
+    description.focus(); description.value = 'Typed while an agent moves the task';
+    t.change(hints, { trackId: 't3', epicId: null });
+    await waitFor(() => shown(t, 'tpTrack') === 'Mobile experience', `Track shows the new track (hints: ${hints})`);
+    assert.equal(shown(t, 'tpEpic'), 'No epic'); assert.equal(t.d.getElementById('tpEpic-note'), null);
+    assert.equal(t.d.activeElement, description); assert.equal(description.value, 'Typed while an agent moves the task');
+    assert.deepEqual(choices(t, 'tpEpic'), ['No epic', 'Reader app build', 'Reading list load test']);
   }
 });
 

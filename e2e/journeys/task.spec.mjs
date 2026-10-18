@@ -217,6 +217,26 @@ test('unchanged task saves stay quiet and send no command', async ({ page, insta
   expect(commands).toEqual([]);
 });
 
+test('moving a task to another track by keyboard takes it out of its epic and says why', async ({ page, instance }) => {
+  const { project, track, epic, task } = instance.projects[0];
+  await command(instance.api, 'track.create', { projectId: project.id, name: 'Mobile' });
+  await openApp(page, instance);
+  const trackSelect = page.getByRole('button', { name: /^Track / }), epicSelect = page.getByRole('button', { name: /^Epic / });
+  await expect(trackSelect).toContainText(track.name);
+  await expect(epicSelect).toContainText(epic.title);
+  await trackSelect.focus();
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#tpEpic-note')).toHaveText(`Epic cleared: “${epic.title}” is on ${track.name}, not Mobile.`);
+  await expect(epicSelect).toContainText('No epic');
+  await expect(trackSelect).toBeFocused();
+  await expect(page.locator('.timeline')).toContainText('moved the task to Mobile');
+  await expect(page.locator('.timeline')).toContainText(`removed the task from ${epic.title}`);
+  const saved = await (await instance.api.get(`/api/tasks/${task.id}`)).json();
+  expect(saved.epicId).toBeNull();
+});
+
 test('a checklist grows, ticks and moves by keyboard, and follows a change made elsewhere', async ({ page, instance }) => {
   const { task } = instance.projects[0];
   const checklist = async () => (await (await instance.api.get(`/api/tasks/${task.id}`)).json()).checklist;
