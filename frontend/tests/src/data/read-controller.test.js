@@ -3,6 +3,7 @@ import test from 'node:test';
 import {createCommandGateway} from '../../../src/data/command-gateway.js';
 import {createReadController} from '../../../src/data/read-controller.js';
 import {createLegacyData} from '../../../src/data/projection-store.js';
+import {ApiError} from '../../../src/data/api-client.js';
 import {saveDoneOrder} from '../../../src/data/done-order.js';
 import {settle} from '../../support/helpers.cjs';
 
@@ -526,6 +527,24 @@ test('a read of more days asked for before a change made elsewhere is dropped, a
   requests.calls[1].resolve(doneDay('2026-05-31','seen'));
   assert.equal((await again).stale,false);
   assert.deepEqual(Object.keys(data.roadmap.marks),['seen']);
+});
+
+test('one list of a Roadmap mark reads at a time: a newer list, or closing it, cancels the one before',async()=>{
+  const data=createLegacyData(),requests=held();
+  const reads=createReadController({data,api:{roadmapList:requests.api('roadmapList')}});
+  const first=reads.roadmapList('p1',{track:'t1',kind:'done',from:'2026-09-01',to:'2026-09-02'});
+  const second=reads.roadmapList('p1',{track:'t1',kind:'done',from:'2026-09-03',to:'2026-09-04'});
+  assert.deepEqual(requests.calls.map(call=>call.signal.aborted),[true,false]);
+  requests.calls[0].reject(new ApiError('Request cancelled',{code:'aborted'}));
+  assert.equal((await first).stale,true);
+  requests.calls[1].resolve({items:[{id:'d1',taskKey:'BIR-1',trackId:'t1',epicId:null,title:'Done',status:'done',completedAt:1_790_000_000}],total:1});
+  const list=await second;
+  assert.deepEqual([list.stale,list.items.map(item=>item.id),list.total],[false,['BIR-1'],1]);
+  const closed=reads.roadmapList('p1',{track:'t1',kind:'open'});
+  reads.cancelRoadmapList();
+  assert.equal(requests.calls[2].signal.aborted,true);
+  requests.calls[2].reject(new ApiError('Request cancelled',{code:'aborted'}));
+  assert.equal((await closed).stale,true);
 });
 
 test('a read of more days that a newer read of the Roadmap overtakes adds nothing',async()=>{

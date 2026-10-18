@@ -209,6 +209,7 @@ function wire(dom, { api: answers = {}, reads: readAnswers = {}, reloadBootstrap
     ...Object.fromEntries(Object.entries(repaint).map(([name, paint]) => [name, async (...args) => { readCalls.push([name, ...args]); paint(...args); return { stale: false }; }])),
     // A list of the Roadmap's marks: none, unless a test answers.
     roadmapList: async (...args) => { readCalls.push(['roadmapList', ...args]); return { items: [], total: 0 }; },
+    cancelRoadmapList: () => { readCalls.push(['cancelRoadmapList']); },
     ...readAnswers,
   };
   // The tests end sessions themselves, so expiry leaves the projection alone.

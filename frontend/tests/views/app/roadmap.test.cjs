@@ -267,6 +267,23 @@ test('a lane drawn again keeps focus on its count, and shows its list again only
   assert.equal(asked.length, 3);
 });
 
+test('a list closed while it loads stops its read, and a list that loaded stops none', async () => {
+  const cancelled = [];
+  let answer;
+  const t = boot('roadmap/p1?scale=months', { actions: true, reads: {
+    roadmapList: () => new Promise(resolve => { answer = resolve; }),
+    cancelRoadmapList: () => cancelled.push('list'),
+  } });
+  const count = lane(t.d, 't2').querySelector('.rt-count-done');
+  count.click();
+  count.click();
+  assert.deepEqual([t.d.getElementById('roadmap-list'), cancelled], [null, ['list']]);
+  count.click();
+  answer({ stale: false, items: [], total: 4 }); await tick();
+  count.click();
+  assert.deepEqual(cancelled, ['list']);
+});
+
 test('a count whose tasks the lanes hold lists them at once, and a list that fails to load says so', async () => {
   const { d } = boot('roadmap/p1?scale=months', { actions: true, reads: { roadmapList: async () => { throw new Error('offline'); } }, prepare: D => {
     // Sep 22 has one done task, which the lanes hold.

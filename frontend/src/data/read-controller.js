@@ -322,9 +322,17 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
    * @param {string} projectId @param {{track:string,epic?:string|null,kind:'done'|'plans'|'open',from?:string,to?:string}} query
    */
   async function roadmapList(projectId,query){
-    const list=await api.roadmapList(projectId,query);
-    return {items:list.items.map((/** @type {any} */ view)=>mapRoadmapMark(data,{...view,projectId})),total:list.total};
+    // One list reads at a time: a newer one, or closing it, cancels the one before.
+    return read('roadmap-list',JSON.stringify([projectId,query]),false,async token=>{
+      try{
+        const list=await api.roadmapList(projectId,query,{signal:token.signal});
+        if(!current(token))return {stale:true,items:[],total:0};
+        return {stale:false,items:list.items.map((/** @type {any} */ view)=>mapRoadmapMark(data,{...view,projectId})),total:list.total};
+      }catch(error){if(ignored(token,error))return {stale:true,items:[],total:0};throw error;}
+    });
   }
+  /** Cancel the list a mark of the Roadmap is reading, as when it closes. */
+  function cancelRoadmapList(){const token=slots.get('roadmap-list');if(token&&!token.done){slots.delete('roadmap-list');token.controller.abort();}}
 
   async function pool(projectId,scope,append=false,cursor,options={}){
     const key=`${projectId}:${scope}`,pageKey=`${projectId}:${toLegacyScope(scope)}`;
@@ -417,7 +425,7 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
   function moreEpicActivity(epicId){const page=data.epicPageInfo[epicId];return page?.activityCursor?epic(epicId,{tasks:false,activity:true,appendActivity:true}):Promise.resolve({done:true});}
 
   return Object.freeze({
-    adoptBoard,board,patchBoard,invalidateBoard(){boardDirty=true;},counts,moreBoard,roadmap,patchRoadmap,roadmapStructure,roadmapDays,roadmapList,pool,morePool,task,epic,moreEpicTasks,moreEpicActivity,
+    adoptBoard,board,patchBoard,invalidateBoard(){boardDirty=true;},counts,moreBoard,roadmap,patchRoadmap,roadmapStructure,roadmapDays,roadmapList,cancelRoadmapList,pool,morePool,task,epic,moreEpicTasks,moreEpicActivity,
     /** Settles when the reads someone started before this call have finished. */
     idle(){return Promise.allSettled([...foreground]).then(()=>{});},
     /** Drop every read, for a new session. */

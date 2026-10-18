@@ -58,6 +58,8 @@ export function installRoadmap(ctx) {
     roadmapDays(days){return reads.roadmapDays(context().projectId,days);},
     /** The tasks one of the Roadmap's marks counts. @param {{track:string,epic?:string|null,kind:'done'|'plans'|'open',from?:string,to?:string}} list */
     roadmapList(list){return reads.roadmapList(context().projectId,list);},
+    /** Stop reading the list of the Roadmap's mark that closed. */
+    cancelRoadmapList(){reads.cancelRoadmapList();},
     /** @param {{trackId:string,position:number,optimistic?:boolean}} move */
     async moveTrack(move){const item=track(move.trackId);return execute('track.reorder',{trackId:item.id,position:move.position},item,move.optimistic?null:'Track reordered',{skipNoChange:!!move.optimistic,paint:!move.optimistic});},
   };

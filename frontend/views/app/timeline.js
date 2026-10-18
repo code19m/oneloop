@@ -544,6 +544,8 @@ export function closeTimelineList({ focusAnchor = false } = {}) {
   // Forget the list before removing it: removing it moves focus, and that closes it again.
   const { el, anchor } = LIST;
   Object.assign(LIST, { el: null, anchor: null, pinned: false });
+  // A list still loading needs its tasks no more.
+  if (el.querySelector('.rt-pop-list[aria-busy="true"]')) runtime().cancelRoadmapList();
   UIMotion.remove(el);
   anchor?.setAttribute('aria-expanded', 'false');
   if (focusAnchor && anchor?.isConnected) anchor.focus({ preventScroll: true });
@@ -616,8 +618,8 @@ function openList(anchor, { pinned, focusFirst = false }) {
   if (held) { if (focusFirst) el.querySelector('.rt-pop-row')?.focus(); return; }
   const [track, epic] = anchor.dataset.section.split('/');
   const days = more ? {} : { from: anchor.dataset.from, to: anchor.dataset.to };
-  runtime().roadmapList({ track, epic: epic || null, kind: more ? 'open' : anchor.dataset.list, ...days }).then(({ items, total }) => {
-    if (LIST.el !== el) return;
+  runtime().roadmapList({ track, epic: epic || null, kind: more ? 'open' : anchor.dataset.list, ...days }).then(({ stale, items, total }) => {
+    if (LIST.el !== el || stale) return;
     // "+N" lists the work after the bars the lane draws.
     const shown = new Set((anchor.dataset.shown || '').split(' '));
     const list = more ? items.filter((task) => !shown.has(task.id)) : items;
