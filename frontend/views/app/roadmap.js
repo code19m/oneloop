@@ -866,8 +866,8 @@ function windowScroll(sc, { from, to }, ppd, { reserve, ahead }, now) {
   return Math.max(Math.round(ahead ? left - Math.max(48, spare * 0.3) : right - room + spare * 0.3), 0);
 }
 
-/** The reads that failed for these lanes, which a scroll doesn't ask for again. */
-const failedReads = new WeakMap();
+/** The reads asked for these lanes: one still loading, or one that failed, is not asked for again as the view scrolls. */
+const askedReads = new WeakMap();
 /** A page holds at least this many tasks; with less room left, the lanes are full. */
 const PAGE_MIN = 100;
 /** The days loaded beyond each edge of the view, at most, so a scroll seldom shows days still loading. */
@@ -891,10 +891,12 @@ function loadMore(view) {
   const { sc, model, ppd } = view, room = (sc.clientWidth - RAIL) / ppd, spare = Math.min(room / 2, SPARE_DAYS);
   const left = sc.scrollLeft / ppd, right = left + room, need = { from: left - spare, to: right + spare };
   const date = (day) => iso(new Date(+model.start + Math.floor(day) * DAY));
-  const failed = failedReads.get(lanes) ?? new Set();
+  const asked = askedReads.get(lanes) ?? new Map();
+  askedReads.set(lanes, asked);
   const ask = (key, load) => {
-    if (failed.has(key)) return;
-    load().catch((error) => { failed.add(key); failedReads.set(lanes, failed); report(error); });
+    if (asked.has(key)) return;
+    asked.set(key, 'loading');
+    load().then(() => asked.delete(key), (error) => { asked.set(key, 'failed'); report(error); });
   };
   const free = { done: lanes.limit - model.held.done, plans: lanes.limit - model.held.plans }, full = free.done < PAGE_MIN;
   // Full lanes keep the latest done work of their days, so they read up to the view's right edge, not past it.

@@ -429,6 +429,18 @@ test('a view that reaches past the last dated plan the lanes have asks for the n
   assert(t.reads.calls.some(([name, projectId, kind]) => name === 'moreRoadmap' && projectId === 'p1' && kind === 'plans'));
 });
 
+test('a page still loading is asked for once as the view scrolls, and says once when it fails', async () => {
+  let fail;
+  const pages = [];
+  const t = boot('roadmap/p1?scale=months', { prepare: heldFromSep10, reads: { moreRoadmap: (...args) => { pages.push(args); return new Promise((_, reject) => { fail = reject; }); } } });
+  await settle();
+  const sc = t.d.getElementById('rmScroll');
+  for (let step = 0; step < 3; step++) { sc.scrollLeft -= 20; sc.dispatchEvent(new t.w.Event('scroll')); await nextFrame(t.w); }
+  assert.equal(pages.length, 1);
+  fail(new Error('offline')); await settle();
+  assert.equal(t.d.querySelectorAll('#toast-region .toast').length, 1, t.d.getElementById('toast-region').innerHTML);
+});
+
 test('a view within the done work the lanes hold asks for no page', async () => {
   const t = boot('roadmap/p1?scale=months', { prepare: D => { D.roadmap.done = { cursor: 'older', reach: '2026-05-01' }; D.roadmap.window.from = '2026-05-01'; } });
   await settle();
