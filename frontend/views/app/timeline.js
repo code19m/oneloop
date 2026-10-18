@@ -16,7 +16,7 @@ import { EPIC_TIP, hideEpicTip, mountRoadmapTip } from './overlays.js';
  * and dated plans at their dates), then one row per task in progress. The
  * first row's middle lines up with the track's name.
  */
-export const ROW = 32;
+const ROW = 32;
 const PAD = 8, SECTION_GAP = 8;
 /** An epic's box: its padding around its work, left and right, and below its last row. */
 const BOX_PAD = 12, BOX_FOOT = 4;
@@ -48,7 +48,7 @@ function instantDay(ms) {
   return parts;
 }
 /** Day offsets from `start`: whole days for dates, fractions for times in the instance time zone. */
-export function dayScale(start) {
+function dayScale(start) {
   const base = +start;
   const ofDate = (date) => Math.round((d(date) - base) / DAY);
   const ofInstant = (ms) => { const { date, fraction } = instantDay(ms); return ofDate(date) + fraction; };
@@ -112,9 +112,10 @@ export function laneModels(start) {
       const own = { epic: null, items: [] };
       const boxes = all.filter((epic) => epic.trackId === track.id).sort((a, b) => d(a.start) - d(b.start) || a.order - b.order)
         .map((epic) => ({ epic, items: [], ...(epicDated(epic) ? { from: scale.ofDate(epic.start), to: scale.ofDate(epic.end) + 1 } : { from: scale.ofDate(epic.start) }) }));
+      const byEpic = new Map(boxes.map((box) => [box.epic.id, box]));
       for (const task of byTrack.get(track.id)) {
         const item = taskItem(task, scale, now);
-        if (item) (boxes.find((box) => box.epic.id === task.epicId) || own).items.push(item);
+        if (item) (byEpic.get(task.epicId) ?? own).items.push(item);
       }
       const counts = lanes?.trackCounts[track.id] ?? { planning: 0, progress: 0, review: 0, done: 0 };
       return {
@@ -290,7 +291,7 @@ const BLOCKED_SVG = `<svg class="rt-ring rt-ring-blocked" width="${RING}" height
 /** Late: the error icon, in the danger color, in place of the status icon or ring; so late never relies on color alone. */
 const lateIcon = (size) => `<svg class="rt-late-icon" width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M8 4.5v4.2" stroke="var(--surface-canvas)" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.4" r="1.05" fill="var(--surface-canvas)"/></svg>`;
 const navKey = (task) => `t:${task.id}`;
-export const statusIcon = (task) => isLate(task) ? `<span class="rt-icon rt-icon-late">${lateIcon(13)}</span>` : blockedOf(task) ? `<span class="rt-icon rt-icon-blocked">${I.blocked}</span>` : `<span class="rt-icon">${stIcon(task.state)}</span>`;
+const statusIcon = (task) => isLate(task) ? `<span class="rt-icon rt-icon-late">${lateIcon(13)}</span>` : blockedOf(task) ? `<span class="rt-icon rt-icon-blocked">${I.blocked}</span>` : `<span class="rt-icon">${stIcon(task.state)}</span>`;
 
 /** What a screen reader hears for a task on the timeline: the same facts as its card. */
 function taskLabel(task) {
@@ -525,6 +526,11 @@ function showCard(anchor) {
 }
 
 // ---------- the view's edges: hide what they would cut ----------
+/** Set an inline style unless it has the value already: edges are fitted on every frame of a scroll, and an unchanged value then costs no style work. */
+export function setStyle(el, property, value) {
+  if (el.style.getPropertyValue(property) !== value) el.style.setProperty(property, value);
+}
+
 /**
  * Text that the rail or the window's edge would cut is hidden, shortened or
  * moved instead. A bar's title moves onto its line at the left edge, and an
@@ -533,6 +539,7 @@ function showCard(anchor) {
 export function syncLaneEdges(sc, rail) {
   const from = sc.scrollLeft + 2, to = sc.scrollLeft + sc.clientWidth - rail - 2;
   const pairs = (value) => value.split(',').map(Number);
+
   for (const tag of sc.querySelectorAll('.rt-body [data-tag]')) {
     const [left, right, anchor = Infinity] = pairs(tag.dataset.tag);
     // A bar's title whose start the rail covers moves to the view's edge, over its line, while some of the
@@ -540,19 +547,19 @@ export function syncLaneEdges(sc, rail) {
     const least = Number(tag.dataset.least) || Infinity;
     const pin = Number(tag.dataset.pin) || 0, at = from + 6, room = pin - at;
     const shift = pin && left < from && room >= Math.min(right - left, least) ? at - left : 0;
-    if (pin) { tag.style.transform = shift ? `translateX(${Math.round(shift)}px)` : ''; tag.classList.toggle('rt-pinned', !!shift); }
+    if (pin) { setStyle(tag, 'transform', shift ? `translateX(${Math.round(shift)}px)` : ''); tag.classList.toggle('rt-pinned', !!shift); }
     // A title whose mark the rail covers would float alone: it hides with its mark.
     const orphan = !shift && anchor < from + 4;
     const cut = !shift && (left < from || right > to || orphan);
     const shorten = cut && !orphan && left >= from && to - left >= least;
     tag.dataset.width ??= tag.style.width;
-    tag.style.width = shorten ? `${Math.floor(to - left)}px` : shift && room < right - left ? `${Math.floor(room)}px` : tag.dataset.width;
+    setStyle(tag, 'width', shorten ? `${Math.floor(to - left)}px` : shift && room < right - left ? `${Math.floor(room)}px` : tag.dataset.width);
     tag.classList.toggle('rt-cut', cut && !shorten);
   }
   // "+N in progress" stays whole at the left edge, beside the titles that moved there.
   for (const more of sc.querySelectorAll('.rt-more')) {
     const shift = Math.max(0, from + 6 - Number(more.dataset.left));
-    more.style.transform = shift ? `translateX(${Math.round(shift)}px)` : '';
+    setStyle(more, 'transform', shift ? `translateX(${Math.round(shift)}px)` : '');
   }
   for (const box of sc.querySelectorAll('[data-epic-box]')) {
     const [left, right, full, compact] = pairs(box.dataset.epicBox), label = box.querySelector('.rt-epic-label');
@@ -570,7 +577,7 @@ export function syncLaneEdges(sc, rail) {
       const width = short ? compact - 20 : full;
       if (left + x + width > to) x = Math.max(from + 6 - left, to - width - left);
     }
-    box.style.setProperty('--head-x', `${Math.round(x)}px`);
+    setStyle(box, '--head-x', `${Math.round(x)}px`);
     if ((label.dataset.side || '') !== side) { if (side) label.dataset.side = side; else delete label.dataset.side; }
     label.classList.toggle('rt-epic-short', short || !!side);
     label.classList.toggle('rt-cut', left + x < from - 1 || left + x + (side || short ? compact : full) > to + 24);

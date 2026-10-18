@@ -22,7 +22,7 @@ import {
 import { announce } from './toasts.js';
 import {
   closeTimelineList, epicDated, epicStatus, focusTask, headFigure, isLate, laneBodyHtml, laneDates, laneEntry, laneFocus, laneModels,
-  layoutLane, mountLanes, numbers, roadmapLanes, roomAfterNow, syncLaneEdges, textWidth,
+  layoutLane, mountLanes, numbers, roadmapLanes, roomAfterNow, setStyle, syncLaneEdges, textWidth,
 } from './timeline.js';
 
 // ---------- roadmap geometry ----------
@@ -634,8 +634,8 @@ function placeCards(sc, from, to) {
     flag.classList.toggle('rt-card-end', place.form === 'end');
     flag.classList.toggle('rt-card-compact', place.form === 'compact');
     flag.classList.toggle('rt-card-edge', edge);
-    flag.style.left = `${Math.round(place.left)}px`;
-    flag.style.width = `${Math.round(place.width)}px`;
+    setStyle(flag, 'left', `${Math.round(place.left)}px`);
+    setStyle(flag, 'width', `${Math.round(place.width)}px`);
     flag.classList.toggle('rt-cut', !shown[index] && !edge);
   });
 }
@@ -659,7 +659,7 @@ function syncEdges(view) {
     const nextX = ((+next - start) / DAY) * ppd - sc.scrollLeft;
     const month = nextX < textWidth(name(day), '500 12px') + 32 ? name(next) : name(day);
     if (pin.textContent !== month) pin.textContent = month;
-    pin.style.left = `${sc.scrollLeft}px`;
+    setStyle(pin, 'left', `${sc.scrollLeft}px`);
     pinned = sc.scrollLeft + textWidth(month, '500 12px') + 24;
   }
   for (const label of sc.querySelectorAll('.rt-axis-dates [data-at]')) {
