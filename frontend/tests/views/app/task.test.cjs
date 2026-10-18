@@ -16,6 +16,15 @@ function block(t,mode,reason){t.A.openModal(mode,'BIR-079');const form=t.d.query
 const accept = (t, entities = []) => { t.commands.at(-1).resolve({ entities, events: [] }); return settle(); };
 const sent = t => t.commands.map(command => [command.operation, command.payload]);
 
+test('a task without an epic opens on its track, and its Epic says No epic', () => {
+ const t = bootApp({ route: 'task/BIR-500', prepare: D => {
+  D.tasks.push({ id: 'BIR-500', internalId: 'loose', projectId: 'p1', trackId: 't2', epicId: null, title: 'Loose task', desc: '', detailsLoaded: true, state: 'planning', assignees: [], created: Date.now(), revision: 1 });
+ } });
+ assert.equal(t.A.context().view, 'task');
+ assert.equal(t.d.querySelector('.tp-title').value, 'Loose task');
+ assert.equal(t.d.querySelector('#select-tpEpic .sel-label').textContent, 'No epic');
+});
+
 test('field saves show a quiet Saved status once accepted, and a block needs a reason', async () => {
  const t=taskPage(),task=t.D.tasks.find(x=>x.id==='BIR-079'),status=()=>t.d.querySelector('.task-save-status').textContent;
  t.A.updTask(task.id,'title','Changed title');await accept(t,[{entityType:'task',id:task.internalId,title:'Changed title',revision:2}]);assert.equal(status(),'Saved');assert.equal(t.notices.length,0);
