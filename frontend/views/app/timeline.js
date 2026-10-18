@@ -226,6 +226,37 @@ export function roomAfterNow(model, ahead) {
 }
 
 /**
+ * Marks of both kinds on one line, apart: where done work and dated plans
+ * would overlap, as a late plan on a day with done work does, they sit side
+ * by side around their days. Each takes its hit area, or its count's width.
+ */
+function spread(marks, gap = 2) {
+  const blocks = [];
+  for (const mark of marks.slice().sort((a, b) => a.x - b.x)) {
+    const width = Math.max(HIT, mark.box[1] - mark.box[0]);
+    // A block's left edge is where its marks want it on average: each mark's own left, less its place in the block.
+    let block = { marks: [mark], widths: [width], width, sum: mark.x - width / 2, n: 1 };
+    block.left = block.sum;
+    for (let last = blocks[blocks.length - 1]; last && last.left + last.width + gap > block.left; last = blocks[blocks.length - 1]) {
+      blocks.pop();
+      last.sum += block.sum - (last.width + gap) * block.n;
+      last.n += block.n; last.marks.push(...block.marks); last.widths.push(...block.widths);
+      last.width += gap + block.width; last.left = last.sum / last.n;
+      block = last;
+    }
+    blocks.push(block);
+  }
+  for (const block of blocks) {
+    let at = block.left;
+    block.marks.forEach((mark, index) => {
+      const shift = Math.round(at + block.widths[index] / 2 - mark.x);
+      if (shift) { mark.x += shift; mark.box = [mark.box[0] + shift, mark.box[1] + shift]; }
+      at += block.widths[index] + gap;
+    });
+  }
+}
+
+/**
  * A section's rows, the same in every lane: the line (done work as dots and
  * counts, dated plans as rings at their dates, titled where there is room),
  * then one row per task in progress, at most three, then "+N in progress",
@@ -239,6 +270,7 @@ function layoutSection(section, ppd, now) {
       ? { type: 'plannedCluster', row: 0, group, x: group.x, box: group.extent }
       : { type: 'planned', row: 0, item: group.items[0], x: group.x, box: group.extent });
   }
+  spread(marks);
   const line = marks.length > 0, first = line ? 1 : 0;
   // A dated plan's title, where it fits before the next mark on the line.
   const onLine = marks.slice().sort((a, b) => a.box[0] - b.box[0]);
@@ -337,7 +369,7 @@ function markHtml(laid, mark, focus) {
     return `<button type="button" class="${cls}" data-task="${esc(task.id)}" data-nav="${esc(navKey(task))}" ${tab(focus, navKey(task))} aria-label="${esc(taskLabel(task))}" style="left:${px(x - HIT / 2)};top:${px(y - HIT / 2)}">${face}${title}</button>`;
   }
   if (mark.type === 'doneCluster' || mark.type === 'plannedCluster') {
-    const { items, extent } = mark.group, ids = items.map((item) => item.task.id);
+    const { items } = mark.group, extent = mark.box, ids = items.map((item) => item.task.id);
     const key = `c:${ids[0]}`, done = mark.type === 'doneCluster', span = countSpan(items, done);
     const name = `${items.length} ${done ? 'done' : 'due'} · ${span}`, spoken = `${items.length} ${done ? 'done' : 'planned'} tasks, ${span}`;
     const tone = done ? '' : items.some((item) => item.late) ? ' rt-late' : items.some((item) => item.blocked) ? ' rt-blocked' : '';

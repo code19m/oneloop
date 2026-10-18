@@ -289,6 +289,17 @@ test('"+N in progress" counts the work the Roadmap doesn\'t load too, and its li
   assert.equal(lane(t.d, 't1').querySelector('.rt-more')?.textContent, '+4 in progress');
 });
 
+test('done work and a late plan on the same day stand apart on the line', () => {
+  // Two tasks were done on Sep 22; a plan due that day is late.
+  const t = boot('roadmap/p1?scale=months', { prepare: D => { D.tasks.find(task => task.internalId === 'bir-069').deadline = '2026-09-22'; } });
+  // A mark's middle: a count is 18 px tall, a mark's button 20.
+  const web = lane(t.d, 't2'), middle = el => parseFloat(el.style.top) + (el.matches('.rt-count') ? 9 : 10);
+  const line = [...web.querySelectorAll('.rt-mark,.rt-count')].filter(el => middle(el) === middle(web.querySelector('.rt-late.rt-planned')));
+  const boxes = line.map(el => [parseFloat(el.style.left), parseFloat(el.style.left) + (parseFloat(el.style.width) || 20), el.className]).sort((a, b) => a[0] - b[0]);
+  assert(boxes.some(([, , className]) => className.includes('rt-count-done')), 'the two done tasks merge into a count');
+  for (let index = 1; index < boxes.length; index++) assert(boxes[index - 1][1] <= boxes[index][0], JSON.stringify(boxes));
+});
+
 test('every task on the timeline is a button that speaks its card', () => {
   const { d, D } = boot();
   const task = D.tasks.find(item => item.id === 'BIR-064'), epic = D.epics.find(item => item.id === task.epicId);
