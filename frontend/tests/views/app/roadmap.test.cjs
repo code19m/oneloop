@@ -633,6 +633,22 @@ test('a day with one task the lanes don\'t hold yet shows a mark that says so, w
   assert.equal(dayReads(t).length, 2);
 });
 
+test('the view reads the task of every single-task day the lanes draw, also one at the edge of what they draw', async () => {
+  // A milestone far ahead gives the timeline room to scroll there, and the lanes hold those days.
+  const far = D => { D.milestones.push({ ...D.milestones[0], id: 'm-later', date: '2027-09-01' }); D.roadmap.window.to = '2027-12-31'; };
+  const probe = boot('roadmap/p1?scale=weeks', { prepare: far });
+  const start = Number(probe.d.getElementById('rmScroll').dataset.rangeStart), room = 1000 - RAIL;
+  // A view three thousand pixels on: the lanes draw to half a view after its right edge.
+  const left = probe.d.getElementById('rmScroll').scrollLeft + 3000, edge = left + room * 1.5;
+  const day = new Date(start + Math.floor((edge + 10) / 30) * 86400000).toISOString().slice(0, 10);
+  // A plan the lanes count there, whose ring they draw though its middle lies just past that edge.
+  const t = boot('roadmap/p1?scale=weeks', { prepare: D => { far(D); D.roadmap.days['t3/e7'] = { [day]: { done: 0, plans: 1, blocked: 0 } }; delete D.roadmap.marks['bir-077']; } });
+  await scrollBy(t, 0, left); await settle();
+  const ring = [...t.d.querySelectorAll('.rt-pending')].find(el => el.dataset.from === day);
+  assert(ring && parseFloat(ring.style.left) + 10 > edge, 'drawn, its middle past the edge');
+  assert(dayReads(t).some(read => read.marks && read.from <= day && day <= read.to), JSON.stringify(dayReads(t)));
+});
+
 test('once a read of days lands, the view reads what it still lacks without a scroll', async () => {
   let data;
   const asked = [];

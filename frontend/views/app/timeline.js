@@ -533,6 +533,8 @@ function markSpan(mark) {
   if (mark.type === 'more') return [mark.left, mark.left + mark.width];
   return [mark.box[0] - HIT, mark.box[1] + HIT + (mark.title ? 8 + mark.title : 0)];
 }
+/** Whether the lanes draw `mark` when they draw the pixels `shown`. */
+export const drawnIn = (mark, shown) => { const [from, to] = markSpan(mark); return to >= shown.from && from <= shown.to; };
 
 /**
  * A lane's timeline as its pieces, each one element with its key: each
@@ -556,7 +558,7 @@ export function lanePieces(lane, layout, ppd, now, focus, shown = { from: -Infin
       if (past > 0) pieces.push([`s:${key}`, `<span class="rt-spine" aria-hidden="true" style="left:${px(from)};width:${px(past)};top:${top}"></span>`]);
       if (ahead > 0) pieces.push([`a:${key}`, `<span class="rt-spine rt-spine-ahead" aria-hidden="true" style="left:${px(Math.max(from, nowX))};width:${px(ahead)};top:${top}"></span>`]);
     }
-    for (const mark of byPlace(laid.marks)) if (mark.key === focus || near(...markSpan(mark))) pieces.push([mark.key, markHtml(laid, mark)]);
+    for (const mark of byPlace(laid.marks)) if (mark.key === focus || drawnIn(mark, shown)) pieces.push([mark.key, markHtml(laid, mark)]);
   }
   return pieces;
 }

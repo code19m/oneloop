@@ -21,7 +21,7 @@ import {
 } from './overlays.js';
 import { announce } from './toasts.js';
 import {
-  closeTimelineList, epicDated, epicStatus, focusTask, headFigure, lanePieces, laneDates, laneEntry, laneFocus, laneModels, refocus,
+  closeTimelineList, drawnIn, epicDated, epicStatus, focusTask, headFigure, lanePieces, laneDates, laneEntry, laneFocus, laneModels, refocus,
   layoutLane, listAnchor, markApart, mountLanes, numbers, placeOfKey, roadmapLanes, roomAfterNow, setStyle, setTabStop, syncLaneEdges, textWidth,
 } from './timeline.js';
 
@@ -999,7 +999,7 @@ function loadMore(view) {
 function blankStretch(view, marked, apart) {
   const { drawn, sc } = view, middle = sc.scrollLeft + viewRoom(view) / 2;
   const singles = view.layout.lanes.flatMap((lane) => lane.sections).flatMap((laid) => laid.marks)
-    .filter((mark) => (mark.type === 'done' || mark.type === 'planned' || mark.group?.count === 1) && mark.x >= drawn.from && mark.x <= drawn.to)
+    .filter((mark) => (mark.type === 'done' || mark.type === 'planned' || mark.group?.count === 1) && drawnIn(mark, drawn))
     .map((mark) => ({ day: (mark.item ?? mark.group.items[0]).day, x: mark.x, blank: !mark.item?.task && !mark.group.items[0].task }));
   // Days read at this zoom, or a closer one, which draws more days on their own.
   const clear = (from, to) => !marked.some((range) => range.apart <= apart * 1.001 && range.from <= to && range.to >= from);
