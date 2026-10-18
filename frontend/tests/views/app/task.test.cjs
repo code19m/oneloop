@@ -456,6 +456,21 @@ test('a title conflict keeps newer typing elsewhere and shows the title as typed
   assert.match(t.d.querySelector('[data-recovery-conflict]').textContent, /Latest saved value: Their title/);
 });
 
+test('a track pick that meets a change made elsewhere stays in Track beside the latest track, and the note names the epic it left', async () => {
+  // Someone else put the task in another epic of its track meanwhile.
+  const t = conflictPage({ epicId: 'e3' });
+  pick(t, 'tpTrack', 'Mobile experience');
+  t.commands[0].reject(conflict(t));
+  await waitFor(() => promptButton(t, 'Keep my changes'), 'the conflict prompt appears');
+  assert.equal(shown(t, 'tpTrack'), 'Mobile experience', 'Track shows the pick');
+  assert.equal(shown(t, 'tpEpic'), 'Search relevance', 'Epic shows the latest saved epic');
+  assert.match(t.d.querySelector('[data-recovery-conflict]').textContent, /Latest saved value: Backend & API/);
+  promptButton(t, 'Keep my changes').click();
+  await waitFor(() => t.commands.length === 2, 'the pick is sent again');
+  t.commands[1].resolve({ entities: [{ entityType: 'task', id: t.task.internalId, trackId: 't3', epicId: null, revision: 3 }], events: [] }); await settle();
+  assert.equal(t.d.getElementById('tpEpic-note').textContent, 'Epic cleared: “Search relevance” is on Backend & API, not Mobile experience.');
+});
+
 test('Use latest on a description shows the saved description, not the typed one', async () => {
   const t = conflictPage({ desc: 'Their description' }), description = t.d.getElementById('task-description');
   description.focus(); description.value = 'My description'; description.blur(); t.A.updTask(t.task.id, 'desc', description.value);

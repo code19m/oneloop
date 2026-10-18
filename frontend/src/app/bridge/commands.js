@@ -88,19 +88,24 @@ export function createCommands(ctx) {
   }
 
   /** The one field a save changes, or null when it changes several. */
-  function conflictField(payload){
+  function conflictField(operation,payload){
     const ignored=new Set(['taskId','epicId','trackId','milestoneId','poolItemId','blockId','itemId','projectId','userId','id','mentions']);
-    const keys=Object.keys(payload).filter((key)=>!ignored.has(key));
+    // A task's track and epic are its own fields. An epic picked on another track brings its track along, and names the pick.
+    const own=operation==='task.update'?['epicId' in payload?'epicId':'trackId']:[];
+    const keys=Object.keys(payload).filter((key)=>own.includes(key)||!ignored.has(key));
     return keys.length===1?keys[0]:null;
   }
 
   /** The value of the one field a save changes, in `item`: the payload, or the entity as the client keeps it. */
   function conflictValue(operation,payload,item){
-    const field=conflictField(payload);
+    const field=conflictField(operation,payload);
     if(!field)return undefined;
-    if(item===payload)return payload[field];
     const entityType=operation.startsWith('task.block')?'taskBlock':operation.startsWith('pool.')?'poolItem':operation.split('.')[0];
-    return item?.[clientField(entityType,field)];
+    const value=item===payload?payload[field]:item?.[clientField(entityType,field)];
+    // A track or an epic reads as its select names it.
+    if(field==='trackId')return track(value)?.name??value;
+    if(field==='epicId')return value?epic(value)?.title??value:'No epic';
+    return value;
   }
 
   /** The control of a dialog's field, in the dialog as it is drawn now. */
@@ -178,7 +183,7 @@ export function createCommands(ctx) {
         // drawing the dialog again, or as the save's `onLatest` shows them.
         // Until then, it stays on the revision it was opened at, so saving it
         // again still meets the other change.
-        const dialog=!options.coalesce&&!!options.form?.closest('.modal'),showsLatest=dialog&&!options.onLatest,field=conflictField(payload);
+        const dialog=!options.coalesce&&!!options.form?.closest('.modal'),showsLatest=dialog&&!options.onLatest,field=conflictField(operation,payload);
         // A picker keeps its value in a hidden input, which can't show the
         // saved value by itself; the whole dialog is drawn again instead.
         const control=showsLatest&&field?dialogControl(options.form,field):null,inPlace=!!control&&control.type!=='hidden';
