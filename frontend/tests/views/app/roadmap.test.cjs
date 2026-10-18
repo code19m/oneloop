@@ -274,6 +274,21 @@ test('a section shows three bars at most, the late and blocked first, then "+N i
   assert.equal(lane(review.d, 't2').querySelector('.rt-more').textContent, '+1 in review');
 });
 
+test('"+N in progress" counts the work the Roadmap doesn\'t load too, and its list says the Board has it', () => {
+  const t = boot('roadmap/p1?scale=months', { actions: true, prepare: D => {
+    D.roadmap.sections['t2/e5'].progress = 9; D.roadmap.trackCounts.t2.progress = 9;
+    D.roadmap.sections['t1/'] = { planning: 0, progress: 4, review: 0, done: 0 }; D.roadmap.trackCounts.t1.progress = 4;
+  } });
+  // Web Apps' epic has 9 in progress; two show as bars, beside one in review.
+  const more = lane(t.d, 't2').querySelector('.rt-more');
+  assert.deepEqual([more.textContent, more.getAttribute('aria-label')], ['+7 in progress', '7 more in progress']);
+  more.click();
+  const list = t.d.getElementById('roadmap-list');
+  assert.deepEqual([list.querySelector('.rt-pop-head').textContent, list.querySelectorAll('.rt-pop-row').length, list.querySelector('.rt-pop-note').textContent], ['7 more in progress', 0, 'All 7 on the Board']);
+  // Backend & API's own work has none loaded, and still says how much there is.
+  assert.equal(lane(t.d, 't1').querySelector('.rt-more')?.textContent, '+4 in progress');
+});
+
 test('every task on the timeline is a button that speaks its card', () => {
   const { d, D } = boot();
   const task = D.tasks.find(item => item.id === 'BIR-064'), epic = D.epics.find(item => item.id === task.epicId);

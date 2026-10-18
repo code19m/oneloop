@@ -558,6 +558,8 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .rt-pop-row:hover, .rt-pop-row:focus-visible { background: var(--fill-hover); color: var(--ink); }
 .rt-pop-row:focus-visible { outline-offset: -2px; }
 .rt-pop-row .tid { width: auto; min-width: 56px; }
+/* What a list counts but the Roadmap doesn't load. */
+.rt-pop-note { padding: 6px 8px; font-size: var(--text-xs); color: var(--ink-faint); }
 .rt-pop-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rt-pop-when { flex-shrink: 0; min-width: 56px; font-size: var(--text-xs); text-align: right; color: var(--ink-faint); }
 .rt-pop-who { flex-shrink: 0; width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); color: var(--ink-faint); }

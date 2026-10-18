@@ -4,6 +4,7 @@
    keys. roadmap.js owns the page, the axis and the zoom. */
 
 import { UIMotion } from '../../src/app/motion.js';
+import { sectionKey } from '../../src/data/projection-store.js';
 import {
   DAY, I, STATUS, UIAction, d, esc, formatInstant, humanShort, setHTML, stIcon, today,
 } from './format.js';
@@ -96,28 +97,32 @@ export function laneDates() {
   return min && { min: d(min), max: d(max) };
 }
 
+const NO_TASKS = { planning: 0, progress: 0, review: 0, done: 0 };
+
 /**
  * Each track's lane: its own work (tasks without an epic), then its epics by
  * start date, with their tasks. A track's head counts its work in progress
- * and its plans, dated or not, as the Board's columns do.
+ * and its plans, dated or not, as the Board's columns do; each section knows
+ * its own counts, which hold the tasks the Roadmap doesn't load too.
  */
 export function laneModels(start) {
   const scale = dayScale(start), now = scale.ofInstant(instanceNow()), lanes = roadmapLanes();
   const byTrack = new Map(tracks().map((track) => [track.id, []]));
   for (const task of laneTaskList()) byTrack.get(task.trackId).push(task);
   const all = epics();
+  const section = (track, epic) => ({ epic, items: [], key: sectionKey(track.id, epic?.id), counts: lanes?.sections[sectionKey(track.id, epic?.id)] ?? NO_TASKS });
   return {
     now, ready: !!lanes,
     lanes: tracks().map((track) => {
-      const own = { epic: null, items: [] };
+      const own = section(track, null);
       const boxes = all.filter((epic) => epic.trackId === track.id).sort((a, b) => d(a.start) - d(b.start) || a.order - b.order)
-        .map((epic) => ({ epic, items: [], ...(epicDated(epic) ? { from: scale.ofDate(epic.start), to: scale.ofDate(epic.end) + 1 } : { from: scale.ofDate(epic.start) }) }));
+        .map((epic) => ({ ...section(track, epic), ...(epicDated(epic) ? { from: scale.ofDate(epic.start), to: scale.ofDate(epic.end) + 1 } : { from: scale.ofDate(epic.start) }) }));
       const byEpic = new Map(boxes.map((box) => [box.epic.id, box]));
       for (const task of byTrack.get(track.id)) {
         const item = taskItem(task, scale, now);
         if (item) (byEpic.get(task.epicId) ?? own).items.push(item);
       }
-      const counts = lanes?.trackCounts[track.id] ?? { planning: 0, progress: 0, review: 0, done: 0 };
+      const counts = lanes?.trackCounts[track.id] ?? NO_TASKS;
       return {
         track, sections: [own, ...boxes],
         flight: counts.progress + counts.review, planned: counts.planning,
@@ -204,8 +209,10 @@ function epicHeadWidth(epic) {
   return { short, full: short + (dates ? textWidth(dates, SMALL_FONT) + 8 : 0) + (epic.total ? 40 : 0), dates, progress };
 }
 
-/** Whether an epic shows with nothing of its own on the timeline: while it has dates, or is not done. */
-const epicShown = (section) => section.items.length || epicDated(section.epic) || section.epic.state !== 'done';
+/** How many tasks a section has in progress and in review, loaded or not. */
+const openCount = (section) => section.counts.progress + section.counts.review;
+/** Whether a section shows: its own work while it has something to draw; an epic also while it has dates, or is not done. */
+const sectionShown = (section) => section.items.length || openCount(section) || (section.epic && (epicDated(section.epic) || section.epic.state !== 'done'));
 
 /**
  * The room the view keeps after now: the widest header of an epic with
@@ -213,7 +220,7 @@ const epicShown = (section) => section.items.length || epicDated(section.epic) |
  * the work in progress ends clear of the edge.
  */
 export function roomAfterNow(model, ahead) {
-  const boxes = model.lanes.flatMap((lane) => lane.sections).filter((section) => section.epic && !epicDated(section.epic) && !section.items.length && epicShown(section))
+  const boxes = model.lanes.flatMap((lane) => lane.sections).filter((section) => section.epic && !epicDated(section.epic) && !section.items.length && sectionShown(section))
     .map((section) => EPIC_GAP + 2 * BOX_PAD + epicHeadWidth(section.epic).full + 24);
   return Math.max(ahead ? 0 : 96, ...boxes);
 }
@@ -221,7 +228,8 @@ export function roomAfterNow(model, ahead) {
 /**
  * A section's rows, the same in every lane: the line (done work as dots and
  * counts, dated plans as rings at their dates, titled where there is room),
- * then one row per task in progress, at most three, then "+N in progress".
+ * then one row per task in progress, at most three, then "+N in progress",
+ * which counts the tasks the Roadmap doesn't load too.
  */
 function layoutSection(section, ppd, now) {
   const nowX = now * ppd, marks = [];
@@ -244,10 +252,16 @@ function layoutSection(section, ppd, now) {
   const ranked = section.items.filter((item) => item.kind === 'flight').sort(byUrgency);
   const bars = ranked.slice(0, MAX_BARS).sort((a, b) => a.from - b.from || a.task.order - b.task.order), hidden = ranked.slice(MAX_BARS);
   bars.forEach((item, index) => marks.push({ type: 'bar', row: first + index, item, x: Math.round(item.from * ppd), ...barGeometry(item, ppd) }));
-  if (hidden.length) {
-    const label = `+${hidden.length} in ${hidden.every((item) => item.task.state === 'review') ? 'review' : 'progress'}`;
-    const left = Math.min(...marks.filter((mark) => mark.type === 'bar').map((mark) => mark.left - mark.lead - 8));
-    marks.push({ type: 'more', row: first + bars.length, items: hidden, x: left, left, width: textWidth(label, SMALL_FONT) + 4, label });
+  // Past the most the Roadmap loads, the section's counts know how many more there are.
+  const shown = (state) => bars.filter((item) => item.task.state === state).length;
+  const more = (state) => Math.max(hidden.filter((item) => item.task.state === state).length, section.counts[state] - shown(state));
+  const count = more('progress') + more('review');
+  if (count) {
+    const label = `+${count} in ${more('progress') ? 'progress' : 'review'}`, width = textWidth(label, SMALL_FONT) + 4;
+    // Beside the titles of the bars, or, with none loaded, just before now.
+    const leads = marks.filter((mark) => mark.type === 'bar').map((mark) => mark.left - mark.lead - 8);
+    const left = leads.length ? Math.min(...leads) : Math.round(nowX - width - 8);
+    marks.push({ type: 'more', row: first + bars.length, items: hidden, count, key: `f:${section.key}`, x: left, left, width, label });
   }
   const rows = Math.max(first, ...marks.map((mark) => mark.row + 1));
   // The line joins its marks, solid before now and dotted after it; a single mark needs none.
@@ -274,7 +288,7 @@ export function layoutLane(lane, ppd, now) {
   let top = PAD;
   const sections = [];
   for (const section of lane.sections) {
-    if (section.epic ? !epicShown(section) : !section.items.length) continue;
+    if (!sectionShown(section)) continue;
     const laid = layoutSection(section, ppd, now);
     const head = section.epic ? ROW : 0, height = head + Math.max(laid.rows, section.epic ? 0 : 1) * ROW + (section.epic ? BOX_FOOT : 0);
     if (sections.length) top += SECTION_GAP;
@@ -330,8 +344,8 @@ function markHtml(laid, mark, focus) {
     return `<button type="button" class="rt-count ${done ? 'rt-count-done' : 'rt-count-planned'}${tone}${boxed}" data-cluster="${esc(ids.join(' '))}" data-span="${esc(name)}" data-nav="${esc(key)}" ${tab(focus, key)} aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(spoken)}" style="left:${px(extent[0])};top:${px(y - 9)};width:${px(extent[1] - extent[0])}">${items.length}</button>`;
   }
   if (mark.type === 'more') {
-    const ids = mark.items.map((item) => item.task.id), key = `f:${ids[0]}`;
-    return `<button type="button" class="rt-more${boxed}" data-more="${esc(ids.join(' '))}" data-span="${esc(mark.label)}" data-left="${esc(numbers(mark.left))}" data-nav="${esc(key)}" ${tab(focus, key)} aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(`${mark.items.length} more in progress`)}" style="left:${px(mark.left)};top:${px(y - 10)}">${esc(mark.label)}</button>`;
+    const ids = mark.items.map((item) => item.task.id), key = mark.key;
+    return `<button type="button" class="rt-more${boxed}" data-more="${esc(ids.join(' '))}" data-count="${esc(String(mark.count))}" data-span="${esc(mark.label)}" data-left="${esc(numbers(mark.left))}" data-nav="${esc(key)}" ${tab(focus, key)} aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(`${mark.count} more in progress`)}" style="left:${px(mark.left)};top:${px(y - 10)}">${esc(mark.label)}</button>`;
   }
   // A bar: its icon and title lead a thin line; a firm end at its deadline (red past it when late), or a fade at now without one.
   const { item, left, width, solid, slip, fade, lead } = mark, task = item.task;
@@ -366,7 +380,7 @@ function laneOrder(layout) {
   return keys;
 }
 const markItems = (mark) => mark.group ? mark.group.items : mark.items ? mark.items : [mark.item];
-const markKey = (mark) => mark.type === 'more' ? `f:${mark.items[0].task.id}` : mark.group && mark.group.items.length > 1 ? `c:${mark.group.items[0].task.id}` : navKey(markItems(mark)[0].task);
+const markKey = (mark) => mark.type === 'more' ? mark.key : mark.group && mark.group.items.length > 1 ? `c:${mark.group.items[0].task.id}` : navKey(markItems(mark)[0].task);
 
 /**
  * The key of the element that shows `key` at this zoom: the same task or
@@ -466,17 +480,20 @@ function openList(anchor, { pinned, focusFirst = false }) {
   }
   closeTimelineList();
   hideEpicTip();
+  const more = anchor.dataset.more !== undefined;
   const list = (anchor.dataset.cluster || anchor.dataset.more).split(' ').map(taskById).filter(Boolean);
-  if (!list.length) return;
-  const kind = anchor.dataset.more ? 'flight' : list[0].state === 'done' ? 'done' : 'planned';
+  // "+N in progress" can count more tasks than the Roadmap loads: the Board has them all.
+  const count = more ? Number(anchor.dataset.count) || list.length : list.length, unlisted = count - list.length;
+  if (!count) return;
+  const kind = more ? 'flight' : list[0].state === 'done' ? 'done' : 'planned';
   if (kind === 'done') list.sort((a, b) => b.completedAt - a.completedAt);
-  const title = anchor.dataset.more ? `${list.length} more in progress` : anchor.dataset.span;
+  const title = more ? `${count} more in progress` : anchor.dataset.span;
   const el = document.createElement('div');
   el.className = 'epic-tooltip rt-pop';
   el.id = 'roadmap-list';
   el.setAttribute('role', 'dialog');
   el.setAttribute('aria-label', title);
-  setHTML(el, `<div class="rt-pop-head">${esc(title)}</div><ul class="rt-pop-list">${listRows(list, kind)}</ul>`);
+  setHTML(el, `<div class="rt-pop-head">${esc(title)}</div><ul class="rt-pop-list">${listRows(list, kind)}${unlisted > 0 ? `<li class="rt-pop-note">${esc(`${list.length ? `${unlisted} more` : `All ${unlisted}`} on the Board`)}</li>` : ''}</ul>`);
   document.body.append(el);
   Object.assign(LIST, { el, anchor, pinned });
   anchor.setAttribute('aria-expanded', 'true');
