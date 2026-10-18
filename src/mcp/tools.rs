@@ -125,7 +125,7 @@ pub(super) struct SearchTasksInput {
     /// Filter to these track IDs; empty means all tracks.
     pub track_ids: Vec<String>,
     #[serde(default)]
-    /// Filter to these epic IDs; empty means all epics.
+    /// Filter to these epic IDs, and `none` for tasks without an epic; empty means all epics.
     pub epic_ids: Vec<String>,
     #[serde(default)]
     /// Filter to these assignee user IDs.

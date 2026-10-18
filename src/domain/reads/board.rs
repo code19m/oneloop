@@ -75,18 +75,32 @@ pub(super) fn board_page_with_total(
                 .map_err(|error| AppError::internal(error.to_string()))?
                 .into(),
         );
-        conditions.push(format!("EXISTS(SELECT 1 FROM epics e WHERE e.id=t.epic_id AND e.track_id IN (SELECT value FROM json_each(?{})))",values.len()));
-    }
-    if !filter.epic_ids.is_empty() {
-        values.push(
-            serde_json::to_string(&filter.epic_ids)
-                .map_err(|error| AppError::internal(error.to_string()))?
-                .into(),
-        );
         conditions.push(format!(
-            "t.epic_id IN (SELECT value FROM json_each(?{}))",
+            "t.track_id IN (SELECT value FROM json_each(?{}))",
             values.len()
         ));
+    }
+    if !filter.epic_ids.is_empty() {
+        let (none, epic_ids): (Vec<_>, Vec<_>) = filter
+            .epic_ids
+            .iter()
+            .partition(|id| id.as_str() == NO_EPIC);
+        let mut epics = Vec::new();
+        if !epic_ids.is_empty() {
+            values.push(
+                serde_json::to_string(&epic_ids)
+                    .map_err(|error| AppError::internal(error.to_string()))?
+                    .into(),
+            );
+            epics.push(format!(
+                "t.epic_id IN (SELECT value FROM json_each(?{}))",
+                values.len()
+            ));
+        }
+        if !none.is_empty() {
+            epics.push("t.epic_id IS NULL".to_owned());
+        }
+        conditions.push(format!("({})", epics.join(" OR ")));
     }
     let mut assigned = Vec::new();
     if !filter.assignee_ids.is_empty() {
@@ -393,13 +407,14 @@ pub(super) fn task_views(
     let encoded =
         serde_json::to_string(ids).map_err(|error| AppError::internal(error.to_string()))?;
     let mut statement=connection.prepare_cached("SELECT id,project_id,epic_id,task_number,task_key,title,CASE WHEN ?2 THEN description \
-                     ELSE NULL END,status,position,deadline,created_at,updated_at,revision,completed_at,completion_order,checklist_version FROM tasks WHERE id \
-                     IN (SELECT value FROM json_each(?1)) AND deleted_at IS NULL")?;
+                     ELSE NULL END,status,position,deadline,created_at,updated_at,revision,completed_at,completion_order,checklist_version,\
+                     track_id,started_at FROM tasks WHERE id IN (SELECT value FROM json_each(?1)) AND deleted_at IS NULL")?;
     let mut tasks = statement
         .query_map(params![encoded, details], |r| {
             Ok(TaskView {
                 id: r.get(0)?,
                 project_id: r.get(1)?,
+                track_id: r.get(16)?,
                 epic_id: r.get(2)?,
                 task_number: r.get(3)?,
                 task_key: r.get(4)?,
@@ -410,6 +425,7 @@ pub(super) fn task_views(
                 deadline: r.get(9)?,
                 created_at: r.get(10)?,
                 updated_at: r.get(11)?,
+                started_at: r.get(17)?,
                 // Only a task in Done has a completion time to show.
                 completed_at: if r.get::<_, String>(7)? == "done" {
                     r.get(13)?

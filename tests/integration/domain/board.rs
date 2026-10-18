@@ -182,6 +182,50 @@ async fn http_board_read_parses_multi_filters_and_blocked_across_the_dataset() {
 }
 
 #[tokio::test]
+async fn the_board_filters_by_each_tasks_own_track_and_finds_tasks_without_an_epic() {
+    let f = fixture().await;
+    f.db.transaction(|tx| {
+        tx.execute_batch("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('side','p1','Side',1,1,1);
+            INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES
+                ('in-epic','p1','tr1','e1',1,'ONE-001','In an epic','planning',0,1,1),
+                ('loose','p1','side',NULL,2,'ONE-002','No epic','planning',1024,1,1);")?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let planning = async |track_ids: &[&str], epic_ids: &[&str]| {
+        let mut query = board_query("planning", None);
+        query.filter.track_ids = track_ids.iter().map(|id| id.to_string()).collect();
+        query.filter.epic_ids = epic_ids.iter().map(|id| id.to_string()).collect();
+        let page = f.service.board_page(&f.member, query).await.unwrap();
+        let ids = page
+            .items
+            .iter()
+            .map(|task| task.id.clone())
+            .collect::<Vec<_>>();
+        (ids, page.total)
+    };
+    assert_eq!(
+        planning(&["side"], &[]).await,
+        (vec!["loose".to_owned()], 1)
+    );
+    assert_eq!(
+        planning(&[], &["none"]).await,
+        (vec!["loose".to_owned()], 1)
+    );
+    assert_eq!(
+        planning(&[], &["e1", "none"]).await,
+        (vec!["in-epic".to_owned(), "loose".to_owned()], 2)
+    );
+    assert_eq!(planning(&["tr1"], &["none"]).await, (Vec::new(), 0));
+    let loose = f.service.task(&f.member, "loose".into()).await.unwrap();
+    assert_eq!(
+        (loose.track_id.as_str(), loose.epic_id, loose.started_at),
+        ("side", None, None)
+    );
+}
+
+#[tokio::test]
 async fn a_bootstrap_with_board_filters_has_the_pages_that_the_board_read_has_for_them() {
     let f = fixture().await;
     let now = now();

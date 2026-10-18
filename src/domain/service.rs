@@ -346,7 +346,8 @@ enum Entity {
     Track(TrackView),
     Epic(EpicView),
     Milestone(MilestoneView),
-    Task(TaskView),
+    // A task is much larger than the others.
+    Task(Box<TaskView>),
     ChecklistItem(ChecklistItemView),
     PoolItem(PoolItemView),
 }
@@ -359,7 +360,7 @@ impl Entity {
 }
 
 fn task_entity(tx: &Transaction<'_>, id: &str) -> AppResult<Value> {
-    Entity::Task(super::reads::task_view(tx, id)?).value()
+    Entity::Task(Box::new(super::reads::task_view(tx, id)?)).value()
 }
 
 /// What a command returns for a record it deleted.

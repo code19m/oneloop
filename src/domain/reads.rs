@@ -49,6 +49,9 @@ pub struct BootstrapQuery {
 /// The size of a page of tasks or Pool items, and the most one may hold.
 const PAGE_SIZE: usize = 50;
 
+/// What `epic_ids` names for the tasks without an epic.
+const NO_EPIC: &str = "none";
+
 /// Which tasks a Board read shows, and the order of its Done column.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +59,7 @@ pub struct TaskFilter {
     /// Text in the task key or title, in any case.
     pub search: Option<String>,
     pub track_ids: Vec<String>,
+    /// Epics, with `none` for the tasks without an epic.
     pub epic_ids: Vec<String>,
     /// With `no_assignee`, tasks of any of these people or of nobody.
     pub assignee_ids: Vec<String>,
