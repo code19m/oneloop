@@ -470,6 +470,15 @@ test('epic completion describes singular and plural open tasks and closes the dr
   }
 });
 
+test('marking an epic done counts its open tasks from its counts, not only the tasks the page holds',()=>{
+  let dialog;
+  const state=fixture({view:'roadmap',projectId:'p1'},{app:{confirm:value=>{dialog=value;}}});
+  state.data.epics.push({id:'e1',projectId:'p1',revision:1,counted:true,total:5,done:2});
+  state.data.tasks.push({epicId:'e1',state:'planning'});
+  state.app.closeEpic('e1');
+  assert.equal(dialog.text,'3 open tasks stay where they are.');
+});
+
 /** The Edit user dialog, with its name typed. */
 const userDialog=name=>form(`<input name="name" value="${name}"><input type="checkbox" name="admin"><input type="checkbox" name="active" checked>`,{dialog:true});
 
@@ -873,6 +882,7 @@ test('deleting an epic says its tasks stay on its track, reads them again and of
   state.data.tracks.push({id:'t1',projectId:'p1',name:'Backend'});
   state.data.epics.push({id:'e1',projectId:'p1',trackId:'t1',title:'Payments',revision:1});
   state.app.deleteEpic('e1');
+  // Without its counts, the epic may have tasks.
   assert.equal(confirmation.text,'“Payments” will be deleted. Its tasks stay on Backend without an epic. You can undo this right after.');
   confirmation.confirm();
   await waitFor(()=>state.toasts.length);
@@ -883,6 +893,31 @@ test('deleting an epic says its tasks stay on its track, reads them again and of
   assert.deepEqual(commands,[['epic.delete',{id:'e1'},1],['epic.restore',{id:'e1'},2]]);
   assert.deepEqual(state.toasts.at(-1),['Epic restored']);
   assert.equal(reloads,2,'the tasks the epic left, and took back, are read again');
+});
+
+test('deleting an epic names how many tasks stay on its track, and says plainly that it goes when it has none',()=>{
+  let confirmation;
+  const state=fixture({view:'roadmap',projectId:'p1'},{app:{confirm(options){confirmation=options;}}});
+  state.data.tracks.push({id:'t1',projectId:'p1',name:'Backend'});
+  for(const [total,text] of [[3,'“Payments” will be deleted. Its 3 tasks stay on Backend without an epic. You can undo this right after.'],[1,'“Payments” will be deleted. Its task stays on Backend without an epic. You can undo this right after.'],[0,'“Payments” will be deleted. You can undo this right after.']]){
+    state.data.epics.splice(0,state.data.epics.length,{id:'e1',projectId:'p1',trackId:'t1',title:'Payments',revision:1,counted:true,total,done:0});
+    state.app.deleteEpic('e1');assert.equal(confirmation.text,text);
+  }
+});
+
+test('deleting a track that has tasks or epics says what to move first and deletes nothing; an empty one asks to confirm',()=>{
+  const blocked=[],sent=[];let confirmation;
+  const state=fixture({view:'roadmap',projectId:'p1'},{gateway:{execute:async(operation)=>{sent.push(operation);return {entities:[],events:[]};}},app:{confirm(options){confirmation=options;},showBlocked:(title,text)=>blocked.push([title,text])}});
+  state.data.tracks.push({id:'t1',projectId:'p1',name:'Design',revision:1},{id:'t2',projectId:'p1',name:'Empty',revision:1});
+  state.data.epics.push({id:'e1',projectId:'p1',trackId:'t1'});
+  state.data.roadmap={projectId:'p1',taskIds:[],trackCounts:{t1:{planning:15,progress:3,review:1,done:3}},overdue:0,plans:{cursor:null,depth:1},done:{cursor:null,depth:1}};
+  state.app.deleteTrack('t1');
+  // The server refuses with the same words when the track gained work meanwhile.
+  assert.deepEqual(blocked,[['“Design” isn’t empty','Move or delete its 22 tasks and 1 epic first.']]);
+  assert.equal(confirmation,undefined);
+  state.app.deleteTrack('t2');
+  assert.equal(confirmation.text,'“Empty” will be deleted.');
+  assert.deepEqual(sent,[]);
 });
 
 test('an epic moved to another track reads its tasks again, and an epic renamed does not',async()=>{

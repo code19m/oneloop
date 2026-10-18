@@ -657,6 +657,14 @@ test('the epic drawer names its status, gives its dates, and offers New task to 
   assert.equal(viewer.d.querySelector('.peek-actions .access-note').textContent, 'Read only');
 });
 
+test('Edit epic says that its tasks move with it to another track', () => {
+  const t = boot();
+  t.A.openModal('epic', 'e6');
+  assert.equal(t.d.querySelector('.modal .field .hint').textContent, 'Its 34 tasks move with it to another track.');
+  t.A.closeOverlays(); t.A.openModal('epic', 'e11');
+  assert.equal(t.d.querySelector('.modal .field .hint'), null, 'an epic without tasks says nothing');
+});
+
 // ---------- moving tracks ----------
 
 /** The tracks in the order the Roadmap shows them. */
