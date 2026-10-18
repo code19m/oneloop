@@ -248,11 +248,8 @@ pub(super) fn create_epic(
             "cannot be before startDate",
         ));
     }
-    let position: i64 = tx.query_row(
-        "SELECT COALESCE(MAX(position),-1)+1 FROM epics WHERE track_id=?1 AND deleted_at IS NULL",
-        [&input.track_id],
-        |row| row.get(0),
-    )?;
+    let position: i64 =
+        tx.query_row(NEXT_EPIC_POSITION_SQL, [&input.track_id], |row| row.get(0))?;
     let id = Uuid::now_v7().to_string();
     tx.execute(
         INSERT_EPIC_SQL,
@@ -364,7 +361,7 @@ pub(super) fn update_epic(
     }
     let mut position = before.position;
     if track_id != before.track_id {
-        position=tx.query_row("SELECT COALESCE(MAX(position),-1)+1 FROM epics WHERE track_id=?1 AND deleted_at IS NULL",[&track_id],|row|row.get(0))?;
+        position = tx.query_row(NEXT_EPIC_POSITION_SQL, [&track_id], |row| row.get(0))?;
     }
     if track_id == before.track_id
         && title == before.title
@@ -662,11 +659,7 @@ pub(super) fn restore_epic(
         |row| row.get(0),
     )?;
     let position: i64 = if taken {
-        tx.query_row(
-            "SELECT COALESCE(MAX(position),-1)+1 FROM epics WHERE track_id=?1 AND deleted_at IS NULL",
-            [&track_id],
-            |row| row.get(0),
-        )?
+        tx.query_row(NEXT_EPIC_POSITION_SQL, [&track_id], |row| row.get(0))?
     } else {
         position
     };

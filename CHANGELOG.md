@@ -55,7 +55,6 @@ All notable changes to oneloop are recorded here. The format follows
 - Restoring a deleted task whose epic was deleted meanwhile brings it back on
   its track without the epic. Before, it couldn't be restored. A task whose
   track was deleted meanwhile can't be restored.
-
 - A track's **⋮** menu on the **Roadmap** now offers only **Rename track** and
   **Delete track**. To move a track, drag its grip, or focus the grip and use
   the arrow keys, Home and End. A dragged track now shows its name and a line

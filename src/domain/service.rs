@@ -528,6 +528,8 @@ const HAS_OPEN_ASSIGNMENTS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM task_assigne
                      a.user_id=?1 AND t.project_id=?2 AND t.deleted_at IS NULL AND t.status<>'done')";
 const NEXT_TRACK_POSITION_SQL: &str =
     "SELECT COALESCE(MAX(position),-1)+1 FROM tracks WHERE project_id=?1 AND deleted_at IS NULL";
+const NEXT_EPIC_POSITION_SQL: &str =
+    "SELECT COALESCE(MAX(position),-1)+1 FROM epics WHERE track_id=?1 AND deleted_at IS NULL";
 const INSERT_EPIC_SQL: &str = "INSERT INTO epics (id,project_id,track_id,title,description,start_date,end_date,state,\
                      position,created_by,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'planning',?8,?9,?10,?10)";
 const EPIC_ROW_SQL: &str = "SELECT project_id,track_id,title,description,start_date,end_date,state,position,revision \
