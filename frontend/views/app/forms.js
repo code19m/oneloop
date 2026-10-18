@@ -1,6 +1,7 @@
 // @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* Form parts that several pages and dialogs share: descriptions that grow
-   with their text and show their Markdown, and the New task form. */
+   with their text and show their Markdown, the New task form, and the epics
+   a task can join, which the task page offers too. */
 
 import { UIMotion } from '../../src/app/motion.js';
 import { markdownInto } from '../../src/features/files/file-views.js';
