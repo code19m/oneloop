@@ -179,6 +179,18 @@ test('a Board address shows its filters, and values the project no longer has ar
     [['p1', { trackIds: ['t2'], epicIds: [], assigneeIds: ['__unassigned__', 'robin'], search: 'reader', blocked: false }]]);
 });
 
+test('a card names its epic, or else its track, also to screen readers, and shows a renamed track', () => {
+  const t = bootApp({ route: 'board', prepare: D => {
+    D.tasks.push({ id: 'BIR-500', internalId: 'loose', projectId: 'p1', trackId: 't2', epicId: null, title: 'Loose task', state: 'planning', assignees: [], created: Date.now(), revision: 1 });
+  } });
+  const place = id => t.d.querySelector(`.card[data-task="${id}"] .epic`).textContent;
+  assert.deepEqual([place('BIR-500'), place('BIR-069')], ['Web Apps', 'Polish reader & librarian apps']);
+  assert.match(t.d.getElementById('card-context-BIR-500').textContent, /· Web Apps ·/);
+  t.D.tracks.find(track => track.id === 't2').name = 'Web';
+  t.A.refreshBoard();
+  assert.equal(place('BIR-500'), 'Web');
+});
+
 test('No epic in the epic filter shows the tasks without an epic, in the address and in the Board read', async () => {
   const t = bootApp({ route: 'board/p1?epic=none', prepare: D => {
     D.tasks.push({ id: 'BIR-500', internalId: 'loose', projectId: 'p1', trackId: 't2', epicId: null, title: 'Loose task', state: 'planning', assignees: [], created: Date.now(), revision: 1 });
@@ -190,6 +202,19 @@ test('No epic in the epic filter shows the tasks without an epic, in the address
   assert.deepEqual([...t.d.querySelectorAll('.board .card')].map(card => card.dataset.task), ['BIR-500']);
   await t.bridge.loadCurrentRoute();
   assert.deepEqual(JSON.parse(JSON.stringify(t.reads.calls.filter(([name]) => name === 'board').map(([, , filters]) => filters.epicIds))), [['none']]);
+});
+
+test('the epic filter offers No epic first, then only the chosen tracks\' epics, and keeps No epic in the address as the tracks change', () => {
+  const t = bootApp({ route: 'board/p1' });
+  const open = key => t.A.popMulti({ currentTarget: t.d.querySelector(`[data-filter-key="${key}"]`), preventDefault() {} }, key);
+  const close = () => t.d.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  const choose = (key, value) => { open(key); t.d.querySelector(`.pop [data-v="${value}"]`).click(); close(); };
+  choose('fEpic', 'none');
+  choose('fTrack', 't3');
+  open('fEpic');
+  assert.deepEqual([...t.d.querySelectorAll('.pop .pop-opt .l')].map(label => label.textContent), ['No epic', 'Reader app build', 'Reading list load test']);
+  close();
+  assert.equal(t.w.location.hash, '#/board/p1?track=t3&epic=none');
 });
 
 test('a filter or search change rewrites the Board address in place, so Back leaves the Board, and Clear filters empties its query', t => {

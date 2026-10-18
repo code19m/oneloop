@@ -62,6 +62,8 @@ test('creation stays single while its post-save read is delayed', { tag: '@smoke
   await expect(modal).toBeHidden();
   const body = await (await instance.api.get(`/api/projects/${instance.projects[0].project.id}/board?status=planning`)).json();
   expect(body.items.filter(task => task.title === 'Create once through delayed loading')).toHaveLength(1);
+  // A card without an epic names its track.
+  await expect(page.locator('.card').filter({ hasText: 'Create once through delayed loading' }).locator('.epic')).toHaveText(instance.projects[0].track.name);
 });
 
 test('creating, deleting with Undo and turning a Pool item into a task keep the Board of a project that is not first by name', async ({ page, instance, allowedConsoleErrors }) => {

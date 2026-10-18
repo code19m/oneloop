@@ -83,15 +83,16 @@ export function renderBoard({column=null,excludeIds=null}={}) {
     const list = ts.filter((t) => t.state === c.key);
     const serverPage = D.boardPageInfo?.projectId === state.projectId ? D.boardPageInfo.pages?.[c.key] : null;
     const cards = list.slice(0,state.boardLimits[c.key] || 50).filter(t=>!excludeIds?.has(t.id)).map((t) => {
-      const e = epicById(t.epicId);
+      // The line under the title says where the task is: its epic, or else its track.
+      const e = epicById(t.epicId), place = e ? e.title : taskTrack(t)?.name ?? '';
       const b = taskBits(t);
       const av = (t.assignees || []).filter(userById);
       const avs = av.slice(0, 3).map((a) => avatarHtml(a, 18)).join('') + (av.length > 3 ? `<span class="avatar">+${av.length - 3}</span>` : '');
       return `<div role="listitem" class="card ${b.cls}${t.block ? ' blocked' : ''}" data-task="${esc(t.id)}" ${canBoard() ? `data-reorderable="true" ${UIAction.on('dragstart', 'taskDragStart', UIAction.event, t.id)} ${UIAction.on('dragend', 'dragEnd')}` : ''} ${UIAction('openTask', t.id)}>
         <div class="id-row"><span>${esc(t.id)}</span><span class="card-end">${t.block ? `<span class="blocked-badge" data-tip-tap data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}">${I.blocked}Blocked</span>` : ''}${b.right}${canBoard() ? `<button type="button" class="card-move" aria-label="Move ${esc(t.id)}" ${UIAction('taskMoveMenu', UIAction.event, t.id)}>${I.kebab}</button>` : ''}</span></div>
         <button type="button" class="title card-title-button" aria-describedby="card-context-${esc(t.id)}"${t.block ? ` data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}" data-tip-keyboard` : ''}>${esc(t.title)}</button>
-        <span class="sr-only" id="card-context-${esc(t.id)}">${esc([t.id,c.name,e?.title,t.checklistTotal ? `Checklist ${t.checklistDone} of ${t.checklistTotal} done` : '',t.deadline ? 'Due '+t.deadline : '',overdue(t) ? 'Overdue' : '',t.block ? 'Blocked: '+t.block.reason+' — '+(userById(t.block.by)?.name||t.block.by)+' · '+formatInstant(t.block.at) : '',av.length ? 'Assigned to '+av.map(id=>userById(id).name).join(', ') : 'Unassigned'].filter(Boolean).join(' · '))}</span>
-        <div class="epic" data-tip="${esc(e ? e.title : '')}" data-tip-overflow>${esc(e ? e.title : '')}</div>
+        <span class="sr-only" id="card-context-${esc(t.id)}">${esc([t.id,c.name,place,t.checklistTotal ? `Checklist ${t.checklistDone} of ${t.checklistTotal} done` : '',t.deadline ? 'Due '+t.deadline : '',overdue(t) ? 'Overdue' : '',t.block ? 'Blocked: '+t.block.reason+' — '+(userById(t.block.by)?.name||t.block.by)+' · '+formatInstant(t.block.at) : '',av.length ? 'Assigned to '+av.map(id=>userById(id).name).join(', ') : 'Unassigned'].filter(Boolean).join(' · '))}</span>
+        <div class="epic" data-tip="${esc(place)}" data-tip-overflow>${esc(place)}</div>
         <div class="card-foot">
           <span class="mono card-created"${t.created ? ` data-tip="Created ${esc(formatInstant(t.created))}"` : ''}>${t.created ? humanInstant(t.created) : ''}</span>
           ${t.checklistTotal ? `<span class="mono card-checklist${t.checklistDone === t.checklistTotal ? ' complete' : ''}" data-tip="${esc('Checklist: ' + t.checklistDone + ' of ' + t.checklistTotal + ' done')}">${I.check}${t.checklistDone}/${t.checklistTotal}</span>` : ''}
@@ -127,8 +128,8 @@ export function boardSnapshot() {
     state.projectId, canBoard(), instanceTimeZone(), instanceDateKey(instanceNow()),
     boardFiltered(boardFilters()),
     state.boardLimits, D.boardPageInfo,
-    boardTasks().map(t=>[t.id,t.state,t.title,t.epicId,t.created,t.deadline,t.assignees,t.block,t.checklistDone,t.checklistTotal]),
-    D.epics.map(e=>[e.id,e.title]), D.users.map(u=>[u.id,u.name,u.avatar]),
+    boardTasks().map(t=>[t.id,t.state,t.title,t.trackId,t.epicId,t.created,t.deadline,t.assignees,t.block,t.checklistDone,t.checklistTotal]),
+    D.tracks.map(r=>[r.id,r.name]), D.epics.map(e=>[e.id,e.title]), D.users.map(u=>[u.id,u.name,u.avatar]),
   ]);
 }
 
