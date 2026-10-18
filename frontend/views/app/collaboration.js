@@ -10,8 +10,8 @@ import { reloadAttachments } from './attachments.js';
 import { multiHtml } from './controls.js';
 import { UIAction, ago, avatarHtml, esc, formatInstant, instanceDateKey, previousDate, setHTML } from './format.js';
 import {
-  App, D, collaborationController, epicById, hasPermission, me, recovery, state, taskById,
-  trackById, userById, visibleProjects,
+  App, D, collaborationController, hasPermission, me, recovery, state, taskById, taskTrack,
+  userById, visibleProjects,
 } from './model.js';
 import { askConfirmation, openMenu } from './overlays.js';
 
@@ -22,7 +22,7 @@ let inboxMeta={unreadCount:null,filteredCount:null,nextCursor:null,loaded:false,
 let feedSnapshot=null;
 let mountedTaskId=null;
 const chronological=(a,b)=>Number(a.ts)-Number(b.ts)||String(a.id??'').localeCompare(String(b.id??''));
-const projectOf=t=>D.projects.find(p=>p.id===(t?.projectId||D.tracks.find(r=>r.id===D.epics.find(e=>e.id===t?.epicId)?.trackId)?.projectId));
+const projectOf=t=>D.projects.find(p=>p.id===(t?.projectId||taskTrack(t)?.projectId));
 const members=p=>(p?.members||[]).map(m=>userById(m.userId)).filter(u=>u?.active);
 const canComment=t=>{const actor=me(),project=projectOf(t);return !!(actor?.active&&project&&(actor.admin||project.members?.some((member)=>member.userId===actor.id)));};
 // Only the currently open editors hold input state; nothing is cached for reopening.
@@ -193,7 +193,7 @@ function composerHtml(task,inline=false){
 }
 
 function feedback(message){const el=document.querySelector('.comment-feedback');if(el)el.textContent=message;}
-const canBoardTask=t=>hasPermission('manage_board',trackById(epicById(t?.epicId)?.trackId)?.projectId);
+const canBoardTask=t=>hasPermission('manage_board',taskTrack(t)?.projectId);
 /** Draw the open task's comments again, and with `composer` its comment box. */
 function redrawComments(taskId,composer=false){
  if(state.view!=='task'||state.taskId!==taskId)return;

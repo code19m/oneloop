@@ -122,7 +122,7 @@ test('a same-route hash change keeps Board search focus while other routes still
 test('epic drawer tasks are ordered by their numeric keys', () => {
   const t=boot('roadmap'),epic=t.D.epics[0];
   t.D.tasks=t.D.tasks.filter(task=>task.epicId!==epic.id);
-  for(const id of ['AAA-1000','OLD-101','NEW-5000'])t.D.tasks.push({id,epicId:epic.id,projectId:epic.projectId,title:id,state:'planning',assignees:[],created:Date.now()});
+  for(const id of ['AAA-1000','OLD-101','NEW-5000'])t.D.tasks.push({id,trackId:epic.trackId,epicId:epic.id,projectId:epic.projectId,title:id,state:'planning',assignees:[],created:Date.now()});
   t.A.openPeek(epic.id);
   assert.deepEqual([...t.d.querySelectorAll('.peek .task-row .tid')].map(el=>el.textContent),['OLD-101','AAA-1000','NEW-5000']);
 });

@@ -10,6 +10,9 @@
 /** The assignee filter's entry for tasks that have no assignee. */
 export const NO_ASSIGNEE = '__unassigned__';
 
+/** The epic filter's entry for tasks that have no epic, as Board reads and addresses name it. */
+export const NO_EPIC = 'none';
+
 /**
  * The filters as a Board read sends them: trimmed search text, sorted IDs,
  * and "no assignee" as its own flag.
@@ -49,14 +52,14 @@ export function sameBoardFilters(left, right) {
 
 /**
  * Whether a task passes filters that `normalizeBoardFilters` returned.
- * @param {{title:string,key:string,epicId:string,trackId?:string,assigneeIds:string[],blocked:boolean}} task
+ * @param {{title:string,key:string,epicId:string|null,trackId:string,assigneeIds:string[],blocked:boolean}} task
  * @param {ReturnType<typeof normalizeBoardFilters>} filters
  */
 export function matchesBoardFilters(task, filters) {
   const search = filters.search?.toLowerCase();
   return (!search || task.title.toLowerCase().includes(search) || task.key.toLowerCase().includes(search))
-    && (!filters.trackIds.length || filters.trackIds.includes(task.trackId ?? ''))
-    && (!filters.epicIds.length || filters.epicIds.includes(task.epicId))
+    && (!filters.trackIds.length || filters.trackIds.includes(task.trackId))
+    && (!filters.epicIds.length || filters.epicIds.includes(task.epicId ?? NO_EPIC))
     && (!(filters.assigneeIds.length || filters.noAssignee) || task.assigneeIds.some((id) => filters.assigneeIds.includes(id)) || !!filters.noAssignee && !task.assigneeIds.length)
     && (!filters.blocked || task.blocked);
 }

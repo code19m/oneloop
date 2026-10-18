@@ -56,8 +56,10 @@ export const tracks = () => D.tracks.filter((t) => t.projectId === state.project
 export const epics = () => { const tids = new Set(tracks().map((t) => t.id)); return D.epics.filter((e) => tids.has(e.trackId)); };
 export const epicById = (id) => D.epics.find((e) => e.id === id);
 export const trackById = (id) => D.tracks.find((t) => t.id === id);
+/** The track a task is on, when the project's tracks are loaded. */
+export const taskTrack = (task) => trackById(task?.trackId);
 export const milestones = () => D.milestones.filter((m) => m.projectId === state.projectId && canReadProject(m.projectId));
-export const tasks = () => { const eids = new Set(epics().map((e) => e.id)); return D.tasks.filter((t) => eids.has(t.epicId)); };
+export const tasks = () => { const tids = new Set(tracks().map((t) => t.id)); return D.tasks.filter((t) => tids.has(t.trackId)); };
 export const taskById = (id) => D.tasks.find((t) => t.id === id || t.internalId === id);
 export const poolItems = (scope) => D.pool.filter((p) => p.projectId === state.projectId && canReadProject(p.projectId) && (scope ? p.scope === scope : true) && (p.scope !== 'mine' || p.ownerId === (me() || {}).id));
 // Each lookup by id would scan every user, so a map follows the projection's people.
@@ -79,7 +81,7 @@ const memberRecord = (userId, projectId) => {
   return (p.members || []).find((m) => m.userId === userId) || null;
 };
 export const canReadProject = id => !!(me()?.active && D.projects.some(p=>p.id===id) && (me().admin||memberRecord(me().id,id)));
-export const canReadTask = task => {const id=trackById(epicById(task?.epicId)?.trackId)?.projectId;return !!id&&canReadProject(id);};
+export const canReadTask = task => {const id=taskTrack(task)?.projectId;return !!id&&canReadProject(id);};
 export const hasPermission = (permission, projectId) => {
   const u = me();
   if (!u || !u.active) return false;

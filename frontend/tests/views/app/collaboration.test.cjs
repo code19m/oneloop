@@ -450,7 +450,7 @@ test('a tab whose live updates a newer tab took says so, and Resume takes them b
 test('a live change on a task page reads only what it can change: the task and its activity, its comments, or its files', async t => {
  const reads=[];let taskReads;
  // The task as the server sends it. Reading it replaces the task's object, as the projection does.
- const view=(revision,title)=>({id:'bir-079',taskKey:'BIR-079',projectId:'p1',epicId:'e2',title,description:'',status:'planning',position:1,createdAt:1,updatedAt:revision,assigneeIds:[],activeBlock:null,revision});
+ const view=(revision,title)=>({id:'bir-079',taskKey:'BIR-079',projectId:'p1',trackId:'t1',epicId:'e2',title,description:'',status:'planning',position:1,createdAt:1,updatedAt:revision,assigneeIds:[],activeBlock:null,revision});
  let latest=view(1,'Flexible reading schedule');
  const empty={items:[],nextCursor:null};
  const app=bootApp({route:'board',api:{
@@ -480,7 +480,7 @@ test('a live change on a task page reads only what it can change: the task and i
 
 test('a task page shows its comments and activity when the task read lands before them', async () => {
  const held=[];let taskReads;
- const view={id:'bir-079',taskKey:'BIR-079',projectId:'p1',epicId:'e2',title:'Flexible reading schedule',description:'',status:'planning',position:1,createdAt:1,updatedAt:1,assigneeIds:[],activeBlock:null,revision:1};
+ const view={id:'bir-079',taskKey:'BIR-079',projectId:'p1',trackId:'t1',epicId:'e2',title:'Flexible reading schedule',description:'',status:'planning',position:1,createdAt:1,updatedAt:1,assigneeIds:[],activeBlock:null,revision:1};
  const t=bootApp({route:'board',api:{
   comments:()=>{const read=deferred();held.push(read);return read.promise;},
   activity:async()=>({items:[],nextCursor:null}),attachments:async()=>({items:[]}),task:async()=>view,

@@ -12,7 +12,7 @@ const bootstrap = () => ({
   tracks: [{ id:'tr1', projectId:'p1', name:'Web', position:1, revision:1 }],
   epics: [{ id:'e1', projectId:'p1', trackId:'tr1', title:'Launch', description:'Plan', startDate:'2026-09-20', endDate:null, state:'active', position:1, taskDone:0, taskTotal:1, revision:4 }],
   milestones: [{ id:'m1', projectId:'p1', title:'Go live', description:'', milestoneDate:'2026-10-01', revision:1 }],
-  tasks: [{ id:'opaque-task', projectId:'p1', epicId:'e1', taskKey:'BIR-001', title:'Ship', description:'Now', status:'in_progress', position:1, deadline:null, createdAt:100, updatedAt:101, revision:5, assigneeIds:['u1'], activeBlock:null }],
+  tasks: [{ id:'opaque-task', projectId:'p1', trackId:'tr1', epicId:'e1', taskKey:'BIR-001', title:'Ship', description:'Now', status:'in_progress', position:1, deadline:null, createdAt:100, updatedAt:101, revision:5, assigneeIds:['u1'], activeBlock:null }],
 });
 
 test('bootstrap hydrates one stable legacy root and performs explicit wire mappings', () => {
@@ -43,9 +43,9 @@ test('a read and a command result give each entity the same fields under the cli
     ['epic', data.epics, { id:'e2', projectId:'p1', trackId:'tr1', title:'Beta', description:'Try', startDate:'2026-10-01', endDate:'2026-11-01', state:'planning', position:2, taskTotal:3, taskDone:1, taskOpen:2, completedThisWeek:1, completedSinceStart:1, weeklyCompletions:[1], revision:1 },
       { projectId:'p1', trackId:'tr1', title:'Beta', desc:'Try', start:'2026-10-01', end:'2026-11-01', state:'planning', order:2, total:3, done:1, open:2, closedThisWeek:1, completedSinceStart:1, weekly:[1], counted:true }],
     ['milestone', data.milestones, { id:'m2', projectId:'p1', title:'Beta', description:'Ready', milestoneDate:'2026-11-01', revision:1 }, { projectId:'p1', name:'Beta', desc:'Ready', date:'2026-11-01' }],
-    ['task', data.tasks, { id:'opaque-2', projectId:'p1', epicId:'e1', taskKey:'BIR-002', title:'Test', description:'All', status:'in_review', position:2, deadline:'2026-12-01', createdAt:100, updatedAt:101, completedAt:null, completionOrder:null, assigneeIds:['u1'], activeBlock:block, revision:1,
+    ['task', data.tasks, { id:'opaque-2', projectId:'p1', trackId:'tr1', epicId:null, taskKey:'BIR-002', title:'Test', description:'All', status:'in_review', position:2, deadline:'2026-12-01', createdAt:100, updatedAt:101, startedAt:99, completedAt:null, completionOrder:null, assigneeIds:['u1'], activeBlock:block, revision:1,
       checklistVersion:4, checklistDone:1, checklistTotal:1, checklist:[{ id:'i1', taskId:'opaque-2', position:0, title:'Plan', done:true, revision:3 }] },
-      { internalId:'opaque-2', id:'BIR-002', projectId:'p1', epicId:'e1', title:'Test', desc:'All', state:'review', order:2, deadline:'2026-12-01', created:100000, updatedAt:101000, completedAt:null, completionOrder:null, assignees:['u1'],
+      { internalId:'opaque-2', id:'BIR-002', projectId:'p1', trackId:'tr1', epicId:null, title:'Test', desc:'All', state:'review', order:2, deadline:'2026-12-01', created:100000, updatedAt:101000, startedAt:99000, completedAt:null, completionOrder:null, assignees:['u1'],
         block:{ id:'b1', reason:'Waiting', by:'u1', at:100000, revision:1, mentions:[], resolution:null },
         checklistVersion:4, checklistDone:1, checklistTotal:1, checklist:[{ id:'i1', taskId:'opaque-2', title:'Plan', done:true, revision:3 }] }],
     ['poolItem', data.pool, { id:'i2', projectId:'p1', scope:'team', ownerUserId:null, title:'Idea', description:'Later', createdAt:100, revision:1 }, { projectId:'p1', scope:'project', ownerId:null, title:'Idea', desc:'Later', created:100000 }],

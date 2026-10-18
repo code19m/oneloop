@@ -5,7 +5,7 @@
 import { UIMotion } from '../../src/app/motion.js';
 import { patchInPlace, placeRows } from '../../src/app/rows.js';
 import {
-  NO_ASSIGNEE, boardFiltered, matchesBoardFilters, normalizeBoardFilters, sameBoardFilters,
+  NO_ASSIGNEE, NO_EPIC, boardFiltered, matchesBoardFilters, normalizeBoardFilters, sameBoardFilters,
 } from '../../src/data/board-filters.js';
 import { savedDoneOrder } from '../../src/data/done-order.js';
 import { sessionKey } from '../../src/data/projection-store.js';
@@ -17,7 +17,7 @@ import {
 } from './format.js';
 import {
   App, D, blockedCount, canBoard, epicById, epics, firstBoardPages, instanceNow, me, poolTotal, project,
-  projectMembers, recovery, report, runtime, state, taskById, tasks, trackById, tracks, userById, userHandle,
+  projectMembers, recovery, report, runtime, state, taskById, taskTrack, tasks, tracks, userById, userHandle,
 } from './model.js';
 import { openMenu } from './overlays.js';
 import { announce } from './toasts.js';
@@ -69,7 +69,7 @@ function fitLimits() {
 function boardTasks() {
   const filters = normalizeBoardFilters(boardFilters());
   if (!boardFiltered(filters)) return tasks();
-  return tasks().filter((t) => matchesBoardFilters({ title: t.title, key: t.id, epicId: t.epicId, trackId: epicById(t.epicId)?.trackId, assigneeIds: t.assignees || [], blocked: !!t.block && t.state !== 'done' }, filters));
+  return tasks().filter((t) => matchesBoardFilters({ title: t.title, key: t.id, epicId: t.epicId, trackId: t.trackId, assigneeIds: t.assignees || [], blocked: !!t.block && t.state !== 'done' }, filters));
 }
 
 export function renderBoard({column=null,excludeIds=null}={}) {
@@ -157,8 +157,11 @@ export function resetBoardFilters() {
   state.boardTracks = []; state.boardEpics = []; state.boardAssignees = []; state.boardQ = ''; state.boardBlocked = false;
 }
 
-/** The epics the epic filter offers: those on the chosen tracks, or all, in start order. */
-const epicChoices = () => (state.boardTracks.length ? epics().filter((e) => state.boardTracks.includes(e.trackId)) : epics()).slice().sort((a, b) => d(a.start) - d(b.start));
+/** What the epic filter offers: No epic, then the epics on the chosen tracks, or all, in start order. */
+const epicChoices = () => [
+  { v: NO_EPIC, l: 'No epic', pinned: true },
+  ...(state.boardTracks.length ? epics().filter((e) => state.boardTracks.includes(e.trackId)) : epics()).slice().sort((a, b) => d(a.start) - d(b.start)).map((e) => ({ v: e.id, l: e.title })),
+];
 
 /** The people the assignee filter offers: you, No assignee, and the project's active members. */
 function assigneeChoices() {
@@ -190,7 +193,7 @@ function keepKnownFilters() {
     list.splice(0, list.length, ...kept); return true;
   };
   const tracksDropped = keep(state.boardTracks, new Set(tracks().map((t) => t.id)));
-  const epicsDropped = keep(state.boardEpics, new Set(epicChoices().map((e) => e.id)));
+  const epicsDropped = keep(state.boardEpics, new Set(epicChoices().map((o) => o.v)));
   const assigneesDropped = keep(state.boardAssignees, new Set(assigneeChoices().map((o) => o.v)));
   if (!tracksDropped && !epicsDropped && !assigneesDropped) return;
   ['fTrack', 'fEpic', 'fAssignee'].forEach(showFilterChoice);
@@ -296,9 +299,9 @@ function applyBoardFilters(fromServer = false, { animate: motion = true } = {}) 
 export function boardTopbarHtml() {
   const applyBoard = applyBoardFilters;
   const updateEpicFilter = () => {
-    const choices = epicChoices(), allowed = new Set(choices.map(epic=>epic.id));
+    const choices = epicChoices(), allowed = new Set(choices.map(choice=>choice.v));
     state.boardEpics.splice(0,state.boardEpics.length,...state.boardEpics.filter(id=>allowed.has(id)));
-    if(MULTI.fEpic) { MULTI.fEpic.options=choices.map(epic=>({v:epic.id,l:epic.title})); showFilterChoice('fEpic'); }
+    if(MULTI.fEpic) { MULTI.fEpic.options=choices; showFilterChoice('fEpic'); }
   };
   const mk = (key, arr, all, noun, options, extra) => multiHtml(key, Object.assign({
     options, search: options.length > 6,
@@ -311,7 +314,7 @@ export function boardTopbarHtml() {
   <div class="right board-filters">
     <input class="ctl board-search" data-board-search aria-label="Search tasks" placeholder="Search tasks" value="${esc(state.boardQ)}" ${UIAction.on('input', 'setBoardQ', UIAction.value, UIAction.event)} ${UIAction.on('keydown', 'boardSearchKey', UIAction.event)}>
     ${mk('fTrack', state.boardTracks, 'All tracks', 'tracks', tracks().map((t) => ({ v: t.id, l: t.name })), { width: 140 })}
-    ${mk('fEpic', state.boardEpics, 'All epics', 'epics', epicChoices().map((e) => ({ v: e.id, l: e.title })), { search: true, width: 180 })}
+    ${mk('fEpic', state.boardEpics, 'All epics', 'epics', epicChoices(), { search: true, width: 180 })}
     ${mk('fAssignee', state.boardAssignees, 'All assignees', 'assignees', assigneeChoices(), { search: true, width: 150 })}
     <button class="btn blocked-filter" aria-pressed="${state.boardBlocked}" ${UIAction('setBlockedFilter', UIAction.element)}>${I.blocked}Blocked<span class="blocked-filter-count" title="Blocked tasks in this project">${blockedCount()}</span></button>
     <button class="btn quiet" ${UIAction('openModal', 'pool')}>Pool <span class="mono subtle" data-pool-count>${poolTotal()}</span></button>
@@ -343,8 +346,8 @@ function taskMovePlan(t, col, beforeId = null, atTop = false) {
 
 /** The task's project and the tasks next to it in that project, where a rollback puts it back. */
 function moveOrigin(t) {
-  const projectId=t.projectId||trackById(epicById(t.epicId)?.trackId)?.projectId||state.projectId;
-  const taskProject=(item)=>item.projectId||trackById(epicById(item.epicId)?.trackId)?.projectId;
+  const projectId=t.projectId||taskTrack(t)?.projectId||state.projectId;
+  const taskProject=(item)=>item.projectId||taskTrack(item)?.projectId;
   const projectTasks=D.tasks.filter((item)=>taskProject(item)===projectId),index=projectTasks.indexOf(t);
   return { task:t, revision:t.revision, projectId, sessionKey:sessionKey(D),
     previousTaskBefore:index>0?projectTasks[index-1]:null, previousTaskAfter:projectTasks[index+1]||null };

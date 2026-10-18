@@ -7,7 +7,7 @@ import { text } from './commands.js';
 
 /** @param {import('../view-bridge.js').BridgeContext} ctx */
 export function installRoadmap(ctx) {
-  const { app, data, reads, recovery, epic, track, milestone, context, openPeek, execute, fire, formValues, fieldError, validOptionalDate, changedFields, report } = ctx;
+  const { app, data, reads, recovery, epic, track, milestone, context, openPeek, execute, offerRestore, fire, ifCurrent, formValues, fieldError, validOptionalDate, changedFields, report } = ctx;
 
   app.saveEpic = (event,id) => {
     event.preventDefault();if(app.validateFormDates(event.target)===false)return false;
@@ -18,11 +18,15 @@ export function installRoadmap(ctx) {
     if(!validDate(base.startDate))return fieldError(form,'start','Enter a valid start date in YYYY-MM-DD format.');
     if(!validOptionalDate(form,'end',base.endDate))return false;
     if(base.endDate&&base.endDate<base.startDate)return fieldError(form,'end','End date cannot be before the start date.');
-    return fire(execute(item?'epic.update':'epic.create',item?{epicId:item.id,...changedFields('epic',item.id,base)}:{projectId:context().projectId,...base},item,item?'Epic updated':'Epic created',{create:!item,form,closeForm:true}));
+    const changes=item?changedFields('epic',item.id,base):base;
+    // An epic that moves to another track takes its tasks along, so the page reads them again.
+    const moves=!!item&&changes.trackId!==undefined&&changes.trackId!==item.trackId;
+    return fire(execute(item?'epic.update':'epic.create',item?{epicId:item.id,...changes}:{projectId:context().projectId,...base},item,item?'Epic updated':'Epic created',{create:!item,form,closeForm:true,reload:moves}));
   };
   app.closeEpic=(id)=>{const item=epic(id);if(!item)return;const open=data.tasks.filter((entry)=>entry.epicId===id&&entry.state!=='done').length;const confirm=()=>fire(execute('epic.complete',{id:item.id},item,'Epic marked as done',{form:document.querySelector('.modal,.peek'),closeForm:true}));if(open)app.confirm({title:'Open tasks remain',text:`${open} open task${open===1?' stays where it is':'s stay where they are'}.`,action:'Mark as done',confirm});else confirm();};
   app.reopenEpic=(id)=>{const item=epic(id);if(item)return fire(execute('epic.reopen',{id:item.id},item,'Epic reopened'));};
-  app.deleteEpic=(id)=>{const item=epic(id);if(!item)return;app.confirm({title:'Delete epic?',text:`“${item.title}” will be removed.`,action:'Delete epic',confirm:()=>fire(execute('epic.delete',{id:item.id},item,'Epic deleted',{form:document.querySelector('.modal,.peek'),closeForm:true}))});};
+  // The epic's tasks stay on its track without an epic, so the page reads them again.
+  app.deleteEpic=(id)=>{const item=epic(id);if(!item)return;app.confirm({title:'Delete epic?',text:`“${item.title}” will be deleted. Its tasks stay on ${track(item.trackId)?.name??'its track'} without an epic. You can undo this right after.`,action:'Delete epic',confirm:()=>fire(execute('epic.delete',{id:item.id},item,null,{form:document.querySelector('.modal,.peek'),closeForm:true,reload:true}).then((result)=>ifCurrent(result,()=>offerRestore(result,{id:item.id,item,deleted:'Epic deleted',restored:'Epic restored',operation:'epic.restore'}))))});};
   app.openPeek=(id)=>{if(!epic(id))return;openPeek(id);return fire(reads.epic(id).catch(report));};
   app.loadMoreEpicTasks=(id)=>fire(reads.moreEpicTasks(id).catch(report));
   app.loadMoreEpicActivity=(id)=>fire(reads.moreEpicActivity(id).catch(report));

@@ -48,7 +48,8 @@ export function commandIsUnchanged(operation, payload, entity) {
         && (!has('description') || payload.description === (entity.desc ?? entity.description ?? ''))
         && (!has('milestoneDate') || payload.milestoneDate === (entity.date ?? entity.milestoneDate));
     case 'task.update':
-      return (!has('epicId') || payload.epicId === entity.epicId)
+      return (!has('trackId') || payload.trackId === entity.trackId)
+        && (!has('epicId') || (payload.epicId ?? null) === (entity.epicId ?? null))
         && (!has('title') || payload.title === entity.title)
         && (!has('description') || payload.description === (entity.desc ?? entity.description ?? ''))
         && (!has('deadline') || (payload.deadline ?? null) === (entity.deadline ?? null))

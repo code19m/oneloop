@@ -64,8 +64,8 @@ const FIELDS = {
   ],
   milestone: [['projectId'], ['title', 'name'], ['description', 'desc', text], ['milestoneDate', 'date']],
   task: [
-    ['projectId'], ['epicId'], ['taskKey', 'id'], ['title'], ['description', 'desc', text], ['status', 'state', toLegacyStatus], ['position', 'order'],
-    ['deadline', 'deadline', orNull], ['createdAt', 'created', milliseconds], ['updatedAt', 'updatedAt', milliseconds], ['completedAt', 'completedAt', millisecondsOrNull],
+    ['projectId'], ['trackId'], ['epicId', 'epicId', orNull], ['taskKey', 'id'], ['title'], ['description', 'desc', text], ['status', 'state', toLegacyStatus], ['position', 'order'],
+    ['deadline', 'deadline', orNull], ['createdAt', 'created', milliseconds], ['updatedAt', 'updatedAt', milliseconds], ['startedAt', 'startedAt', millisecondsOrNull], ['completedAt', 'completedAt', millisecondsOrNull],
     ['completionOrder', 'completionOrder', orNull], ['assigneeIds', 'assignees', (ids) => [...(ids ?? [])]], ['activeBlock', 'block', (block) => mapBlock(block)],
     // Only detail reads carry the checklist; every read carries its counts and version.
     ['checklistVersion', 'checklistVersion', orZero], ['checklistDone', 'checklistDone', orZero], ['checklistTotal', 'checklistTotal', orZero],

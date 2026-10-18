@@ -29,7 +29,7 @@ function checklistPage(options = {}) {
 
 /** The task as the server sends it, with `checklist` and the checklist `version`. */
 const taskView = (checklist, version) => ({
-  id: 'bir-079', taskKey: 'BIR-079', projectId: 'p1', epicId: 'e2', title: 'Flexible reading schedule', description: '', status: 'planning', position: 1, createdAt: 1, updatedAt: 1, assigneeIds: [], activeBlock: null, revision: 1,
+  id: 'bir-079', taskKey: 'BIR-079', projectId: 'p1', trackId: 't1', epicId: 'e2', title: 'Flexible reading schedule', description: '', status: 'planning', position: 1, createdAt: 1, updatedAt: 1, assigneeIds: [], activeBlock: null, revision: 1,
   checklist: checklist.map((entry, position) => ({ id: entry.id, taskId: 'bir-079', position, title: entry.title, done: entry.done, revision: entry.revision })),
   checklistDone: checklist.filter(entry => entry.done).length, checklistTotal: checklist.length, checklistVersion: version,
 });

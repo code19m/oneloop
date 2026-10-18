@@ -7,7 +7,7 @@ import { UIMotion } from '../../src/app/motion.js';
 import { I, UIAction, esc, setHTML } from './format.js';
 import {
   App, D, canReadProject, epicById, isAdmin, me, recovery, report, runtime, state, taskById,
-  trackById,
+  taskTrack, trackById,
 } from './model.js';
 
 export function overlayKey(selector) {
@@ -322,7 +322,7 @@ Object.assign(App, {
   },
   openModal(type, id, epicId) {
     if(type==='pool'&&!canReadProject(state.projectId))return;
-    const targetProject=id&&(type==='epic'?trackById(epicById(id)?.trackId)?.projectId:type==='track'?trackById(id)?.projectId:type==='milestone'?D.milestones.find(m=>m.id===id)?.projectId:['block','unblock','completeBlocked'].includes(type)?trackById(epicById(taskById(id)?.epicId)?.trackId)?.projectId:null);
+    const targetProject=id&&(type==='epic'?trackById(epicById(id)?.trackId)?.projectId:type==='track'?trackById(id)?.projectId:type==='milestone'?D.milestones.find(m=>m.id===id)?.projectId:['block','unblock','completeBlocked'].includes(type)?taskTrack(taskById(id))?.projectId:null);
     if(targetProject&&!canReadProject(targetProject))return;
     if (['epic', 'milestone', 'track'].includes(type) && !App.require('manage_roadmap')) return;
     if (type === 'task' && !App.require('manage_board')) return;

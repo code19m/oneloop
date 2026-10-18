@@ -379,7 +379,7 @@ function changedElsewhere(options = {}) {
   const bootstrap = { idle: async () => {}, load: async () => { if (latest) replaceTaskDetail(t.D, latest); return { stale: false }; } };
   reload = t.module('src/app/projection-reload.js').createProjectionReload({ data: t.D, bootstrap, reads: t.reads, getApp: () => t.A, getBridge: () => null, getRecovery: () => t.w.Recovery, location: t.w.location });
   return { ...t, change(entityTypes, fields) {
-    latest = { id: 'bir-079', taskKey: 'BIR-079', projectId: 'p1', epicId: 'e2', title: 'Flexible reading schedule', description: t.D.tasks.find(item => item.id === 'BIR-079').desc ?? '', status: 'planning', position: 1, createdAt: 1, updatedAt: 2, assigneeIds: [], activeBlock: null, revision: 2, ...fields };
+    latest = { id: 'bir-079', taskKey: 'BIR-079', projectId: 'p1', trackId: 't1', epicId: 'e2', title: 'Flexible reading schedule', description: t.D.tasks.find(item => item.id === 'BIR-079').desc ?? '', status: 'planning', position: 1, createdAt: 1, updatedAt: 2, assigneeIds: [], activeBlock: null, revision: 2, ...fields };
     for (const entityType of entityTypes) t.events.at(-1).emit('hint', { kind: 'activity.changed', projectId: 'p1', taskId: 'bir-079', entityType, entityId: entityType === 'epic' ? 'e2' : 'bir-079', entityRevision: latest.revision });
   } };
 }

@@ -166,8 +166,7 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
           const page=boardState.pages[status];
           const loaded=data.tasks.filter(item=>item.projectId===projectId&&item.state===status);
           const edge=loaded.sort((left,right)=>compareTaskOrder(left,right,common.doneOrder)).at(-1);
-          const parent=view&&data.epics.find(item=>item.id===view.epicId);
-          const matches=view&&view.projectId===projectId&&matchesBoardFilters({title:view.title,key:view.taskKey,epicId:view.epicId,trackId:parent?.trackId,assigneeIds:view.assigneeIds,blocked:!!view.activeBlock},common);
+          const matches=view&&view.projectId===projectId&&matchesBoardFilters({title:view.title,key:view.taskKey,epicId:view.epicId,trackId:view.trackId,assigneeIds:view.assigneeIds,blocked:!!view.activeBlock},common);
           if(matches&&page&&(!page.nextCursor||edge&&compareTaskOrder({order:view.position,internalId:view.id,state:status,completedAt:secondsToMilliseconds(view.completedAt)??null,completionOrder:view.completionOrder??null},edge,common.doneOrder)<=0))appendBoardTasks(data,[view]);
           else if(old)data.tasks.splice(data.tasks.indexOf(old),1);
         }
@@ -298,7 +297,7 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
         ]);
         if(!current(token))return {stale:true};
         if(taskPage)mergeEpicTaskPage(data,epicId,taskPage.items,taskPage,taskPage.append);
-        if(activityPage)mergeEpicActivityPage(data,epicId,(activityPage.items??[]).map((item)=>mapActivity(item,data.users)).filter(Boolean),activityPage.nextCursor,appendActivity);
+        if(activityPage)mergeEpicActivityPage(data,epicId,(activityPage.items??[]).map((item)=>mapActivity(item,data.users,data)).filter(Boolean),activityPage.nextCursor,appendActivity);
         onEpic(data.epicPageInfo[epicId]);
         return {stale:false,page:data.epicPageInfo[epicId]};
       }catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
