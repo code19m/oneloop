@@ -672,7 +672,16 @@ const BROWSER_ROUTES: &[(&str, &str, bool)] = &[
     ("GET", "/api/projects/missing/counts", false),
     ("GET", "/api/projects/missing/roadmap", false),
     ("GET", "/api/projects/missing/roadmap/lanes", false),
-    ("GET", "/api/projects/missing/roadmap/tasks?cursor=x", false),
+    (
+        "GET",
+        "/api/projects/missing/roadmap/days?from=2026-01-01&to=2026-01-02",
+        false,
+    ),
+    (
+        "GET",
+        "/api/projects/missing/roadmap/list?track=x&kind=open",
+        false,
+    ),
     ("GET", "/api/projects/missing/pool?scope=personal", false),
     ("GET", "/api/epics/missing/tasks", false),
     ("GET", "/api/epics/missing/activity", false),

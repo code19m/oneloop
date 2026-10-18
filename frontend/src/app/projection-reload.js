@@ -109,6 +109,17 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
     };
     try{
       const previous=app?.context(),previousName=data.projects.find((item)=>item.id===previous?.projectId)?.name;
+      // A track, epic or milestone that changed moves no project, member or Pool item: the Roadmap reads its
+      // tracks, epics and milestones alone. An epic's change may have moved its tasks, so then the lanes of the
+      // view come too, and an open epic drawer reads its tasks and activity again.
+      const structure=scope.hints?.length&&scope.hints.every(hint=>['track','epic','milestone'].includes(hint.entityType));
+      if(structure&&previous?.view==='roadmap'&&previous.projectId&&scope.projectId===previous.projectId&&data.projects.some((item)=>item.id===previous.projectId)){
+        const epic=scope.hints.some(hint=>hint.entityType==='epic'),options={background:!!scope.background};
+        const views=[epic?reads.roadmap(previous.projectId,options):reads.roadmapStructure(previous.projectId,options)];
+        if(epic&&previous.peek&&data.epics.some((item)=>item.id===previous.peek))views.push(reads.epic(previous.peek,options));
+        const results=await Promise.all(views);
+        return complete(results.find((result)=>result?.stale)??results[0]);
+      }
       if(scope.viewOnly&&app&&previous?.projectId&&data.projects.some((item)=>item.id===previous.projectId)){
         // Hints of tasks, their blocks and checklists patch their cards. A
         // column that was re-spaced moved cards no hint names, so the Board

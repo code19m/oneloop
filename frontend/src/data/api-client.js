@@ -246,7 +246,7 @@ export function createApiClient({
     serverNow,
     request,
     command: (command, { signal } = /** @type {SignalOptions} */ ({})) => request('/api/commands', { method: 'POST', body: command, signal }),
-    bootstrap: ({ projectId, taskId, view, lastSwitch, filters = {}, roadmap, signal, background } = /** @type {{projectId?:string,taskId?:string,view?:string,lastSwitch?:{userId:string,projectId:string},filters?:Record<string,unknown>,roadmap?:{from:string,to:string},signal?:AbortSignal,background?:boolean}} */ ({})) => {
+    bootstrap: ({ projectId, taskId, view, lastSwitch, filters = {}, roadmap, signal, background } = /** @type {{projectId?:string,taskId?:string,view?:string,lastSwitch?:{userId:string,projectId:string},filters?:Record<string,unknown>,roadmap?:{from:string,to:string,anchor?:string},signal?:AbortSignal,background?:boolean}} */ ({})) => {
       const query = new URLSearchParams();
       if (projectId) query.set('projectId', projectId);
       if (taskId) query.set('taskId', taskId);
@@ -258,7 +258,10 @@ export function createApiClient({
       // Board pages come in the order this browser chose for Done.
       if (view === 'board' && savedDoneOrder() === 'completed') query.set('doneOrder', 'completed');
       // The Roadmap's lanes come for the days they held.
-      if (view === 'roadmap' && roadmap) { query.set('roadmapFrom', roadmap.from); query.set('roadmapTo', roadmap.to); }
+      if (view === 'roadmap' && roadmap) {
+        query.set('roadmapFrom', roadmap.from); query.set('roadmapTo', roadmap.to);
+        if (roadmap.anchor) query.set('roadmapAnchor', roadmap.anchor);
+      }
       return request('/api/bootstrap' + (query.size ? '?' + query.toString() : ''), { signal, background });
     },
     board: (projectId, filters = {}, { signal,background } = /** @type {SignalOptions} */ ({})) => request(`/api/projects/${encodeURIComponent(projectId)}/board${boardQuery(filters)}`, { signal,background }),
@@ -267,16 +270,28 @@ export function createApiClient({
     /** A project's tracks, epics and milestones. */
     roadmap: (projectId, { signal,background } = /** @type {SignalOptions} */ ({})) => request(`/api/projects/${encodeURIComponent(projectId)}/roadmap`, { signal,background }),
     /**
-     * The same, with what the Roadmap's lanes draw: the tasks of a window of
-     * days, or of the days it opens with, or only the tasks a change named.
-     * @param {string} projectId @param {{from:string,to:string}|{tasks:string[]}|null} lanes
+     * The same, with what the Roadmap's lanes draw: for the days asked for,
+     * or the ones it opens with; after a change made elsewhere, with the
+     * tasks it named and the sections whose work in progress they were drawn in.
+     * @param {string} projectId @param {{from?:string,to?:string,anchor?:string,marks?:number,tasks?:string[],sections?:string[]}|null} lanes
      */
     roadmapLanes: (projectId, lanes, { signal,background } = /** @type {SignalOptions} */ ({})) => {
-      const query = !lanes ? '' : 'tasks' in lanes ? `?${new URLSearchParams({ tasks: lanes.tasks.join(',') })}` : `?${new URLSearchParams(lanes)}`;
-      return request(`/api/projects/${encodeURIComponent(projectId)}/roadmap/lanes${query}`, { signal,background });
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(lanes ?? {})) if (value !== undefined && value !== null) query.set(key, Array.isArray(value) ? value.join(',') : String(value));
+      return request(`/api/projects/${encodeURIComponent(projectId)}/roadmap/lanes${query.size ? `?${query}` : ''}`, { signal,background });
     },
-    /** A page of dated plans up to `to`, or of done tasks from `from` on. @param {string} projectId @param {{cursor:string,from?:string,to?:string,limit:number}} page */
-    roadmapTasks: (projectId, { limit, ...page }, { signal,background } = /** @type {SignalOptions} */ ({})) => request(`/api/projects/${encodeURIComponent(projectId)}/roadmap/tasks?${new URLSearchParams({ ...page, limit: String(limit) })}`, { signal,background }),
+    /** More days of the Roadmap's lanes. @param {string} projectId @param {{from:string,to:string,anchor?:string,marks?:number}} days */
+    roadmapDays: (projectId, days, { signal,background } = /** @type {SignalOptions} */ ({})) => {
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(days)) if (value !== undefined) query.set(key, String(value));
+      return request(`/api/projects/${encodeURIComponent(projectId)}/roadmap/days?${query}`, { signal,background });
+    },
+    /** The tasks one of the Roadmap's marks counts. @param {string} projectId @param {{track:string,epic?:string|null,kind:string,from?:string,to?:string}} list */
+    roadmapList: (projectId, list, { signal } = /** @type {SignalOptions} */ ({})) => {
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(list)) if (value !== undefined && value !== null) query.set(key, String(value));
+      return request(`/api/projects/${encodeURIComponent(projectId)}/roadmap/list?${query}`, { signal });
+    },
     epicTasks: (epicId,{cursor,limit=50,signal,background}=/** @type {{cursor?:string,limit?:number,signal?:AbortSignal,background?:boolean}} */({}))=>{const query=new URLSearchParams({limit:String(limit)});if(cursor)query.set('cursor',cursor);return request(`/api/epics/${encodeURIComponent(epicId)}/tasks?${query}`,{signal,background});},
     epicActivity: (epicId,{cursor,limit=50,signal,background}=/** @type {{cursor?:string,limit?:number,signal?:AbortSignal,background?:boolean}} */({}))=>{const query=new URLSearchParams({limit:String(limit)});if(cursor)query.set('cursor',cursor);return request(`/api/epics/${encodeURIComponent(epicId)}/activity?${query}`,{signal,background});},
     pool: (projectId, filters = {}, { signal,background } = /** @type {SignalOptions} */ ({})) => {

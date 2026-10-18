@@ -115,7 +115,7 @@ async fn skipped_local_dates_do_not_break_roadmap_or_bootstrap() {
             .roadmap(
                 &f.manager,
                 "p1".into(),
-                Some(oneloop::domain::LanesQuery::Days(Default::default())),
+                Some(oneloop::domain::LanesQuery::default()),
             )
             .await
             .unwrap();
@@ -318,9 +318,6 @@ async fn hidden_and_missing_resources_have_identical_http_errors() {
         .await
         .unwrap();
     let id = task.entities[0]["id"].as_str().unwrap();
-    // A page of the hidden project's done tasks, as its Roadmap would ask.
-    let cursor = r#"{"kind":"done","completed_at":1,"completion_order":0,"id":"x"}"#;
-    let cursor = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, cursor);
     let app = router(&f);
     for (hidden, missing) in [
         ("/api/tasks/TWO-001".into(), "/api/tasks/TWO-999".into()),
@@ -337,8 +334,12 @@ async fn hidden_and_missing_resources_have_identical_http_errors() {
             "/api/projects/missing/roadmap/lanes".into(),
         ),
         (
-            format!("/api/projects/p2/roadmap/tasks?cursor={cursor}&from=2026-01-01"),
-            format!("/api/projects/missing/roadmap/tasks?cursor={cursor}&from=2026-01-01"),
+            "/api/projects/p2/roadmap/days?from=2026-01-01&to=2026-01-31".into(),
+            "/api/projects/missing/roadmap/days?from=2026-01-01&to=2026-01-31".into(),
+        ),
+        (
+            "/api/projects/p2/roadmap/list?track=tr2&kind=open".into(),
+            "/api/projects/missing/roadmap/list?track=tr2&kind=open".into(),
         ),
     ] {
         let mut responses = Vec::new();

@@ -1,8 +1,9 @@
-//! The Roadmap read: the tasks its lanes draw in a window of days, what it
-//! counts, and its pages of dated plans and done tasks.
+//! The Roadmap read: what its lanes draw for a window of days, what it
+//! counts, and the lists of its marks that count several tasks.
 
 use oneloop::domain::{
-    LanesQuery, RoadmapDays, RoadmapPageQuery, RoadmapTimeline, RoadmapWindow, TaskView,
+    DayMark, LanesQuery, ListKind, RoadmapDays, RoadmapListQuery, RoadmapMark, RoadmapTimeline,
+    RoadmapWindow, SectionDays, TaskView,
 };
 
 use super::*;
@@ -19,14 +20,15 @@ type Row = (
     bool,
 );
 
-/// Inserts tasks into `p1`, each at its own number and position.
+/// Inserts tasks into `p1`, each at its own number and position; work in
+/// progress starts at its number, so earlier rows started earlier.
 async fn insert_tasks(f: &Fixture, tasks: Vec<Row>) {
     f.db.transaction(move |tx| {
         let first: i64 = tx.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))?;
         let mut insert = tx.prepare(
             "INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,deadline,
                 created_at,updated_at,started_at,completed_at,completion_order,deleted_at)
-             VALUES(?1,'p1',?2,?3,?4,?5,?1,?6,?4,?7,1,1,CASE WHEN ?6<>'planning' THEN 1 END,?8,?4,?9)",
+             VALUES(?1,'p1',?2,?3,?4,?5,?1,?6,?4,?7,1,1,CASE WHEN ?6<>'planning' THEN ?4 END,?8,?4,?9)",
         )?;
         for (offset, (id, track, epic, status, deadline, completed, deleted)) in tasks.into_iter().enumerate() {
             let number = first + offset as i64 + 1;
@@ -42,62 +44,103 @@ async fn insert_tasks(f: &Fixture, tasks: Vec<Row>) {
     .unwrap();
 }
 
+/// Blocks the task `id` of `p1`.
+async fn block(f: &Fixture, id: &'static str) {
+    f.db.transaction(move |tx| {
+        tx.execute(
+            "INSERT INTO task_blocks(id,project_id,task_id,reason,created_by,created_at) VALUES(?1,'p1',?2,'Waiting','u1',1)",
+            params![format!("block-{id}"), id],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
 fn ids(tasks: &[TaskView]) -> Vec<&str> {
     tasks.iter().map(|task| task.id.as_str()).collect()
+}
+
+fn mark_ids(marks: &[RoadmapMark]) -> Vec<&str> {
+    marks.iter().map(|mark| mark.mark.id.as_str()).collect()
+}
+
+/// The tasks of days with one, as (section's epic, id), in each section's order.
+fn day_marks(days: &RoadmapDays) -> Vec<(Option<&str>, &DayMark)> {
+    days.sections
+        .iter()
+        .flat_map(|section| {
+            section
+                .marks
+                .iter()
+                .map(|mark| (section.epic_id.as_deref(), mark))
+        })
+        .collect()
+}
+
+fn day_mark_ids(days: &RoadmapDays) -> Vec<&str> {
+    day_marks(days)
+        .into_iter()
+        .map(|(_, mark)| mark.id.as_str())
+        .collect()
 }
 
 fn window(from: &str, to: &str) -> RoadmapWindow {
     RoadmapWindow {
         from: Some(from.into()),
         to: Some(to.into()),
+        ..RoadmapWindow::default()
     }
 }
 
-async fn read_lanes(f: &Fixture, window: RoadmapWindow) -> (RoadmapTimeline, RoadmapDays) {
-    let lanes = f
-        .service
-        .roadmap(&f.member, "p1".into(), Some(LanesQuery::Days(window)))
+async fn read_lanes(f: &Fixture, query: LanesQuery) -> RoadmapTimeline {
+    f.service
+        .roadmap(&f.member, "p1".into(), Some(query))
         .await
         .unwrap()
         .lanes
-        .unwrap();
-    let days = lanes.days.clone().unwrap();
-    (lanes, days)
+        .unwrap()
 }
 
-fn page_query(
-    cursor: &Option<String>,
-    bound: (&str, &str),
-    limit: Option<usize>,
-) -> RoadmapPageQuery {
-    let day = |field: &str| (bound.0 == field).then(|| bound.1.to_owned());
-    RoadmapPageQuery {
-        project_id: "p1".into(),
-        cursor: cursor.clone().unwrap(),
-        from: day("from"),
-        to: day("to"),
-        limit,
+fn days_of(window: RoadmapWindow) -> LanesQuery {
+    LanesQuery {
+        window,
+        ..LanesQuery::default()
     }
 }
 
-/// The instant `day` starts in the fixture's time zone, Tashkent (UTC+5).
-fn tashkent(day: &str) -> i64 {
+/// Each section's days as (track, epic, done, plans, blocked).
+type Days<'a> = (&'a str, Option<&'a str>, &'a [i64], &'a [i64], &'a [i64]);
+
+fn sections(days: &[SectionDays]) -> Vec<Days<'_>> {
+    days.iter()
+        .map(|section| {
+            (
+                section.track_id.as_str(),
+                section.epic_id.as_deref(),
+                &section.done[..],
+                &section.plans[..],
+                &section.blocked[..],
+            )
+        })
+        .collect()
+}
+
+/// The instant `day` starts in the fixture's time zone, Tashkent (UTC+5),
+/// and `hours` after.
+fn tashkent(day: &str, hours: i64) -> i64 {
     let date: jiff::civil::Date = day.parse().unwrap();
     date.to_zoned(jiff::tz::TimeZone::fixed(jiff::tz::offset(5)))
         .unwrap()
         .timestamp()
         .as_second()
+        + hours * 3600
 }
 
-#[tokio::test]
-async fn the_roadmap_draws_work_at_hand_and_the_dated_tasks_of_its_window_and_counts_the_rest() {
-    let f = fixture().await;
-    f.db.transaction(|tx| {
-        tx.execute("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('tr3','p1','Second',1,1,1)", [])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
+/// Two done tasks and three plans of Track One's own work, and a done task of
+/// its epic, from Jan 2 to Jan 8, 2026; and tasks around them that the
+/// window leaves out.
+async fn january(f: &Fixture) {
     let day = |day: &str| Some(day.to_owned());
     let row = |id: &str, epic, status, deadline, completed| {
         (
@@ -111,60 +154,200 @@ async fn the_roadmap_draws_work_at_hand_and_the_dated_tasks_of_its_window_and_co
         )
     };
     insert_tasks(
-        &f,
+        f,
         vec![
-            row("late-work", None, "in_progress", day("2000-01-01"), None),
-            row("review", Some("e1"), "in_review", None, None),
-            row("plan", None, "planning", day("2026-12-01"), None),
-            row("late-plan", None, "planning", day("2000-01-01"), None),
-            row("far-plan", None, "planning", day("2030-01-01"), None),
-            row("backlog", None, "planning", None, None),
-            row("older", None, "done", None, Some(tashkent("1999-06-01"))),
             row(
-                "finished",
+                "done-a",
+                None,
+                "done",
+                None,
+                Some(tashkent("2026-01-02", 9)),
+            ),
+            row(
+                "done-b",
+                None,
+                "done",
+                None,
+                Some(tashkent("2026-01-02", 23)),
+            ),
+            row(
+                "done-epic",
                 Some("e1"),
                 "done",
-                day("2000-01-01"),
-                Some(tashkent("2026-02-01")),
+                None,
+                Some(tashkent("2026-01-05", 1)),
+            ),
+            row(
+                "done-before",
+                None,
+                "done",
+                None,
+                Some(tashkent("2025-12-31", 12)),
             ),
             (
-                "deleted".into(),
+                "done-deleted".into(),
                 "tr1",
                 None,
-                "planning",
-                day("2026-03-01"),
+                "done",
                 None,
+                Some(tashkent("2026-01-03", 1)),
                 true,
             ),
-            ("other".into(), "tr3", None, "planning", None, None, false),
+            row("plan-alone", None, "planning", day("2026-01-03"), None),
+            row("plan-pair-a", None, "planning", day("2026-01-08"), None),
+            row("plan-pair-b", None, "planning", day("2026-01-08"), None),
+            row("plan-later", None, "planning", day("2026-02-01"), None),
+            row("backlog", None, "planning", None, None),
         ],
     )
     .await;
-    let (lanes, days) = read_lanes(&f, window("2026-01-01", "2026-12-31")).await;
+    block(f, "plan-alone").await;
+    block(f, "plan-pair-b").await;
+}
+
+#[tokio::test]
+async fn the_lanes_count_done_work_and_plans_by_day_and_give_the_task_of_a_day_with_one() {
+    let f = fixture().await;
+    january(&f).await;
+    let query = days_of(RoadmapWindow {
+        anchor: Some("2026-01-05".into()),
+        ..window("2026-01-01", "2026-01-10")
+    });
+    let lanes = read_lanes(&f, query).await;
+    let days = &lanes.days;
     assert_eq!(
-        (days.from.as_str(), days.to.as_str(), days.limit),
-        ("2026-01-01", "2026-12-31", 2000)
+        (days.from.as_str(), days.to.as_str()),
+        ("2026-01-01", "2026-01-10")
     );
-    assert_eq!(ids(&lanes.open), ["late-work", "review"]);
-    assert_eq!(lanes.open[0].started_at, Some(1));
-    // Plans without a deadline stay on the Board; a late plan comes first, and
-    // a plan due after the window waits for the next page.
-    assert_eq!(ids(&days.plans.items), ["late-plan", "plan"]);
-    assert_eq!(days.plans.reach, "2026-12-31");
-    // Only the tasks done in the window come; an earlier one waits.
-    assert_eq!(ids(&days.done.items), ["finished"]);
-    assert_eq!(days.done.reach, "2026-01-01");
-    assert_eq!(lanes.overdue, 2);
+    // Each list starts on Jan 1 and ends at its last day with any.
+    assert_eq!(
+        sections(&days.sections),
+        [
+            (
+                "tr1",
+                None,
+                &[0, 2][..],
+                &[0, 0, 1, 0, 0, 0, 0, 2][..],
+                &[0, 0, 1, 0, 0, 0, 0, 1][..]
+            ),
+            ("tr1", Some("e1"), &[0, 0, 0, 0, 1][..], &[][..], &[][..]),
+        ]
+    );
+    // The days with one task give it, in its section.
+    let marks = day_marks(days);
+    assert_eq!(
+        marks
+            .iter()
+            .map(|(epic, mark)| (*epic, mark.id.as_str()))
+            .collect::<Vec<_>>(),
+        [(None, "plan-alone"), (Some("e1"), "done-epic")]
+    );
+    let plan = marks[0].1;
+    assert_eq!(
+        (
+            plan.task_key.as_str(),
+            plan.status.as_str(),
+            plan.deadline.as_deref(),
+            plan.blocked,
+            plan.completed_at
+        ),
+        ("ONE-6", "planning", Some("2026-01-03"), true, None)
+    );
+    assert_eq!(marks[1].1.completed_at, Some(tashkent("2026-01-05", 1)));
     assert_eq!(
         (lanes.first_day.as_deref(), lanes.last_day.as_deref()),
-        (Some("1999-06-01"), Some("2030-01-01"))
+        (Some("2025-12-31"), Some("2026-02-01"))
     );
-    let mut sections: Vec<_> = lanes
+    // As many as the read asks for, nearest the anchor, Jan 5, first.
+    let one = read_lanes(
+        &f,
+        days_of(RoadmapWindow {
+            anchor: Some("2026-01-05".into()),
+            marks: Some(1),
+            ..window("2026-01-01", "2026-01-10")
+        }),
+    )
+    .await;
+    assert_eq!(day_mark_ids(&one.days), ["done-epic"]);
+    // None, for a read of the counts alone.
+    let counts = read_lanes(
+        &f,
+        days_of(RoadmapWindow {
+            marks: Some(0),
+            ..window("2026-01-01", "2026-01-10")
+        }),
+    )
+    .await;
+    assert!(day_marks(&counts.days).is_empty());
+    assert_eq!(sections(&counts.days.sections), sections(&days.sections));
+    // The same days on their own.
+    let alone = f
+        .service
+        .roadmap_days(
+            &f.member,
+            "p1".into(),
+            RoadmapWindow {
+                anchor: Some("2026-01-05".into()),
+                ..window("2026-01-01", "2026-01-10")
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(sections(&alone.sections), sections(&days.sections));
+    assert_eq!(day_mark_ids(&alone), day_mark_ids(days));
+
+    // Without a window, the lanes hold the days the Roadmap opens with; the
+    // Roadmap read of other pages and MCP has no lanes.
+    let opening = read_lanes(&f, LanesQuery::default()).await;
+    let (from, to): (jiff::civil::Date, jiff::civil::Date) = (
+        opening.days.from.parse().unwrap(),
+        opening.days.to.parse().unwrap(),
+    );
+    assert_eq!((to - from).get_days(), 120 + 165);
+    let structure = f
+        .service
+        .roadmap(&f.member, "p1".into(), None)
+        .await
+        .unwrap();
+    assert!(structure.lanes.is_none());
+    assert!(structure.epics.iter().all(|epic| epic.summary.is_some()));
+}
+
+#[tokio::test]
+async fn the_lanes_draw_each_sections_most_urgent_work_count_the_rest_and_step_through_the_late() {
+    let f = fixture().await;
+    let day = |day: &str| Some(day.to_owned());
+    let row = |id: &str, epic, status, deadline| {
+        (id.to_owned(), "tr1", epic, status, deadline, None, false)
+    };
+    insert_tasks(
+        &f,
+        vec![
+            // Started first, without a deadline: least urgent.
+            row("idle", None, "in_progress", None),
+            row("far", None, "in_review", day("2999-06-01")),
+            row("near", None, "in_progress", day("2999-01-01")),
+            row("stuck", None, "in_progress", None),
+            row("late", None, "in_progress", day("2000-02-01")),
+            row("epic-work", Some("e1"), "in_review", None),
+            row("late-plan", None, "planning", day("2000-01-01")),
+        ],
+    )
+    .await;
+    block(&f, "stuck").await;
+    let lanes = read_lanes(&f, LanesQuery::default()).await;
+    // Late, then blocked, then the nearest deadline; the epic's one.
+    assert_eq!(ids(&lanes.open), ["late", "stuck", "near", "epic-work"]);
+    assert_eq!(lanes.overdue, 2);
+    // The longest overdue first.
+    let late = lanes.late.as_deref().unwrap();
+    assert_eq!(mark_ids(late), ["late-plan", "late"]);
+    assert_eq!(late[1].mark.started_at, Some(5));
+    let mut counts: Vec<_> = lanes
         .sections
         .iter()
         .map(|section| {
             (
-                section.track_id.as_str(),
                 section.epic_id.as_deref(),
                 [
                     section.planning,
@@ -175,117 +358,38 @@ async fn the_roadmap_draws_work_at_hand_and_the_dated_tasks_of_its_window_and_co
             )
         })
         .collect();
-    sections.sort();
-    assert_eq!(
-        sections,
-        [
-            ("tr1", None, [4, 1, 0, 1]),
-            ("tr1", Some("e1"), [0, 0, 1, 1]),
-            ("tr3", None, [1, 0, 0, 0]),
-        ]
-    );
-    // The next pages reach the earlier done task and the later plan.
-    let earlier = f
+    counts.sort();
+    assert_eq!(counts, [(None, [1, 4, 1, 0]), (Some("e1"), [0, 0, 1, 0])]);
+    // The rest of the work in progress, on demand, after the bars.
+    let list = f
         .service
-        .roadmap_tasks(
+        .roadmap_list(
             &f.member,
-            page_query(&days.done.next_cursor, ("from", "1990-01-01"), None),
+            RoadmapListQuery {
+                project_id: "p1".into(),
+                track_id: "tr1".into(),
+                epic_id: None,
+                kind: ListKind::Open,
+                from: None,
+                to: None,
+            },
         )
         .await
         .unwrap();
     assert_eq!(
-        (
-            ids(&earlier.items),
-            earlier.reach.as_str(),
-            &earlier.next_cursor
-        ),
-        (vec!["older"], "1990-01-01", &None)
+        (mark_ids(&list.items), list.total),
+        (vec!["late", "stuck", "near", "far", "idle"], 5)
     );
-    let later = f
-        .service
-        .roadmap_tasks(
-            &f.member,
-            page_query(&days.plans.next_cursor, ("to", "2031-01-01"), None),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        (ids(&later.items), later.reach.as_str(), &later.next_cursor),
-        (vec!["far-plan"], "2031-01-01", &None)
-    );
-
-    // Without a window, the lanes hold the days the Roadmap opens with; the
-    // Roadmap read of other pages and MCP has no lanes.
-    let (_, opening) = read_lanes(&f, RoadmapWindow::default()).await;
-    let (from, to): (jiff::civil::Date, jiff::civil::Date) =
-        (opening.from.parse().unwrap(), opening.to.parse().unwrap());
-    assert_eq!((to - from).get_days(), 300);
-    let structure = f
-        .service
-        .roadmap(&f.member, "p1".into(), None)
-        .await
-        .unwrap();
-    assert!(structure.lanes.is_none());
-    assert_eq!(structure.tracks.len(), 2);
-    assert!(structure.epics.iter().all(|epic| epic.summary.is_some()));
 }
 
 #[tokio::test]
-async fn roadmap_pages_go_on_from_their_cursor_whatever_changes_between_them() {
+async fn a_read_of_named_tasks_gives_them_and_the_work_in_progress_and_days_of_their_sections() {
     let f = fixture().await;
-    // More than a read holds of each: plans in pairs that share a deadline,
-    // and done tasks in pairs that share a second.
-    let count = 2_004;
-    let mut tasks = Vec::new();
-    for index in 0..count {
-        let deadline = jiff::civil::date(2027, 1, 1) + jiff::Span::new().days(index / 2);
-        tasks.push((
-            format!("plan-{index:04}"),
-            "tr1",
-            None,
-            "planning",
-            Some(deadline.to_string()),
-            None,
-            false,
-        ));
-        let completed = tashkent("2026-06-01") - 3_600 * (index / 2);
-        tasks.push((
-            format!("done-{index:04}"),
-            "tr1",
-            None,
-            "done",
-            None,
-            Some(completed),
-            false,
-        ));
-    }
-    insert_tasks(&f, tasks).await;
-    let (_, first) = read_lanes(&f, window("2020-01-01", "2035-01-01")).await;
-    assert_eq!(
-        (first.plans.items.len(), first.done.items.len()),
-        (2_000, 2_000)
-    );
-    // A full page covers in full the days before its last plan's, and the days
-    // after its earliest done task's.
-    let last_plan = first.plans.items.last().unwrap().deadline.clone().unwrap();
-    assert_eq!(
-        first.plans.reach,
-        (last_plan.parse::<jiff::civil::Date>().unwrap() - jiff::Span::new().days(1)).to_string()
-    );
-    assert!(
-        first.done.reach.as_str() > "2026-03-01" && first.done.reach.as_str() < "2026-06-01",
-        "{}",
-        first.done.reach
-    );
-
-    // Changes in the part already read, a plan due on the first day and a task
-    // just finished, leave the next pages where they were; a plan in the
-    // part still to read joins it.
-    let row = |id: &str, status, deadline: Option<&str>, completed| {
+    let row = |id: &str, epic, status, deadline: Option<&str>, completed| {
         (
             id.to_owned(),
             "tr1",
-            None,
+            epic,
             status,
             deadline.map(str::to_owned),
             completed,
@@ -295,159 +399,24 @@ async fn roadmap_pages_go_on_from_their_cursor_whatever_changes_between_them() {
     insert_tasks(
         &f,
         vec![
-            row("plan-new-early", "planning", Some("2027-01-01"), None),
-            row("done-new", "done", None, Some(tashkent("2026-06-01") + 60)),
-            row("plan-new-late", "planning", Some("2029-12-31"), None),
-        ],
-    )
-    .await;
-    let page = |cursor: &Option<String>, bound, limit| {
-        f.service
-            .roadmap_tasks(&f.member, page_query(cursor, bound, limit))
-    };
-    let plans = page(&first.plans.next_cursor, ("to", "2035-01-01"), Some(3))
-        .await
-        .unwrap();
-    let rest = page(&plans.next_cursor, ("to", "2035-01-01"), None)
-        .await
-        .unwrap();
-    assert_eq!(rest.next_cursor, None);
-    let mut all_plans = ids(&first.plans.items);
-    all_plans.extend(ids(&plans.items));
-    all_plans.extend(ids(&rest.items));
-    let mut expected: Vec<String> = (0..count).map(|index| format!("plan-{index:04}")).collect();
-    expected.push("plan-new-late".into());
-    assert_eq!(all_plans, expected);
-
-    let done = page(&first.done.next_cursor, ("from", "2020-01-01"), Some(3))
-        .await
-        .unwrap();
-    let rest = page(&done.next_cursor, ("from", "2020-01-01"), None)
-        .await
-        .unwrap();
-    assert_eq!(rest.next_cursor, None);
-    let mut all_done = ids(&first.done.items);
-    all_done.extend(ids(&done.items));
-    all_done.extend(ids(&rest.items));
-    assert_eq!(
-        all_done.len(),
-        count as usize,
-        "every done task once, and not the new one"
-    );
-    assert_eq!(
-        all_done.iter().collect::<HashSet<_>>().len(),
-        count as usize
-    );
-    assert!(!all_done.contains(&"done-new"));
-    // The oldest pair finished in the same second; the one done first is last.
-    assert_eq!(*all_done.last().unwrap(), format!("done-{:04}", count - 2));
-}
-
-#[tokio::test]
-async fn roadmap_windows_and_pages_check_their_days_and_cursor() {
-    let f = fixture().await;
-    let invalid = |error: AppError, field: &str| {
-        assert_eq!(error.code(), "validation_failed");
-        assert!(format!("{error:?}").contains(field), "{error:?}");
-    };
-    for (window, field) in [
-        (window("2026-02-01", "2026-01-01"), "from"),
-        (window("2026-1-1", "2026-02-01"), "from"),
-        (window("2026-01-01", "soon"), "to"),
-    ] {
-        invalid(
-            f.service
-                .roadmap(&f.member, "p1".into(), Some(LanesQuery::Days(window)))
-                .await
-                .unwrap_err(),
-            field,
-        );
-    }
-    let plans = paging_cursor(r#"{"kind":"plans","deadline":"2026-01-01","id":"x"}"#);
-    let done = paging_cursor(r#"{"kind":"done","completed_at":1,"completion_order":0,"id":"x"}"#);
-    for (cursor, bound, field) in [
-        (&plans, ("from", "2026-01-01"), "from"),
-        (&done, ("to", "2026-01-01"), "to"),
-        (&plans, ("", ""), "to"),
-        (&done, ("", ""), "from"),
-        (&done, ("from", "Monday"), "from"),
-    ] {
-        invalid(
-            f.service
-                .roadmap_tasks(&f.member, page_query(cursor, bound, None))
-                .await
-                .unwrap_err(),
-            field,
-        );
-    }
-    for cursor in [
-        Some("not a cursor".to_owned()),
-        // A cursor names only where the page goes on.
-        paging_cursor(r#"{"kind":"plans","deadline":"2026-01-01","id":"x","limit":5}"#),
-    ] {
-        let error = f
-            .service
-            .roadmap_tasks(&f.member, page_query(&cursor, ("to", "2026-01-01"), None))
-            .await
-            .unwrap_err();
-        assert_eq!(error.code(), "validation_failed");
-    }
-}
-
-fn paging_cursor(json: &str) -> Option<String> {
-    Some(base64::Engine::encode(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        json,
-    ))
-}
-
-#[tokio::test]
-async fn the_roadmap_page_and_its_bootstrap_read_the_lanes_of_the_days_they_name() {
-    let f = fixture().await;
-    let app = router(&f);
-    let get = |uri: &str| {
-        let app = app.clone();
-        let uri = uri.to_owned();
-        async move {
-            let response = app.oneshot(signed_in_get("u2", &uri)).await.unwrap();
-            assert_eq!(response.status(), 200, "{uri}");
-            serde_json::from_slice::<Value>(&body_bytes(response).await).unwrap()
-        }
-    };
-    // Other pages read the tracks, epics and milestones alone.
-    let structure = get("/api/projects/p1/roadmap").await;
-    assert_eq!(structure["epics"].as_array().unwrap().len(), 2);
-    assert!(structure.get("lanes").is_none());
-    let page = get("/api/projects/p1/roadmap/lanes?from=2026-01-01&to=2026-02-01").await;
-    assert_eq!(
-        (&page["lanes"]["from"], &page["lanes"]["to"]),
-        (&json!("2026-01-01"), &json!("2026-02-01"))
-    );
-    let bootstrap =
-        get("/api/bootstrap?projectId=p1&view=roadmap&roadmapFrom=2026-01-01&roadmapTo=2026-02-01")
-            .await;
-    assert_eq!(
-        (&bootstrap["roadmap"]["from"], &bootstrap["roadmap"]["to"]),
-        (&json!("2026-01-01"), &json!("2026-02-01"))
-    );
-    let unknown = app
-        .clone()
-        .oneshot(signed_in_get("u2", "/api/projects/p1/roadmap/lanes?days=3"))
-        .await
-        .unwrap();
-    assert_eq!(unknown.status(), 400);
-}
-
-#[tokio::test]
-async fn a_read_of_the_tasks_a_change_named_gives_them_with_the_counts_and_no_days() {
-    let f = fixture().await;
-    let row = |id: &str, status, deleted| (id.to_owned(), "tr1", None, status, None, None, deleted);
-    insert_tasks(
-        &f,
-        vec![
-            row("renamed", "planning", false),
-            row("working", "in_progress", false),
-            row("gone", "planning", true),
+            row("renamed", None, "planning", Some("2026-01-03"), None),
+            row("own-work", None, "in_progress", None, None),
+            row(
+                "own-done",
+                None,
+                "done",
+                None,
+                Some(tashkent("2026-01-02", 9)),
+            ),
+            row("working", Some("e1"), "in_review", None, None),
+            row(
+                "epic-done",
+                Some("e1"),
+                "done",
+                None,
+                Some(tashkent("2026-01-04", 9)),
+            ),
+            ("gone".into(), "tr1", None, "planning", None, None, true),
         ],
     )
     .await;
@@ -457,58 +426,306 @@ async fn a_read_of_the_tasks_a_change_named_gives_them_with_the_counts_and_no_da
     })
     .await
     .unwrap();
-    let named = ["renamed", "gone", "elsewhere", "missing"]
-        .map(String::from)
-        .to_vec();
-    let lanes = f
-        .service
-        .roadmap(&f.member, "p1".into(), Some(LanesQuery::Tasks(named)))
-        .await
-        .unwrap()
-        .lanes
-        .unwrap();
-    // Only the named tasks still in the project, and no window's plans or done tasks.
-    assert_eq!(ids(lanes.tasks.as_deref().unwrap()), ["renamed"]);
-    assert!(lanes.days.is_none());
-    assert!(
-        lanes.open.is_empty(),
-        "the rest of the work in progress stays as it was"
+    let query = |named: &[&str], sections: &[&str]| LanesQuery {
+        window: window("2026-01-01", "2026-01-10"),
+        tasks: Some(named.iter().map(|id| (*id).to_owned()).collect()),
+        sections: sections.iter().map(|key| (*key).to_owned()).collect(),
+        late: false,
+    };
+    fn drawn(lanes: &RoadmapTimeline) -> (Vec<&str>, Vec<Option<&str>>, Vec<&str>) {
+        let counted = lanes
+            .days
+            .sections
+            .iter()
+            .map(|section| section.epic_id.as_deref())
+            .collect();
+        (
+            ids(&lanes.open),
+            counted,
+            ids(lanes.tasks.as_deref().unwrap()),
+        )
+    }
+    // The epic a named task is in: its work in progress and its days alone.
+    let lanes = read_lanes(&f, query(&["working", "gone", "elsewhere", "missing"], &[])).await;
+    assert_eq!(drawn(&lanes), (vec!["working"], vec![Some("e1")], vec![]));
+    // And the track's own work, where a named task is too, or that the read names.
+    let lanes = read_lanes(&f, query(&["working", "renamed"], &[])).await;
+    assert_eq!(
+        drawn(&lanes),
+        (
+            vec!["own-work", "working"],
+            vec![None, Some("e1")],
+            vec!["renamed"]
+        ),
+        "only those still in the project, and not twice"
+    );
+    let lanes = read_lanes(&f, query(&["working"], &["tr1/"])).await;
+    assert_eq!(drawn(&lanes).1, [None, Some("e1")]);
+    // A read of sections alone, naming no task.
+    let lanes = read_lanes(&f, query(&[], &["tr1/"])).await;
+    assert_eq!(drawn(&lanes), (vec!["own-work"], vec![None], vec![]));
+    assert_eq!(lanes.sections.len(), 2, "the counts of every section");
+    // The longest overdue, only when a named task is among them, or the read says one was.
+    let late = |query: LanesQuery| async {
+        let lanes = read_lanes(&f, query).await;
+        lanes.late.map(|late| mark_ids(&late).join(" "))
+    };
+    assert_eq!(late(query(&["working"], &[])).await, None);
+    assert_eq!(
+        late(query(&["renamed"], &[])).await.as_deref(),
+        Some("renamed")
     );
     assert_eq!(
-        (
-            lanes.sections.len(),
-            lanes.sections[0].planning,
-            lanes.sections[0].in_progress
-        ),
-        (1, 1, 1)
+        late(LanesQuery {
+            late: true,
+            ..query(&["working"], &[])
+        })
+        .await
+        .as_deref(),
+        Some("renamed")
     );
+    // Of the structure, the epics of the sections it changed alone.
+    let view = |named: &[&str]| {
+        f.service
+            .roadmap(&f.member, "p1".into(), Some(query(named, &[])))
+    };
+    let changed = view(&["working"]).await.unwrap();
+    assert_eq!(
+        (
+            changed.tracks.len(),
+            changed.milestones.len(),
+            changed
+                .epics
+                .iter()
+                .map(|epic| epic.id.as_str())
+                .collect::<Vec<_>>()
+        ),
+        (0, 0, vec!["e1"])
+    );
+    assert!(view(&["renamed"]).await.unwrap().epics.is_empty());
     let many = (0..51).map(|index| format!("t{index}")).collect();
     let error = f
         .service
-        .roadmap(&f.member, "p1".into(), Some(LanesQuery::Tasks(many)))
+        .roadmap(
+            &f.member,
+            "p1".into(),
+            Some(LanesQuery {
+                tasks: Some(many),
+                ..LanesQuery::default()
+            }),
+        )
         .await
         .unwrap_err();
     assert_eq!(error.code(), "validation_failed");
-    // Over HTTP, named tasks come without days, and not with them.
+}
+
+#[tokio::test]
+async fn a_list_gives_a_sections_done_tasks_or_plans_of_its_days() {
+    let f = fixture().await;
+    january(&f).await;
+    // Sixty more done on Jan 9: a list gives the first fifty.
+    let many = (0..60)
+        .map(|index| {
+            (
+                format!("busy-{index:02}"),
+                "tr1",
+                None,
+                "done",
+                None,
+                Some(tashkent("2026-01-09", 0) + index),
+                false,
+            )
+        })
+        .collect();
+    insert_tasks(&f, many).await;
+    let list = |kind, from: &str, to: &str| {
+        f.service.roadmap_list(
+            &f.member,
+            RoadmapListQuery {
+                project_id: "p1".into(),
+                track_id: "tr1".into(),
+                epic_id: None,
+                kind,
+                from: Some(from.into()),
+                to: Some(to.into()),
+            },
+        )
+    };
+    let done = list(ListKind::Done, "2026-01-01", "2026-01-03")
+        .await
+        .unwrap();
+    assert_eq!(
+        (mark_ids(&done.items), done.total),
+        (vec!["done-b", "done-a"], 2)
+    );
+    let plans = list(ListKind::Plans, "2026-01-01", "2026-01-10")
+        .await
+        .unwrap();
+    assert_eq!(
+        (mark_ids(&plans.items), plans.total),
+        (vec!["plan-alone", "plan-pair-a", "plan-pair-b"], 3)
+    );
+    let busy = list(ListKind::Done, "2026-01-09", "2026-01-09")
+        .await
+        .unwrap();
+    assert_eq!(
+        (busy.items.len(), busy.total, busy.items[0].mark.id.as_str()),
+        (50, 60, "busy-59")
+    );
+    let unbounded = list(ListKind::Done, "2026-01-01", "2027-06-01")
+        .await
+        .unwrap_err();
+    assert_eq!(unbounded.code(), "validation_failed");
+}
+
+#[tokio::test]
+async fn roadmap_windows_check_their_days() {
+    let f = fixture().await;
+    let invalid = |error: AppError, field: &str| {
+        assert_eq!(error.code(), "validation_failed");
+        assert!(format!("{error:?}").contains(field), "{error:?}");
+    };
+    for (window, field) in [
+        (window("2026-02-01", "2026-01-01"), "from"),
+        (window("2026-1-1", "2026-02-01"), "from"),
+        (window("2026-01-01", "soon"), "to"),
+        (window("2026-01-01", "2027-02-05"), "to"),
+        (
+            RoadmapWindow {
+                anchor: Some("now".into()),
+                ..window("2026-01-01", "2026-02-01")
+            },
+            "anchor",
+        ),
+    ] {
+        invalid(
+            f.service
+                .roadmap(&f.member, "p1".into(), Some(days_of(window.clone())))
+                .await
+                .unwrap_err(),
+            field,
+        );
+        invalid(
+            f.service
+                .roadmap_days(&f.member, "p1".into(), window)
+                .await
+                .unwrap_err(),
+            field,
+        );
+    }
+    // A read of days alone names both ends.
+    invalid(
+        f.service
+            .roadmap_days(
+                &f.member,
+                "p1".into(),
+                RoadmapWindow {
+                    from: Some("2026-01-01".into()),
+                    ..RoadmapWindow::default()
+                },
+            )
+            .await
+            .unwrap_err(),
+        "to",
+    );
+    // A read of a change's sections covers every day the page holds: years.
+    let named = |to: &str| LanesQuery {
+        window: window("2020-01-01", to),
+        tasks: Some(Vec::new()),
+        sections: vec!["tr1/".into()],
+        late: false,
+    };
+    assert!(
+        f.service
+            .roadmap(&f.member, "p1".into(), Some(named("2029-12-31")))
+            .await
+            .is_ok()
+    );
+    invalid(
+        f.service
+            .roadmap(&f.member, "p1".into(), Some(named("2030-01-31")))
+            .await
+            .unwrap_err(),
+        "to",
+    );
+}
+
+#[tokio::test]
+async fn the_roadmap_page_reads_its_lanes_days_and_lists_and_its_bootstrap_the_days_it_names() {
+    let f = fixture().await;
+    january(&f).await;
     let app = router(&f);
-    let response = app
-        .clone()
-        .oneshot(signed_in_get(
-            "u2",
-            "/api/projects/p1/roadmap/lanes?tasks=renamed,working",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
-    assert_eq!(body["lanes"]["tasks"].as_array().unwrap().len(), 2);
-    assert!(body["lanes"].get("plans").is_none() && body["lanes"].get("from").is_none());
-    let both = app
-        .oneshot(signed_in_get(
-            "u2",
-            "/api/projects/p1/roadmap/lanes?tasks=renamed&from=2026-01-01",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(both.status(), 400);
+    let get = |uri: &str| {
+        let app = app.clone();
+        let uri = uri.to_owned();
+        async move {
+            let response = app.oneshot(signed_in_get("u2", &uri)).await.unwrap();
+            let status = response.status();
+            (
+                status,
+                serde_json::from_slice::<Value>(&body_bytes(response).await).unwrap_or(Value::Null),
+            )
+        }
+    };
+    // Other pages read the tracks, epics and milestones alone.
+    let (_, structure) = get("/api/projects/p1/roadmap").await;
+    assert_eq!(structure["epics"].as_array().unwrap().len(), 2);
+    assert!(structure.get("lanes").is_none());
+    let (_, page) = get(
+        "/api/projects/p1/roadmap/lanes?from=2026-01-01&to=2026-01-10&anchor=2026-01-05&marks=1",
+    )
+    .await;
+    // The epic's one done task, in its section, which names its track and epic.
+    let epic = &page["lanes"]["days"]["sections"][1];
+    assert_eq!(
+        (
+            &page["lanes"]["days"]["from"],
+            &epic["epicId"],
+            &epic["marks"][0]["id"]
+        ),
+        (&json!("2026-01-01"), &json!("e1"), &json!("done-epic"))
+    );
+    // A mark leaves out what it doesn't have, and what its section says.
+    let mark = epic["marks"][0].as_object().unwrap();
+    assert!(
+        ["deadline", "blocked", "trackId", "epicId"]
+            .iter()
+            .all(|field| !mark.contains_key(*field))
+    );
+    assert!(page["lanes"]["days"]["sections"][0].get("marks").is_none());
+    let (_, days) = get("/api/projects/p1/roadmap/days?from=2026-01-01&to=2026-01-10").await;
+    assert_eq!(days["sections"][0]["done"], json!([0, 2]));
+    let (_, list) =
+        get("/api/projects/p1/roadmap/list?track=tr1&kind=plans&from=2026-01-01&to=2026-01-10")
+            .await;
+    assert_eq!(list["total"], 3);
+    let (_, list) = get(
+        "/api/projects/p1/roadmap/list?track=tr1&epic=e1&kind=done&from=2026-01-01&to=2026-01-10",
+    )
+    .await;
+    assert_eq!(list["items"][0]["id"], "done-epic");
+    let (_, changed) = get("/api/projects/p1/roadmap/lanes?tasks=plan-alone,done-a&sections=tr1/&late=true&from=2026-01-01&to=2026-01-10").await;
+    assert_eq!(changed["lanes"]["tasks"].as_array().unwrap().len(), 2);
+    assert!(changed["lanes"]["late"].is_array() && changed["tracks"] == json!([]));
+    let (_, bootstrap) = get("/api/bootstrap?projectId=p1&view=roadmap&roadmapFrom=2026-01-01&roadmapTo=2026-02-01&roadmapAnchor=2026-01-05").await;
+    assert_eq!(
+        (
+            &bootstrap["roadmap"]["days"]["from"],
+            &bootstrap["roadmap"]["days"]["to"]
+        ),
+        (&json!("2026-01-01"), &json!("2026-02-01"))
+    );
+    assert_eq!(
+        bootstrap["roadmap"]["days"]["sections"][1]["marks"][0]["id"],
+        "done-epic"
+    );
+    for refused in [
+        "/api/projects/p1/roadmap/lanes?days=3",
+        "/api/projects/p1/roadmap/lanes?sections=tr1/",
+        "/api/projects/p1/roadmap/lanes?late=true",
+        "/api/projects/p1/roadmap/days?from=2026-01-01",
+        "/api/projects/p1/roadmap/list?track=tr1&kind=all",
+    ] {
+        assert_eq!(get(refused).await.0, 400, "{refused}");
+    }
 }

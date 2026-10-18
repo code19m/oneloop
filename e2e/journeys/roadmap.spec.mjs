@@ -169,6 +169,37 @@ test('the keyboard reaches each lane\'s grip, menu and timeline, moves along it,
   await expect(page.locator('.tp-title')).toHaveValue('Late work');
 });
 
+test('done work of one day is a count whose list the server gives, and a teammate\'s track rename reads no lanes', async ({ page, instance }) => {
+  const { project, track } = instance.projects[0];
+  const shipped = [];
+  for (let i = 0; i < 3; i++) {
+    const [made] = (await command(instance.api, 'task.create', { projectId: project.id, trackId: track.id, title: `Shipped ${i}` })).entities;
+    shipped.push((await command(instance.api, 'task.move', { taskId: made.id, status: 'done' }, made.revision)).entities[0]);
+  }
+  await openApp(page, instance, `roadmap/${project.id}?scale=months`);
+  const lane = laneOf(page, track.name);
+  // Three done today: the lanes count them, and hold none of them.
+  const count = lane.locator('.rt-count-done');
+  await expect(count).toHaveText('3');
+  const lists = [];
+  page.on('request', request => { const url = new URL(request.url()); if (url.pathname.endsWith('/roadmap/list')) lists.push(url); });
+  await count.click();
+  const list = page.locator('#roadmap-list');
+  await expect(list.locator('.tid')).toHaveText(shipped.map(task => task.taskKey).reverse());
+  expect(lists.map(url => [url.searchParams.get('track'), url.searchParams.get('kind')])).toEqual([[track.id, 'done']]);
+  await page.keyboard.press('Escape');
+  await expect(list).toHaveCount(0);
+  await expect(count).toBeFocused();
+  // A teammate renames the track: the Roadmap reads its tracks, epics and milestones, a few KiB, and no lanes.
+  const reads = [];
+  page.on('response', async response => { const url = new URL(response.url()); if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/events')) reads.push([url.pathname, (await response.body()).length]); });
+  await command(instance.writer, 'track.update', { trackId: track.id, name: 'Renamed track' }, track.revision);
+  await expect(page.getByRole('heading', { name: 'Renamed track', exact: true })).toBeVisible();
+  await expect.poll(() => reads.length).toBe(1);
+  expect(reads[0][0]).toBe(`/api/projects/${project.id}/roadmap`);
+  expect(reads[0][1]).toBeLessThan(8 * 1024);
+});
+
 test('a track\'s name keeps clear of its grip and ⋮ on one line, and shows in full in its tip', async ({ page, instance }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const { project } = instance.projects[0], long = 'Platform and infrastructure for every region and partner';

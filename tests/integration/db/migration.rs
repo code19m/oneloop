@@ -472,7 +472,17 @@ fn a_schema_eight_database_puts_every_task_on_its_epics_track() {
     ] {
         assert!(schema_before.remove(replaced).is_some());
     }
-    // Schema 10 adds the Roadmap's index of dated plans.
+    // Schema 10 gives the index of done tasks the columns the Roadmap counts
+    // them by, and adds the Roadmap's index of dated plans.
+    let done = schema_after
+        .remove("tasks_project_done_completed_idx")
+        .unwrap();
+    assert!(
+        schema_before
+            .remove("tasks_project_done_completed_idx")
+            .is_some()
+    );
+    assert!(done.contains("id DESC, track_id, epic_id"), "{done}");
     for added in [
         "tasks_project_track_status_idx",
         "tasks_dated_plans_idx",

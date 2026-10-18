@@ -216,7 +216,9 @@ pub struct BoardView {
 }
 
 /// A project's Roadmap: its tracks, its epics with their progress, its
-/// milestones and, for the Roadmap page, the tasks its lanes draw.
+/// milestones and, for the Roadmap page, the tasks its lanes draw. A read of
+/// the tasks a change named has the epics of the sections it changed alone,
+/// and no tracks or milestones, which a task's change leaves as they are.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoadmapView {
@@ -228,10 +230,10 @@ pub struct RoadmapView {
     pub lanes: Option<RoadmapTimeline>,
 }
 
-/// The tasks the Roadmap's lanes draw, and what they count: the work in
-/// progress, and the dated plans and done tasks of a window of days, or the
-/// tasks a change made elsewhere named. Plans without a deadline stay on the
-/// Board, and the counts include them.
+/// What the Roadmap's lanes draw, and what they count: the work in progress,
+/// the longest overdue tasks, and the done tasks and dated plans of a window
+/// of days, counted by day. Plans without a deadline stay on the Board, and
+/// the counts include them.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoadmapTimeline {
@@ -241,36 +243,98 @@ pub struct RoadmapTimeline {
     /// Tasks past their deadline and not done.
     pub overdue: i64,
     /// The first and last day that any done task or dated plan of the project
-    /// falls on, so the timeline spans them before their pages load.
+    /// falls on, so the timeline spans them before their days load.
     pub first_day: Option<String>,
     pub last_day: Option<String>,
-    /// Tasks in progress and in review, in the Board's order, up to a limit;
-    /// a read of named tasks has only those among `tasks`.
+    /// The work in progress the lanes draw: in each section, the few most
+    /// urgent tasks; the rest only count. A read of the tasks a change named
+    /// has those of their sections and of the sections it names.
     pub open: Vec<TaskView>,
-    /// The window's dated plans and done tasks; a read of named tasks has none.
-    #[serde(flatten)]
-    pub days: Option<RoadmapDays>,
-    /// The named tasks that are still in the project.
+    /// The tasks longest overdue, the longest first, which Overdue steps
+    /// through. A read of the tasks a change named has them only when they
+    /// may have changed: when a named task is among them, or the read says
+    /// one was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub late: Option<Vec<RoadmapMark>>,
+    /// The window's done tasks and dated plans.
+    pub days: RoadmapDays,
+    /// The tasks a change named that are still in the project, when a read
+    /// names them, but for those among `open`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tasks: Option<Vec<TaskView>>,
 }
 
-/// The dated plans and done tasks of a window of days.
+/// The done tasks and dated plans of a window of days, `from` to `to`: how
+/// many each section has on each day, and the task itself on a day that has
+/// one.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoadmapDays {
-    /// The first and last day of the window, which a read of the same lanes
-    /// asks for again.
     pub from: String,
     pub to: String,
-    /// The most dated plans, and the most done tasks, that one read gives and
-    /// the lanes hold.
-    pub limit: usize,
-    /// Planned tasks with a deadline by the window's last day, the earliest
-    /// first, late ones included.
-    pub plans: RoadmapPage,
-    /// Tasks done in the window, the latest finished first.
-    pub done: RoadmapPage,
+    /// Each section with a done task or dated plan in the window.
+    pub sections: Vec<SectionDays>,
+}
+
+/// One section's days: for each day of the window, from its first, the
+/// tasks done on it, the plans due on it, and how many of those are blocked.
+/// Each list ends at its last day with any.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionDays {
+    pub track_id: String,
+    pub epic_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub done: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plans: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked: Vec<i64>,
+    /// The task of each of its days with one: as many as the read asks for
+    /// in all sections, those nearest its anchor day first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marks: Vec<DayMark>,
+}
+
+/// A task as a mark on the Roadmap shows it, within its section: on its
+/// line, in its card and in a list. Only what those show.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DayMark {
+    pub id: String,
+    pub task_key: String,
+    pub title: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assignee_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub blocked: bool,
+}
+
+/// A task as a mark shows it, with its track and epic: as the longest
+/// overdue and the tasks of a list are.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoadmapMark {
+    pub track_id: String,
+    pub epic_id: Option<String>,
+    #[serde(flatten)]
+    pub mark: DayMark,
+}
+
+/// The tasks a mark that counts several lists: the first ones, and how many
+/// there are.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoadmapList {
+    pub items: Vec<RoadmapMark>,
+    pub total: i64,
 }
 
 /// How many tasks a track's own work (without `epic_id`) or one of its epics
@@ -284,20 +348,6 @@ pub struct SectionCounts {
     pub in_progress: i64,
     pub in_review: i64,
     pub done: i64,
-}
-
-/// A page of the Roadmap's dated plans or done tasks: every one from where
-/// the page starts to `reach`, or as many as fit.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RoadmapPage {
-    pub items: Vec<TaskView>,
-    /// The day the page covers in full: done tasks from it on, or dated plans
-    /// up to it. It is the day asked for unless the page was full.
-    pub reach: String,
-    /// Where the next page goes on, earlier for done tasks and later for
-    /// plans; null when no task is left that way.
-    pub next_cursor: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -3,13 +3,15 @@
 
 mod board;
 mod bootstrap;
+mod lanes;
 mod roadmap;
 
 use board::{
     board_columns, board_counts_connection, board_page_connection, epic_task_page_connection,
 };
 use bootstrap::bootstrap_snapshot;
-use roadmap::{epics, local_date, milestones, timeline, timeline_page, tracks};
+use lanes::timeline;
+use roadmap::{epics, local_date, milestones, tracks};
 
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -26,8 +28,8 @@ use crate::{
 use super::{
     BlockView, BoardCounts, BoardView, BootstrapView, ChecklistItemView, DomainService, DoneOrder,
     EpicSummary, EpicView, MembershipView, MilestoneView, Page, PageSummary, PoolItemView,
-    PoolScope, ProjectMembers, ProjectView, RoadmapPage, RoadmapView, SessionView, TaskStatus,
-    TaskView, TrackView, UserView,
+    PoolScope, ProjectMembers, ProjectView, RoadmapDays, RoadmapList, RoadmapView, SessionView,
+    TaskStatus, TaskView, TrackView, UserView,
 };
 
 pub(super) use board::{checklist_item, task_view};
@@ -58,36 +60,57 @@ pub struct BootstrapQuery {
     pub roadmap: RoadmapWindow,
 }
 
-/// The days the Roadmap's lanes hold, `from` to `to`: the tasks done in them,
-/// and the dated plans due by `to`. Each left out is the one the Roadmap
-/// opens with, counted from today.
+/// The days a read of the Roadmap's lanes covers, `from` to `to`; each left
+/// out is the one the Roadmap opens with, counted from today. On days with
+/// one task each, `marks` of those tasks come with the counts, the ones
+/// nearest `anchor` (today when left out) first.
 #[derive(Clone, Debug, Default)]
 pub struct RoadmapWindow {
     pub from: Option<String>,
     pub to: Option<String>,
+    pub anchor: Option<String>,
+    pub marks: Option<usize>,
 }
 
-/// What a read of the Roadmap's lanes gives besides their counts and work in
-/// progress: the dated plans and done tasks of a window of days, or the
-/// tasks a change made elsewhere named, at most `NAMED_TASKS_LIMIT`.
-#[derive(Clone, Debug)]
-pub enum LanesQuery {
-    Days(RoadmapWindow),
-    Tasks(Vec<String>),
+/// A read of the Roadmap's lanes: their counts, work in progress and late
+/// tasks, and the days of `window`. A change made elsewhere names the tasks
+/// it changed (`tasks`), and the sections they may have left (`sections`,
+/// each `trackId/epicId`, or `trackId/` for a track's own work); the read
+/// then has the work in progress and the days of those sections and of the
+/// ones the named tasks are in only, and the longest overdue tasks only when
+/// a named task is among them, or was (`late`).
+#[derive(Clone, Debug, Default)]
+pub struct LanesQuery {
+    pub window: RoadmapWindow,
+    pub tasks: Option<Vec<String>>,
+    pub sections: Vec<String>,
+    pub late: bool,
 }
 
 /// The most tasks one read of changed tasks names.
 pub const NAMED_TASKS_LIMIT: usize = 50;
 
-/// The next page of the Roadmap's dated plans, up to `to`, or of its done
-/// tasks, from `from` on: as many as `limit`.
+/// What a list of a section's tasks on the Roadmap holds.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ListKind {
+    /// Tasks done from `from` to `to`, the latest first.
+    Done,
+    /// Plans due from `from` to `to`, the earliest first.
+    Plans,
+    /// Work in progress, the most urgent first.
+    Open,
+}
+
+/// The tasks of one section that a mark counting several stands for.
 #[derive(Clone, Debug)]
-pub struct RoadmapPageQuery {
+pub struct RoadmapListQuery {
     pub project_id: String,
-    pub cursor: String,
+    pub track_id: String,
+    pub epic_id: Option<String>,
+    pub kind: ListKind,
     pub from: Option<String>,
     pub to: Option<String>,
-    pub limit: Option<usize>,
 }
 
 /// The size of a page of tasks or Pool items, and the most one may hold.
@@ -237,16 +260,36 @@ impl DomainService {
         access::read(&self.db, actor, move |connection, actor| {
             require_project(connection, actor, &project_id, Need::Read, false)?;
             let now = unix_now()?;
-            let lanes = lanes
-                .map(|query| {
+            let (lanes, changed) = match lanes {
+                Some(query) => {
                     let today = local_date(&time_zone, now)?;
-                    timeline(connection, &project_id, &time_zone, today, &query)
-                })
-                .transpose()?;
+                    let (lanes, changed) =
+                        timeline(connection, &project_id, &time_zone, today, &query)?;
+                    (Some(lanes), changed)
+                }
+                None => (None, None),
+            };
+            let mut epics = epics(connection, &project_id, &time_zone, Some(now))?;
+            // A change made elsewhere to tasks changed the epics they were or
+            // are in only, and left the tracks and milestones as they are.
+            let (tracks, milestones) = match changed {
+                Some(changed) => {
+                    epics.retain(|epic| {
+                        changed
+                            .iter()
+                            .any(|(_, id)| id.as_deref() == Some(epic.id.as_str()))
+                    });
+                    (Vec::new(), Vec::new())
+                }
+                None => (
+                    tracks(connection, &project_id)?,
+                    milestones(connection, &project_id)?,
+                ),
+            };
             Ok(RoadmapView {
-                tracks: tracks(connection, &project_id)?,
-                epics: epics(connection, &project_id, &time_zone, Some(now))?,
-                milestones: milestones(connection, &project_id)?,
+                tracks,
+                epics,
+                milestones,
                 lanes,
                 project_id,
             })
@@ -254,16 +297,42 @@ impl DomainService {
         .await
     }
 
-    /// The next page of the Roadmap's dated plans or done tasks.
-    pub async fn roadmap_tasks(
+    /// The done tasks and dated plans of a window of days on the Roadmap,
+    /// counted by day, as its view comes to them.
+    pub async fn roadmap_days(
         &self,
         actor: &Actor,
-        query: RoadmapPageQuery,
-    ) -> AppResult<RoadmapPage> {
+        project_id: String,
+        window: RoadmapWindow,
+    ) -> AppResult<RoadmapDays> {
+        let time_zone = self.time_zone.clone();
+        access::read(&self.db, actor, move |connection, actor| {
+            require_project(connection, actor, &project_id, Need::Read, false)?;
+            let today = local_date(&time_zone, unix_now()?)?;
+            lanes::days(
+                connection,
+                &project_id,
+                &time_zone,
+                today,
+                &window,
+                true,
+                None,
+            )
+        })
+        .await
+    }
+
+    /// The tasks of one section that a mark counting several stands for.
+    pub async fn roadmap_list(
+        &self,
+        actor: &Actor,
+        query: RoadmapListQuery,
+    ) -> AppResult<RoadmapList> {
         let time_zone = self.time_zone.clone();
         access::read(&self.db, actor, move |connection, actor| {
             require_project(connection, actor, &query.project_id, Need::Read, false)?;
-            timeline_page(connection, &time_zone, &query)
+            let today = local_date(&time_zone, unix_now()?)?;
+            lanes::list(connection, &time_zone, today, &query)
         })
         .await
     }

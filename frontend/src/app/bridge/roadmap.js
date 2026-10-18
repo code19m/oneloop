@@ -54,14 +54,10 @@ export function installRoadmap(ctx) {
   return {
     /** Load the Roadmap again in the background after the instance's date changed. */
     async dateChanged(){return reads.roadmap(context().projectId,{background:true}).catch((/** @type {any} */ error)=>{recovery.refreshFailed(error);throw error;});},
-    /**
-     * Read the next page of the Roadmap's dated plans, up to `bound.to`, or of
-     * its done tasks, from `bound.from` on: at most `limit`.
-     * @param {'plans'|'done'} kind @param {{from:string}|{to:string}} bound @param {number} limit
-     */
-    moreRoadmap(kind,bound,limit){return reads.moreRoadmap(context().projectId,kind,bound,limit);},
-    /** Read the Roadmap's lanes for other days, in place of the ones they hold. @param {{from:string,to:string}} window */
-    roadmapDays(window){return reads.roadmap(context().projectId,{window});},
+    /** Read more days for the Roadmap's lanes, as its view comes to them. @param {{from:string,to:string,anchor?:string,marks?:number}} days */
+    roadmapDays(days){return reads.roadmapDays(context().projectId,days);},
+    /** The tasks one of the Roadmap's marks counts. @param {{track:string,epic?:string|null,kind:'done'|'plans'|'open',from?:string,to?:string}} list */
+    roadmapList(list){return reads.roadmapList(context().projectId,list);},
     /** @param {{trackId:string,position:number,optimistic?:boolean}} move */
     async moveTrack(move){const item=track(move.trackId);return execute('track.reorder',{trackId:item.id,position:move.position},item,move.optimistic?null:'Track reordered',{skipNoChange:!!move.optimistic,paint:!move.optimistic});},
   };

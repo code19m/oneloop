@@ -202,11 +202,13 @@ function wire(dom, { api: answers = {}, reads: readAnswers = {}, reloadBootstrap
     counts: () => app().refreshCounts(), roadmap: () => app().refreshRoadmap(), roadmapStructure: () => app().refreshRoadmap(),
     pool: () => app().refreshPool(), morePool: () => app().refreshPool(),
     epic: () => app().refreshEpic(), moreEpicTasks: () => app().refreshEpic(), moreEpicActivity: () => app().refreshEpic(),
-    task() {}, moreBoard() {}, moreRoadmap() {},
+    task() {}, moreBoard() {}, roadmapDays() {},
   };
   const reads = {
     calls: readCalls, cancel() {}, invalidateBoard() {}, idle: async () => {}, adoptBoard: () => false,
     ...Object.fromEntries(Object.entries(repaint).map(([name, paint]) => [name, async (...args) => { readCalls.push([name, ...args]); paint(...args); return { stale: false }; }])),
+    // A list of the Roadmap's marks: none, unless a test answers.
+    roadmapList: async (...args) => { readCalls.push(['roadmapList', ...args]); return { items: [], total: 0 }; },
     ...readAnswers,
   };
   // The tests end sessions themselves, so expiry leaves the projection alone.

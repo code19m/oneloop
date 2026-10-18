@@ -2,10 +2,11 @@ use super::board::{
     BLOCKED_COUNT_SQL, CHECKLIST_COUNTS_SQL, NEWEST_DONE_AFTER_SQL, NEWEST_DONE_SQL,
     UNDATED_DONE_SQL,
 };
-use super::roadmap::{
-    DONE_SQL, EPIC_SUMMARY_SQL, NAMED_SQL, OPEN_SQL, OVERDUE_SQL, PLANS_SQL, REACH_SQL,
-    SECTION_COUNTS_SQL, epics_on, local_midnight, timeline,
+use super::lanes::{
+    DONE_DAYS_SQL, LATE_PLANS_SQL, MARKS_SQL, NAMED_SQL, OPEN_SQL, OVERDUE_SQL, PLAN_DAYS_SQL,
+    REACH_SQL, SECTION_COUNTS_SQL, SECTION_DONE_SQL, SECTION_OPEN_SQL, SECTION_PLANS_SQL, timeline,
 };
+use super::roadmap::{EPIC_SUMMARY_SQL, epics_on, local_midnight};
 use super::*;
 use crate::db::{query_plan, query_plan_with};
 use jiff::{Timestamp, civil::date};
@@ -335,8 +336,7 @@ fn roadmap_reads_use_their_indexes_whatever_the_statistics() {
                 REACH_SQL,
                 params!["p"],
                 &[
-                    // The earliest done task is one row, at the end of the index.
-                    "SEARCH tasks USING INDEX tasks_project_done_completed_idx (project_id=? AND completed_at>?)",
+                    "SEARCH tasks USING COVERING INDEX tasks_project_done_completed_idx (project_id=? AND completed_at>?)",
                     "SEARCH tasks USING COVERING INDEX tasks_dated_plans_idx (project_id=? AND deadline>?)",
                 ],
             ),
@@ -347,24 +347,58 @@ fn roadmap_reads_use_their_indexes_whatever_the_statistics() {
             ),
             (
                 OPEN_SQL,
-                params!["p", 500],
+                params!["p"],
                 &[
-                    "SEARCH tasks USING INDEX tasks_project_status_idx (project_id=? AND deleted_at=? AND status=?)",
+                    "SEARCH t USING INDEX tasks_project_status_idx (project_id=? AND deleted_at=? AND status=?)",
+                    "SEARCH b USING INDEX task_blocks_one_open_idx (task_id=?)",
                 ],
             ),
             (
-                PLANS_SQL,
-                params!["p", "", "", "2026-12-31", 2001],
+                SECTION_OPEN_SQL,
+                params!["p", "a", "ea"],
                 &[
-                    "SEARCH tasks USING COVERING INDEX tasks_dated_plans_idx (project_id=? AND (deadline,id)>(?,?) AND deadline<?)",
+                    "SEARCH t USING INDEX tasks_project_track_status_idx (project_id=? AND track_id=? AND status=? AND epic_id=? AND deleted_at=?)",
                 ],
             ),
             (
-                DONE_SQL,
-                params!["p", 1781000000, i64::MAX, i64::MIN, "", 2001],
+                LATE_PLANS_SQL,
+                params!["p", "2026-06-10", 20],
                 &[
-                    "SEARCH tasks USING INDEX tasks_project_done_completed_idx (project_id=? AND completed_at>? AND (completed_at,completion_order,id)<(?,?,?))",
+                    "SEARCH tasks USING COVERING INDEX tasks_dated_plans_idx (project_id=? AND deadline>? AND deadline<?)",
                 ],
+            ),
+            (
+                DONE_DAYS_SQL,
+                params!["p", 1781000000, 1782000000],
+                &[
+                    "SEARCH tasks USING COVERING INDEX tasks_project_done_completed_idx (project_id=? AND completed_at>? AND completed_at<?)",
+                ],
+            ),
+            (
+                PLAN_DAYS_SQL,
+                params!["p", "2026-01-01", "2026-12-31"],
+                &[
+                    "SEARCH t USING COVERING INDEX tasks_dated_plans_idx (project_id=? AND deadline>? AND deadline<?)",
+                ],
+            ),
+            (
+                SECTION_DONE_SQL,
+                params!["p", "a", "ea", 1781000000, 1782000000],
+                &[
+                    "SEARCH tasks USING COVERING INDEX tasks_project_done_completed_idx (project_id=? AND completed_at>? AND completed_at<?)",
+                ],
+            ),
+            (
+                SECTION_PLANS_SQL,
+                params!["p", "a", "ea", "2026-01-01", "2026-12-31"],
+                &[
+                    "SEARCH tasks USING COVERING INDEX tasks_dated_plans_idx (project_id=? AND deadline>? AND deadline<?)",
+                ],
+            ),
+            (
+                MARKS_SQL,
+                params![r#"["t1","t2"]"#],
+                &["SEARCH t USING INDEX sqlite_autoindex_tasks_1 (id=?)"],
             ),
         ] {
             let plan = query_plan_with(&c, sql, parameters);
@@ -388,34 +422,45 @@ fn the_roadmap_read_runs_the_same_statements_for_any_number_of_tracks_and_tasks(
         VALUES('t1','p','a',1,'ONE-1','Task','in_progress',0,1,1,NULL,NULL),('t2','p','a',2,'ONE-2','Task','planning',0,1,1,'2026-01-10',NULL),
               ('t3','p','a',3,'ONE-3','Task','done',0,1,1,NULL,1781000000);").unwrap();
     let (_large_root, large) = analyzed_tracks();
+    // Days with one task each, whose tasks come with the counts.
+    large.execute_batch("INSERT INTO tasks(id,project_id,track_id,task_number,task_key,title,status,position,created_at,updated_at,deadline,completed_at)
+        VALUES('alone-done','p','a',1001,'ONE-1001','Task','done',0,1,1,NULL,1772400000),('alone-plan','p','a',1002,'ONE-1002','Task','planning',0,1,1,'2026-03-02',NULL);").unwrap();
     let today = date(2026, 6, 10);
     let zone = TimeZone::built_in("UTC").unwrap();
-    let window = LanesQuery::Days(RoadmapWindow {
-        from: Some("2026-01-01".into()),
-        to: None,
-    });
+    let query = LanesQuery {
+        window: RoadmapWindow {
+            from: Some("2026-01-01".into()),
+            ..RoadmapWindow::default()
+        },
+        ..LanesQuery::default()
+    };
     let run = |c: &rusqlite::Connection| {
         let mut read = None;
         let sql = statements(c, || {
-            read = Some(timeline(c, "p", &zone, today, &window).unwrap())
+            read = Some(timeline(c, "p", &zone, today, &query).unwrap().0)
         });
         (sql.len(), read.unwrap())
     };
     let (small_count, small_read) = run(&small);
     let (large_count, large_read) = run(&large);
-    let (small_days, large_days) = (small_read.days.unwrap(), large_read.days.unwrap());
+    let marks = |read: &crate::domain::RoadmapTimeline| -> usize {
+        read.days
+            .sections
+            .iter()
+            .map(|section| section.marks.len())
+            .sum()
+    };
     assert_eq!(
         (
             small_read.open.len(),
-            small_days.plans.items.len(),
-            small_days.done.items.len()
+            small_read.days.sections.len(),
+            marks(&small_read)
         ),
-        (1, 1, 1)
+        (1, 1, 2)
     );
-    // Each track's own work and its epic.
+    // Each track's own work and its epic; three bars at most in each.
     assert_eq!(large_read.sections.len(), 6);
-    assert!(
-        large_read.open.len() + large_days.plans.items.len() + large_days.done.items.len() > 250
-    );
+    assert!(large_read.open.len() <= 18);
+    assert_eq!(marks(&large_read), 2);
     assert_eq!(small_count, large_count);
 }

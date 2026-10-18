@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createLegacyData, hydrateLegacyData, mergeAdminUsersPage, mergeEpicActivityPage, mergeEpicTaskPage, reconcileCommandResult, appendBoardTasks, appendRoadmapPage, replacePoolPage, replaceTaskDetail, replaceBoardTasks, replaceRoadmap } from '../../../src/data/projection-store.js';
+import { createLegacyData, hydrateLegacyData, mergeAdminUsersPage, mergeEpicActivityPage, mergeEpicTaskPage, reconcileCommandResult, appendBoardTasks, appendRoadmapDays, replacePoolPage, replaceTaskDetail, replaceBoardTasks, replaceRoadmap } from '../../../src/data/projection-store.js';
 import { toWireStatus } from '../../../src/data/wire.js';
 
 const bootstrap = () => ({
@@ -332,39 +332,90 @@ test('an epic drawer keeps its loaded tasks through a Roadmap bootstrap, but Boa
   assert.deepEqual(data.tasks.map(item=>item.internalId),['opaque-task']);
 });
 
-/** The Roadmap's lanes as a read gives them: work at hand, the dated plans and done tasks of its days, and its counts. */
+/** Seconds since the epoch at `hour` o'clock on a day in the fixture's time zone, Asia/Tashkent (UTC+5). */
+const tashkent = (day, hour = 10) => Date.parse(`${day}T${String(hour - 5).padStart(2, '0')}:00:00Z`) / 1000;
+/** A task as a mark of a read gives it: within its section, or, with `trackId` and `epicId`, anywhere. */
+const markView = (id, extra) => ({ id, taskKey:id.toUpperCase(), title:id, ...extra });
+/**
+ * The Roadmap's lanes as a read gives them: the work in progress drawn, the
+ * longest overdue, each section's counts, and the days of Sep 1 to 10:
+ * counts by day and the task of a day with one.
+ */
 const lanes = (task) => ({
-  from:'2026-06-01', to:'2027-03-01', limit:2000, overdue:1, firstDay:'2025-01-01', lastDay:'2027-05-01',
+  overdue:1, firstDay:'2025-01-01', lastDay:'2027-05-01',
   sections:[{ trackId:'tr1', epicId:null, planning:3, inProgress:1, inReview:0, done:2 }, { trackId:'tr1', epicId:'e1', planning:1, inProgress:0, inReview:0, done:5 }],
-  open:[task], plans:{ items:[{ ...task, id:'plan', taskKey:'BIR-002', status:'planning', deadline:'2026-10-02' }], reach:'2027-03-01', nextCursor:'later' },
-  // A full page of done tasks: it covers its days in full from the day after its earliest task's.
-  done:{ items:[{ ...task, id:'old', taskKey:'BIR-003', status:'done', completedAt:90 }], reach:'2026-06-03', nextCursor:'older' },
+  open:[task], late:[markView('late', { trackId:'tr1', epicId:'e1', status:'planning', deadline:'2026-09-01', blocked:true })],
+  days:{ from:'2026-09-01', to:'2026-09-10', sections:[{ trackId:'tr1', epicId:'e1', done:[0, 2, 0, 1], plans:[1], blocked:[1],
+    marks:[markView('late', { status:'planning', deadline:'2026-09-01', blocked:true }), markView('old', { status:'done', completedAt:tashkent('2026-09-04', 23), assigneeIds:['u1'] })] }] },
 });
+const day = (done, plans = 0, blocked = 0) => ({ done, plans, blocked });
+const mark = (id, extra) => ({ internalId:id, id:id.toUpperCase(), projectId:'p1', trackId:'tr1', epicId:'e1', title:id, deadline:null, startedAt:null, completedAt:null, assignees:[], block:null, ...extra });
 
-test('a Roadmap bootstrap gives the lanes their tasks and counts, and another bootstrap forgets them', () => {
+test('a Roadmap bootstrap gives the lanes their work in progress, the counts of their days and the tasks of days with one, and another bootstrap forgets them', () => {
   const data = createLegacyData(), value = { ...bootstrap(), view:'roadmap', selectedProjectId:'p1' };
   value.roadmap = lanes(value.tasks[0]); value.tasks = [];
   hydrateLegacyData(data, value);
+  const late = mark('late', { state:'planning', deadline:'2026-09-01', block:{}, day:'2026-09-01' });
   assert.deepEqual(data.roadmap, {
-    projectId:'p1', taskIds:['opaque-task', 'plan', 'old'], window:{ from:'2026-06-01', to:'2027-03-01' }, limit:2000,
+    projectId:'p1', window:{ from:'2026-09-01', to:'2026-09-10' }, shown:null, open:['opaque-task'], late:[late],
     sections:{ 'tr1/':{ planning:3, progress:1, review:0, done:2 }, 'tr1/e1':{ planning:1, progress:0, review:0, done:5 } },
     trackCounts:{ tr1:{ planning:4, progress:1, review:0, done:7 } }, overdue:1, firstDay:'2025-01-01', lastDay:'2027-05-01',
-    plans:{ cursor:'later', reach:'2027-03-01' }, done:{ cursor:'older', reach:'2026-06-03' },
+    days:{ 'tr1/e1':{ '2026-09-01':day(0, 1, 1), '2026-09-02':day(2), '2026-09-04':day(1) } },
+    // A task done late in the evening is on its day in the project's time zone.
+    marks:{ late, old:mark('old', { state:'done', completedAt:tashkent('2026-09-04', 23) * 1000, assignees:['u1'], day:'2026-09-04' }) },
   });
-  assert.deepEqual(data.tasks.map((task) => [task.id, task.state]), [['BIR-001', 'progress'], ['BIR-002', 'planning'], ['BIR-003', 'done']]);
+  assert.deepEqual(data.tasks.map((task) => [task.id, task.state]), [['BIR-001', 'progress']], 'only the work in progress is a task of the page');
   hydrateLegacyData(data, { ...bootstrap(), selectedProjectId:'p1' });
   assert.equal(data.roadmap, null);
 });
 
-test('the next pages join the lanes, which then hold the days they cover too', () => {
+test('days next to the ones the lanes hold join them, in place of what they held of those days, and others take their place', () => {
   const data = createLegacyData(), value = bootstrap();
   hydrateLegacyData(data, value);
   replaceRoadmap(data, { projectId:'p1', tracks:value.tracks, epics:value.epics, milestones:[], lanes:lanes(value.tasks[0]) });
-  appendRoadmapPage(data, 'done', { items:[{ ...value.tasks[0], id:'older', taskKey:'BIR-004', status:'done', completedAt:50 }], reach:'2026-01-01', nextCursor:null }, { from:'2026-01-01' });
-  assert.deepEqual(data.roadmap.taskIds, ['opaque-task', 'plan', 'old', 'older']);
-  assert.deepEqual([data.roadmap.done, data.roadmap.window], [{ cursor:null, reach:'2026-01-01' }, { from:'2026-01-01', to:'2027-03-01' }]);
-  assert.equal(data.tasks.find((task) => task.internalId === 'older').state, 'done');
-  // A full page covers less than it was asked for; a read of the lanes asks for those days again.
-  appendRoadmapPage(data, 'plans', { items:[], reach:'2027-05-20', nextCursor:'later' }, { to:'2027-06-01' });
-  assert.deepEqual([data.roadmap.plans, data.roadmap.window], [{ cursor:'later', reach:'2027-05-20' }, { from:'2026-01-01', to:'2027-06-01' }]);
+  const roadmap = data.roadmap;
+  // The days before, and Sep 1 again, where the plan is gone.
+  appendRoadmapDays(data, 'p1', { from:'2026-08-20', to:'2026-09-01', sections:[{ trackId:'tr1', epicId:null, done:[1], marks:[markView('older', { status:'done', completedAt:tashkent('2026-08-20') })] }] });
+  assert.equal(data.roadmap, roadmap, 'the same lanes');
+  assert.deepEqual(roadmap.window, { from:'2026-08-20', to:'2026-09-10' });
+  assert.deepEqual(roadmap.days, { 'tr1/e1':{ '2026-09-02':day(2), '2026-09-04':day(1) }, 'tr1/':{ '2026-08-20':day(1) } });
+  assert.deepEqual(Object.keys(roadmap.marks).sort(), ['old', 'older']);
+  assert.deepEqual([roadmap.marks.older.trackId, roadmap.marks.older.epicId, roadmap.marks.older.day], ['tr1', null, '2026-08-20'], 'in its section, on its day');
+  assert.equal(roadmap.late.length, 1, 'the longest overdue stay');
+  // Days apart from the ones held, as after a jump, take their place.
+  appendRoadmapDays(data, 'p1', { from:'2027-01-01', to:'2027-01-31', sections:[] });
+  assert.deepEqual([roadmap.window, roadmap.days, roadmap.marks], [{ from:'2027-01-01', to:'2027-01-31' }, {}, {}]);
+  assert.equal(appendRoadmapDays(data, 'p2', { from:'2027-01-01', to:'2027-01-31', sections:[] }), null, 'another project\'s days');
+});
+
+test('a read of named tasks gives the days in view of the sections it changed, and the lanes keep the tasks of days that still have their one task', () => {
+  const data = createLegacyData(), value = bootstrap();
+  hydrateLegacyData(data, value);
+  const opening = lanes(value.tasks[0]);
+  // The track's own work has a done task on Sep 5, and one long before the view.
+  opening.days.sections.push({ trackId:'tr1', epicId:null, done:[0, 0, 0, 0, 1], marks:[markView('own', { status:'done', completedAt:tashkent('2026-09-05') })] });
+  replaceRoadmap(data, { projectId:'p1', tracks:value.tracks, epics:value.epics, milestones:[], lanes:opening });
+  appendRoadmapDays(data, 'p1', { from:'2026-08-20', to:'2026-08-31', sections:[{ trackId:'tr1', epicId:null, done:[1] }] });
+  // A teammate moved the late plan to Sep 3: the read counts the epic's days the lanes hold, Aug 20 to Sep 10, alone.
+  const moved = { ...value.tasks[0], id:'late', taskKey:'LATE', status:'planning', deadline:'2026-09-03' };
+  replaceRoadmap(data, { projectId:'p1', lanes:{ ...lanes(value.tasks[0]), open:[], late:undefined, overdue:0, tasks:[moved],
+    days:{ from:'2026-08-20', to:'2026-09-10', sections:[{ trackId:'tr1', epicId:'e1', done:[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1], plans:[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] }] } } }, ['late'], []);
+  const roadmap = data.roadmap;
+  assert.deepEqual(roadmap.days, { 'tr1/e1':{ '2026-09-02':day(2), '2026-09-03':day(0, 1), '2026-09-04':day(1) }, 'tr1/':{ '2026-08-20':day(1), '2026-09-05':day(1) } }, 'another section\'s days stay');
+  assert.deepEqual([roadmap.window, Object.keys(roadmap.marks).sort(), roadmap.marks.late.day, roadmap.overdue], [{ from:'2026-08-20', to:'2026-09-10' }, ['late', 'old', 'own'], '2026-09-03', 0]);
+  assert.deepEqual(roadmap.open, [], 'the epic\'s work in progress came again: it has none');
+  assert.deepEqual([data.tracks.map((track) => track.id), data.milestones.map((item) => item.id), roadmap.late.map((task) => task.id)], [['tr1'], [], ['LATE']], 'the tracks and longest overdue stay without a read of them');
+  // A read of named tasks gives the epics it changed alone; the others stay.
+  data.epics.push({ ...data.epics[0], id:'e2', title:'Other' });
+  replaceRoadmap(data, { projectId:'p1', tracks:[], milestones:[], epics:[{ ...value.epics[0], title:'Launch now', taskDone:1 }], lanes:{ ...lanes(value.tasks[0]), open:[], tasks:[], late:[],
+    days:{ from:'2026-08-20', to:'2026-09-10', sections:[] } } }, ['old'], ['tr1/e1']);
+  assert.deepEqual(data.epics.map((epic) => [epic.id, epic.title]).sort(), [['e1', 'Launch now'], ['e2', 'Other']]);
+  assert.deepEqual([data.tracks.length, data.roadmap.late], [1, []], 'the longest overdue it gives');
+  replaceRoadmap(data, { projectId:'p1', lanes:{ ...lanes(value.tasks[0]), open:[], tasks:[],
+    days:{ from:'2026-09-01', to:'2026-09-10', sections:[{ trackId:'tr1', epicId:'e1', done:[0, 2, 0, 1], plans:[0, 0, 1] }] } } }, ['late'], []);
+  // Sep 4 gets another done task, a task the lanes saw in the epic: its mark no longer stands for the day.
+  replaceRoadmap(data, { projectId:'p1', lanes:{ ...lanes(value.tasks[0]), open:[], tasks:[],
+    days:{ from:'2026-09-01', to:'2026-09-10', sections:[{ trackId:'tr1', epicId:'e1', done:[0, 2, 0, 2] }] } } }, ['other'], ['tr1/e1']);
+  assert.deepEqual(Object.keys(data.roadmap.marks).sort(), ['own']);
+  assert.equal(data.roadmap.days['tr1/e1']['2026-09-03'], undefined, 'the section it names counts again');
 });

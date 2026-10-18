@@ -910,7 +910,7 @@ test('deleting a track that has tasks or epics says what to move first and delet
   const state=fixture({view:'roadmap',projectId:'p1'},{gateway:{execute:async(operation)=>{sent.push(operation);return {entities:[],events:[]};}},app:{confirm(options){confirmation=options;},showBlocked:(title,text)=>blocked.push([title,text])}});
   state.data.tracks.push({id:'t1',projectId:'p1',name:'Design',revision:1},{id:'t2',projectId:'p1',name:'Empty',revision:1});
   state.data.epics.push({id:'e1',projectId:'p1',trackId:'t1'});
-  state.data.roadmap={projectId:'p1',taskIds:[],trackCounts:{t1:{planning:15,progress:3,review:1,done:3}},sections:{},overdue:0,plans:{cursor:null,reach:'2027-01-01'},done:{cursor:null,reach:'2026-01-01'}};
+  state.data.roadmap={projectId:'p1',window:{from:'2026-01-01',to:'2027-01-01'},shown:null,open:[],late:[],days:{},marks:{},trackCounts:{t1:{planning:15,progress:3,review:1,done:3}},sections:{},overdue:0,firstDay:null,lastDay:null};
   state.app.deleteTrack('t1');
   // The server refuses with the same words when the track gained work meanwhile.
   assert.deepEqual(blocked,[['“Design” isn’t empty','Move or delete its 22 tasks and 1 epic first.']]);

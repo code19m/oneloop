@@ -409,28 +409,292 @@
   "boardPageInfo": { "projectId": "p1", "filters": {}, "pages": {} },
   "roadmap": {
     "projectId": "p1",
-    "taskIds": ["bir-064", "bir-072", "bir-080", "bir-075", "bir-066", "bir-071", "bir-079", "bir-081", "bir-069", "bir-076", "bir-077", "bir-061", "bir-058", "bir-057", "bir-056", "bir-055", "bir-052"],
-    "window": { "from": "2026-05-31", "to": "2027-03-27" },
-    "limit": 2000,
+    "window": {
+      "from": "2026-06-15",
+      "to": "2027-01-26"
+    },
+    "shown": null,
     "sections": {
-      "t1/e2": { "planning": 1, "progress": 0, "review": 0, "done": 0 },
-      "t2/e5": { "planning": 1, "progress": 2, "review": 1, "done": 6 },
-      "t3/e6": { "planning": 1, "progress": 1, "review": 1, "done": 0 },
-      "t3/e7": { "planning": 1, "progress": 0, "review": 0, "done": 0 },
-      "t4/e9": { "planning": 0, "progress": 1, "review": 0, "done": 0 },
-      "t4/e10": { "planning": 1, "progress": 0, "review": 0, "done": 0 }
+      "t1/e2": {
+        "planning": 1,
+        "progress": 0,
+        "review": 0,
+        "done": 0
+      },
+      "t2/e5": {
+        "planning": 1,
+        "progress": 2,
+        "review": 1,
+        "done": 6
+      },
+      "t3/e6": {
+        "planning": 1,
+        "progress": 1,
+        "review": 1,
+        "done": 0
+      },
+      "t3/e7": {
+        "planning": 1,
+        "progress": 0,
+        "review": 0,
+        "done": 0
+      },
+      "t4/e9": {
+        "planning": 0,
+        "progress": 1,
+        "review": 0,
+        "done": 0
+      },
+      "t4/e10": {
+        "planning": 1,
+        "progress": 0,
+        "review": 0,
+        "done": 0
+      }
     },
     "trackCounts": {
-      "t1": { "planning": 1, "progress": 0, "review": 0, "done": 0 },
-      "t2": { "planning": 1, "progress": 2, "review": 1, "done": 6 },
-      "t3": { "planning": 2, "progress": 1, "review": 1, "done": 0 },
-      "t4": { "planning": 1, "progress": 1, "review": 0, "done": 0 }
+      "t1": {
+        "planning": 1,
+        "progress": 0,
+        "review": 0,
+        "done": 0
+      },
+      "t2": {
+        "planning": 1,
+        "progress": 2,
+        "review": 1,
+        "done": 6
+      },
+      "t3": {
+        "planning": 2,
+        "progress": 1,
+        "review": 1,
+        "done": 0
+      },
+      "t4": {
+        "planning": 1,
+        "progress": 1,
+        "review": 0,
+        "done": 0
+      }
     },
     "overdue": 4,
     "firstDay": null,
     "lastDay": null,
-    "plans": { "cursor": null, "reach": "2027-03-27" },
-    "done": { "cursor": null, "reach": "2026-05-31" }
+    "open": [
+      "bir-064",
+      "bir-072",
+      "bir-080",
+      "bir-075",
+      "bir-066",
+      "bir-071"
+    ],
+    "late": [
+      {
+        "internalId": "bir-080",
+        "id": "BIR-080",
+        "projectId": "p1",
+        "trackId": "t2",
+        "epicId": "e5",
+        "title": "Reading guide wording pass",
+        "state": "progress",
+        "deadline": "2026-09-01",
+        "startedAt": 1787220000000,
+        "completedAt": null,
+        "assignees": [
+          "taylorwu"
+        ],
+        "block": null,
+        "day": null
+      },
+      {
+        "internalId": "bir-066",
+        "id": "BIR-066",
+        "projectId": "p1",
+        "trackId": "t2",
+        "epicId": "e5",
+        "title": "Reading window placeholders",
+        "state": "review",
+        "deadline": "2026-09-03",
+        "startedAt": 1787911200000,
+        "completedAt": null,
+        "assignees": [
+          "blairq"
+        ],
+        "block": null,
+        "day": null
+      },
+      {
+        "internalId": "bir-064",
+        "id": "BIR-064",
+        "projectId": "p1",
+        "trackId": "t2",
+        "epicId": "e5",
+        "title": "Recurring reading reminder dates",
+        "state": "progress",
+        "deadline": "2026-09-05",
+        "startedAt": 1787652000000,
+        "completedAt": null,
+        "assignees": [
+          "robin",
+          "taylorwu"
+        ],
+        "block": null,
+        "day": null
+      },
+      {
+        "internalId": "bir-072",
+        "id": "BIR-072",
+        "projectId": "p1",
+        "trackId": "t3",
+        "epicId": "e6",
+        "title": "Reader app: reading list screen",
+        "state": "progress",
+        "deadline": "2026-09-12",
+        "startedAt": 1788343200000,
+        "completedAt": null,
+        "assignees": [
+          "robin"
+        ],
+        "block": null,
+        "day": null
+      }
+    ],
+    "days": {
+      "t4/e10": {
+        "2026-10-20": {
+          "done": 0,
+          "plans": 1,
+          "blocked": 0
+        }
+      },
+      "t3/e7": {
+        "2026-10-06": {
+          "done": 0,
+          "plans": 1,
+          "blocked": 0
+        }
+      },
+      "t2/e5": {
+        "2026-09-25": {
+          "done": 1,
+          "plans": 0,
+          "blocked": 0
+        },
+        "2026-09-24": {
+          "done": 1,
+          "plans": 0,
+          "blocked": 0
+        },
+        "2026-09-22": {
+          "done": 2,
+          "plans": 0,
+          "blocked": 0
+        },
+        "2026-09-18": {
+          "done": 1,
+          "plans": 0,
+          "blocked": 0
+        },
+        "2026-09-10": {
+          "done": 1,
+          "plans": 0,
+          "blocked": 0
+        }
+      }
+    },
+    "marks": {
+      "bir-076": {
+        "internalId": "bir-076",
+        "id": "BIR-076",
+        "projectId": "p1",
+        "trackId": "t4",
+        "epicId": "e10",
+        "title": "Community calendar link format",
+        "state": "planning",
+        "deadline": "2026-10-20",
+        "startedAt": null,
+        "completedAt": null,
+        "assignees": [],
+        "block": null,
+        "day": "2026-10-20"
+      },
+      "bir-077": {
+        "internalId": "bir-077",
+        "id": "BIR-077",
+        "projectId": "p1",
+        "trackId": "t3",
+        "epicId": "e7",
+        "title": "Load test: reading list lookup",
+        "state": "planning",
+        "deadline": "2026-10-06",
+        "startedAt": null,
+        "completedAt": null,
+        "assignees": [],
+        "block": null,
+        "day": "2026-10-06"
+      },
+      "bir-061": {
+        "internalId": "bir-061",
+        "id": "BIR-061",
+        "projectId": "p1",
+        "trackId": "t2",
+        "epicId": "e5",
+        "title": "Completed reading summary",
+        "state": "done",
+        "deadline": null,
+        "startedAt": null,
+        "completedAt": 1790330400000,
+        "assignees": [],
+        "block": null,
+        "day": "2026-09-25"
+      },
+      "bir-058": {
+        "internalId": "bir-058",
+        "id": "BIR-058",
+        "projectId": "p1",
+        "trackId": "t2",
+        "epicId": "e5",
+        "title": "Reading list spreadsheet export",
+        "state": "done",
+        "deadline": null,
+        "startedAt": null,
+        "completedAt": 1790244000000,
+        "assignees": [],
+        "block": null,
+        "day": "2026-09-24"
+      },
+      "bir-055": {
+        "internalId": "bir-055",
+        "id": "BIR-055",
+        "projectId": "p1",
+        "trackId": "t2",
+        "epicId": "e5",
+        "title": "Whole-day reminder intervals",
+        "state": "done",
+        "deadline": null,
+        "startedAt": null,
+        "completedAt": 1789725600000,
+        "assignees": [],
+        "block": null,
+        "day": "2026-09-18"
+      },
+      "bir-052": {
+        "internalId": "bir-052",
+        "id": "BIR-052",
+        "projectId": "p1",
+        "trackId": "t2",
+        "epicId": "e5",
+        "title": "Reader selector polish",
+        "state": "done",
+        "deadline": null,
+        "startedAt": null,
+        "completedAt": 1789034400000,
+        "assignees": [],
+        "block": null,
+        "day": "2026-09-10"
+      }
+    }
   },
   "tasks": [
     {

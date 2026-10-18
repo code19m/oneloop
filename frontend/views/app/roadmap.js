@@ -8,7 +8,7 @@ import { UIMotion } from '../../src/app/motion.js';
 import { sortable } from '../../src/app/sortable.js';
 import { sessionKey } from '../../src/data/projection-store.js';
 import {
-  DAY, I, STATUS, UIAction, ago, d, esc, formatInstant, human, humanShort, instanceDateKey, iso, setHTML, stIcon, today,
+  DAY, I, STATUS, UIAction, ago, d, esc, formatInstant, human, humanShort, iso, setHTML, stIcon, today,
 } from './format.js';
 import { descriptionReadHtml } from './forms.js';
 import {
@@ -21,8 +21,8 @@ import {
 } from './overlays.js';
 import { announce } from './toasts.js';
 import {
-  closeTimelineList, epicDated, epicStatus, focusTask, headFigure, isLate, laneBodyHtml, laneDates, laneEntry, laneFocus, laneModels,
-  laneTaskList, layoutLane, mountLanes, numbers, roadmapLanes, roomAfterNow, setStyle, syncLaneEdges, textWidth,
+  closeTimelineList, epicDated, epicStatus, focusTask, headFigure, laneBodyHtml, laneDates, laneEntry, laneFocus, laneModels,
+  layoutLane, mountLanes, numbers, roadmapLanes, roomAfterNow, setStyle, syncLaneEdges, textWidth,
 } from './timeline.js';
 
 // ---------- roadmap geometry ----------
@@ -103,7 +103,7 @@ function rmRange() {
   const take = (date) => { if (date < min) min = date; if (date > max) max = date; };
   epics().forEach((e) => { if (epicDated(e)) { take(d(e.start)); take(d(e.end)); } });
   milestones().forEach((m) => take(d(m.date)));
-  // Every day the project's done work and dated plans fall on, so the timeline stays put as their pages load.
+  // Every day the project's done work and dated plans fall on, so the timeline stays put as their days load.
   const lanes = roadmapLanes();
   for (const day of [lanes?.firstDay, lanes?.lastDay]) if (day) take(d(day));
   const work = laneDates();
@@ -122,30 +122,7 @@ function roadmapModel() {
     // A milestone marks its whole day: the line runs through the middle of it.
     return { m, date, past: days < 0, name, dateLabel, at: day(date) + 0.5 };
   });
-  return { start, span: day(end), today: timeline.now, lanes: timeline.lanes, ready: timeline.ready, goals, ...heldDays(day) };
-}
-
-/**
- * The days the lanes hold in full, as day offsets: done work from
- * `historyFrom` to `historyUntil`, and dated plans up to `plansUntil`; an
- * edge with nothing beyond it is infinite. Also how many done tasks and dated
- * plans they hold, and the latest day they hold done work on.
- */
-function heldDays(day) {
-  const lanes = roadmapLanes();
-  if (!lanes) return { historyFrom: -Infinity, historyUntil: Infinity, plansUntil: Infinity, held: { done: 0, plans: 0 }, newestDone: -Infinity };
-  const held = { done: 0, plans: 0 };
-  let newest = null;
-  for (const task of laneTaskList()) {
-    if (task.state === 'done' && task.completedAt) { held.done++; if (!newest || task.completedAt > newest) newest = task.completedAt; }
-    else if (task.state === 'planning' && task.deadline) held.plans++;
-  }
-  return {
-    historyFrom: lanes.done.cursor ? day(d(lanes.done.reach)) : -Infinity,
-    historyUntil: lanes.window.to >= instanceDateKey() ? Infinity : day(d(lanes.window.to)) + 1,
-    plansUntil: lanes.plans.cursor ? day(d(lanes.plans.reach)) + 1 : Infinity,
-    held, newestDone: newest ? day(d(formatInstant(newest).slice(0, 10))) + 1 : -Infinity,
-  };
+  return { start, span: day(end), today: timeline.now, lanes: timeline.lanes, ready: timeline.ready, goals };
 }
 
 /** Whether anything dated lies ahead: a dated plan, a deadline of work in progress, or a milestone. */
@@ -447,22 +424,13 @@ function refreshEpicSummary() {
 }
 
 // ---------- page header ----------
-/** The project's late tasks the lanes show, the longest overdue first: what "Overdue N" steps through. */
-const lateTasks = () => {
-  const ids = new Set(roadmapLanes()?.taskIds ?? []);
-  return tasks().filter((task) => ids.has(task.internalId) && isLate(task)).sort((a, b) => d(a.deadline) - d(b.deadline) || a.id.localeCompare(b.id));
-};
-/** The late task "Overdue N" showed last, so the next press shows the next one. */
-let overdueShown = null;
+/** The late task "Overdue N" showed last, so the next press shows the next one; and one whose days still load, which gets focus when they land. */
+let overdueShown = null, overdueWaiting = null;
 
-/**
- * The Roadmap's one figure: what is overdue, when anything is. Each track's
- * head says what it has in progress. When the view shows more days than the
- * lanes can hold, what it leaves out follows.
- */
+/** The Roadmap's one figure: what is overdue, when anything is. Each track's head says what it has in progress. */
 function roadmapStatsHtml() {
   const late = roadmapLanes()?.overdue ?? 0;
-  return `<span class="roadmap-structure-stats">${late ? `<button type="button" class="roadmap-stat rt-stat-late" aria-label="${esc(`Overdue: ${late} ${late === 1 ? 'task' : 'tasks'}. Show ${late === 1 ? 'it' : 'the next one'}`)}" ${UIAction('focusOverdue')}><span>Overdue</span><strong>${late}</strong></button>` : ''}<span class="roadmap-stat rt-limit" role="status"${limitShown ? '' : ' hidden'}>${esc(limitShown ?? '')}</span></span>`;
+  return `<span class="roadmap-structure-stats">${late ? `<button type="button" class="roadmap-stat rt-stat-late" aria-label="${esc(`Overdue: ${late} ${late === 1 ? 'task' : 'tasks'}. Show ${late === 1 ? 'it' : 'the next one'}`)}" ${UIAction('focusOverdue')}><span>Overdue</span><strong>${late}</strong></button>` : ''}</span>`;
 }
 
 /** The Roadmap's page header: what is overdue, the scale, Today and the add buttons. */
@@ -525,7 +493,7 @@ const roadmapShape = (model) => JSON.stringify([model.ready, stackedLayout(), ca
 
 /**
  * Draw again in place what changed in the lanes, when nothing else did: as
- * when a page of them loads, or a teammate's change is read. The scroller,
+ * when more of their days load, or a teammate's change is read. The scroller,
  * its position and its momentum stay. Returns false when the page has to be
  * drawn again: the tracks, the milestones, the days the timeline spans or
  * who may manage it changed.
@@ -550,6 +518,8 @@ function patchLanes() {
   view.place = { reserve: roomAfterNow(model, datedAhead(model)), ahead: datedAhead(model) };
   syncEdges(view);
   refreshStats();
+  // A late task whose days just loaded.
+  if (overdueWaiting && focusTask(view.sc, overdueWaiting, RAIL)) overdueWaiting = null;
   loadMore(view);
   App.refreshCounts();
   return true;
@@ -866,75 +836,69 @@ function windowScroll(sc, { from, to }, ppd, { reserve, ahead }, now) {
   return Math.max(Math.round(ahead ? left - Math.max(48, spare * 0.3) : right - room + spare * 0.3), 0);
 }
 
-/** The reads asked for these lanes: one still loading, or one that failed, is not asked for again as the view scrolls. */
+/**
+ * The reads asked for these lanes: the days asked for, the days whose tasks
+ * were read, and whether one is loading or failed. While one loads or after
+ * one failed, the view asks for nothing more until the next read of the
+ * Roadmap, so a scroll on a failing network sends no stream of reads.
+ */
 const askedReads = new WeakMap();
-/** A page holds at least this many tasks; with less room left, the lanes are full. */
-const PAGE_MIN = 100;
 /** The days loaded beyond each edge of the view, at most, so a scroll seldom shows days still loading. */
 const SPARE_DAYS = 60;
-/** The days the lanes were last read for in place of theirs, which a view that stays asks for once. */
-let lastDays = null;
+/** The most days one read covers, and the most tasks of days with one it gives. */
+const READ_DAYS = 400, READ_MARKS = 400;
 
 /**
  * Load what the view, with some days to spare, shows and the lanes don't
- * hold yet: one page, as the view comes to those days. Done work goes back
- * page by page, and dated plans forward; the lanes hold at most `limit` of
- * each, so one read can give them all again. When the view leaves the days
- * they were read for, they read the days around it instead. Full lanes,
- * whose days hold more done work than that, keep the latest of it: they
- * follow the view back once half of what they show is past its right edge,
- * and the page says what they leave out.
+ * hold yet, in place and one read at a time: first the days they lack, as
+ * counts, next to the days they hold, or in their place after a jump; then
+ * the tasks the view draws as single marks, on days with one task. The days
+ * the view shows are the ones reads of the lanes ask for again.
  */
 function loadMore(view) {
   const lanes = roadmapLanes();
-  if (!lanes || !view.model.ready || !view.sc.isConnected) { showLimit(null); return; }
+  if (!lanes || !view.model.ready || !view.sc.isConnected) return;
   const { sc, model, ppd } = view, room = (sc.clientWidth - RAIL) / ppd, spare = Math.min(room / 2, SPARE_DAYS);
-  const left = sc.scrollLeft / ppd, right = left + room, need = { from: left - spare, to: right + spare };
-  const date = (day) => iso(new Date(+model.start + Math.floor(day) * DAY));
-  const asked = askedReads.get(lanes) ?? new Map();
+  const left = sc.scrollLeft / ppd, right = left + room;
+  const date = (day) => iso(new Date(+model.start + day * DAY)), offset = (key) => Math.round((d(key) - model.start) / DAY);
+  // Days outside the timeline's span hold no work.
+  const from = Math.max(0, Math.floor(left - spare)), to = Math.max(from, Math.min(model.span, Math.ceil(right + spare)));
+  const middle = Math.round((left + right) / 2), anchor = date(middle);
+  // What a read of the lanes asks for again: these days, as many as one read covers.
+  lanes.shown = { from: date(Math.max(from, middle - READ_DAYS / 2)), to: date(Math.min(to, middle + READ_DAYS / 2 - 1)), anchor };
+  const asked = askedReads.get(lanes) ?? { busy: false, days: new Set(), marked: [] };
   askedReads.set(lanes, asked);
-  const ask = (key, load) => {
-    if (asked.has(key)) return;
-    asked.set(key, 'loading');
-    load().then(() => asked.delete(key), (error) => { asked.set(key, 'failed'); report(error); });
+  if (asked.busy) return;
+  const ask = (first, last, marks = false) => {
+    const days = { from: date(first), to: date(last), anchor, marks: READ_MARKS }, key = `${days.from}/${days.to}`;
+    if (!marks && asked.days.has(key)) return;
+    asked.busy = true;
+    const range = [days.from, days.to];
+    if (marks) asked.marked.push(range); else asked.days.add(key);
+    // Once it lands, the view goes on with what it still lacks; days a change made elsewhere overtook come again.
+    runtime().roadmapDays(days).then((result) => {
+      asked.busy = false;
+      if (result?.stale) { if (marks) asked.marked = asked.marked.filter((item) => item !== range); else asked.days.delete(key); }
+      if (mountedRoadmap === view) loadMore(view);
+    }, (error) => report(error));
   };
-  const free = { done: lanes.limit - model.held.done, plans: lanes.limit - model.held.plans }, full = free.done < PAGE_MIN;
-  // Full lanes keep the latest done work of their days, so they read up to the view's right edge, not past it.
-  const reread = () => {
-    const days = { from: date(left - room), to: date(full ? right : right + room) }, key = `${lanes.projectId}:${days.from}:${days.to}`;
-    if (key === lastDays) return;
-    lastDays = key;
-    ask(`days:${key}`, () => runtime().roadmapDays(days));
-  };
-  const readHere = date(left) >= lanes.window.from && date(right) <= lanes.window.to;
-  let short = null;
-  // A view wholly outside the days of their done work.
-  if (!readHere && (right > model.historyUntil || right < model.historyFrom)) { reread(); showLimit(null); return; }
-  if (need.from < model.historyFrom) {
-    if (!full) ask(`done:${lanes.done.cursor}`, () => runtime().moreRoadmap('done', { from: date(need.from) }, free.done));
-    else if (Math.min(right, model.newestDone) - Math.max(left, model.historyFrom) < (model.newestDone - model.historyFrom) / 2) reread();
-    else if (left < model.historyFrom) short = { kind: 'done', day: date(model.historyFrom) };
+  const held = { from: offset(lanes.window.from), to: offset(lanes.window.to) };
+  if (to < held.from - 1 || from > held.to + 1) {
+    // A jump: the days around the view in place of the ones held.
+    const first = Math.max(from, middle - READ_DAYS / 2);
+    ask(first, Math.min(to, first + READ_DAYS - 1));
+    return;
   }
-  if (need.to > model.plansUntil) {
-    if (free.plans >= PAGE_MIN) ask(`plans:${lanes.plans.cursor}`, () => runtime().moreRoadmap('plans', { to: date(need.to) }, free.plans));
-    else if (right > model.plansUntil) short ??= { kind: 'plans', day: date(model.plansUntil - 1) };
-  }
-  showLimit(short);
-}
-
-/** What the lanes can't show of the view, as the page's header says it; null when they show it all. */
-let limitShown = null;
-function limitText(short) {
-  if (!short) return '';
-  const day = humanShort(d(short.day));
-  return short.kind === 'done' ? `Zoom in to see done tasks before ${day}` : `Dated plans after ${day} aren’t shown`;
-}
-function showLimit(short) {
-  const text = limitText(short);
-  if (text === (limitShown ?? '')) return;
-  limitShown = text || null;
-  const note = document.querySelector('.topbar .rt-limit');
-  if (note) { note.textContent = text; note.hidden = !text; }
+  // The days next to the ones held, on the side the view reaches first.
+  const before = from < held.from ? [Math.max(from, held.from - READ_DAYS), held.from - 1] : null;
+  const after = to > held.to ? [held.to + 1, Math.min(to, held.to + READ_DAYS)] : null;
+  const next = before && after ? (held.from - left > right - held.to ? before : after) : before ?? after;
+  if (next) { ask(...next); return; }
+  // Single tasks the view draws whose task the lanes don't hold, on days whose tasks weren't read yet.
+  const days = view.layout.lanes.flatMap((lane) => lane.sections).flatMap((laid) => laid.marks)
+    .filter((mark) => mark.group?.count === 1 && !mark.group.items[0].task && mark.x >= left * ppd && mark.x <= right * ppd)
+    .map((mark) => mark.group.items[0].day).filter((day) => !asked.marked.some(([first, last]) => first <= day && day <= last)).sort();
+  if (days.length) ask(offset(days[0]), offset(days[days.length - 1]), true);
 }
 
 export function mountRoadmap() {
@@ -1177,18 +1141,21 @@ Object.assign(App, {
     UIMotion.layout(new Map([...before].map(([track,box])=>[track,{left:box.left+shift,top:box.top}])),'.lane');
     App.refreshCounts();
   },
-  /** "Overdue N": focus the next late task on the timeline and show its card. */
+  /**
+   * "Overdue N": focus the next of the longest overdue tasks and show its
+   * card. One on days the lanes don't hold yet comes into view, and gets
+   * focus once they load.
+   */
   focusOverdue() {
-    const sc = document.getElementById('rmScroll'), late = lateTasks();
-    if (!sc || !late.length) return;
-    const at = late.findIndex((task) => task.id === overdueShown);
-    for (let step = 1; step <= late.length; step++) {
-      const task = late[(at + step) % late.length];
-      if (!focusTask(sc, task.id, RAIL)) continue;
-      overdueShown = task.id;
-      announce(`Overdue ${late.indexOf(task) + 1} of ${late.length}: ${task.title}`);
-      return;
-    }
+    const sc = document.getElementById('rmScroll'), lanes = roadmapLanes(), late = lanes?.late ?? [], view = mountedRoadmap;
+    if (!sc || !late.length || !view) return;
+    const index = (late.findIndex((task) => task.id === overdueShown) + 1) % late.length, task = late[index];
+    overdueShown = task.id; overdueWaiting = null;
+    announce(`Overdue ${index + 1} of ${lanes.overdue}: ${task.title}`);
+    if (focusTask(sc, task, RAIL) || !task.deadline) return;
+    overdueWaiting = task;
+    const day = Math.round((d(task.deadline) - view.model.start) / DAY);
+    sc.scrollLeft = state.rmScrollLeft = Math.max(0, Math.round(day * view.ppd - (sc.clientWidth - RAIL) / 2));
   },
   /** Zoom the Roadmap to a fixed scale, in place, keeping the selected task or epic, or today, where it is. */
   setRoadmapScale(key) {

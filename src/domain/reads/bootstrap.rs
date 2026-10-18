@@ -1,7 +1,8 @@
 //! The bootstrap: what the client needs to show its first view.
 
 use super::board::{board_columns, board_counts_connection};
-use super::roadmap::{epics, local_date, milestones, timeline, tracks};
+use super::lanes::timeline;
+use super::roadmap::{epics, local_date, milestones, tracks};
 use super::*;
 
 fn unread_notification_count(connection: &rusqlite::Connection, actor: &Actor) -> AppResult<i64> {
@@ -89,13 +90,19 @@ pub(super) fn bootstrap_snapshot(
         result.epics = epics(connection, project_id, time_zone, counted_at)?;
         result.milestones = milestones(connection, project_id)?;
         if let Some(now) = counted_at {
-            result.roadmap = Some(timeline(
-                connection,
-                project_id,
-                time_zone,
-                local_date(time_zone, now)?,
-                &LanesQuery::Days(query.roadmap.clone()),
-            )?);
+            result.roadmap = Some(
+                timeline(
+                    connection,
+                    project_id,
+                    time_zone,
+                    local_date(time_zone, now)?,
+                    &LanesQuery {
+                        window: query.roadmap.clone(),
+                        ..LanesQuery::default()
+                    },
+                )?
+                .0,
+            );
         }
         let counts = if result.view == "board" {
             require_project(connection, actor, project_id, Need::Read, false)?;

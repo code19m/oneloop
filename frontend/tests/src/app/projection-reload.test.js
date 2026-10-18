@@ -313,15 +313,45 @@ test('a switch to a project its person can no longer open is forgotten, but only
   assert.equal(remembered.values.has('oneloop.project'),false);
 });
 
-test('a teammate\'s change to a task reads that task with the Roadmap\'s counts, and none of the pages its lanes hold',async()=>{
+/** Lanes of p1 that hold most of 2026, with a view of March to May. */
+const heldLanes=()=>({projectId:'p1',window:{from:'2026-01-01',to:'2026-12-31'},shown:{from:'2026-03-01',to:'2026-06-01',anchor:'2026-04-15'},sections:{},trackCounts:{},overdue:0,firstDay:null,lastDay:null,open:[],late:[],days:{},marks:{}});
+const lanesRead=(extra={})=>({sections:[],overdue:1,firstDay:null,lastDay:null,open:[],late:[],days:{from:'2026-03-01',to:'2026-06-01',sections:[]},...extra});
+
+test('a teammate\'s change to a task reads that task with the Roadmap\'s counts and the days the lanes hold of its section, in one read',async()=>{
   const t=page({view:'roadmap',projectId:'p1'});
-  t.data.roadmap={projectId:'p1',taskIds:['t1'],window:{from:'2025-01-01',to:'2027-01-01'},limit:2000,sections:{},trackCounts:{},overdue:0,firstDay:null,lastDay:null,plans:{cursor:null,reach:'2027-01-01'},done:{cursor:'older',reach:'2025-01-01'}};
+  t.data.roadmap=heldLanes();
   const live=t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'task',entityId:'t1'},{entityType:'task_block',entityId:'b1',taskId:'t2'}]});
   await t.called(1);await settle();
-  assert.deepEqual(t.calls.map(call=>[call.name,call.args[1]]),[['roadmapLanes',{tasks:['t1','t2']}]]);
-  t.next('roadmapLanes').resolve({...projection('p1'),lanes:{sections:[],overdue:1,firstDay:null,lastDay:null,open:[],tasks:[view('t1')]}});
+  assert.deepEqual(t.calls.map(call=>[call.name,call.args[1]]),[['roadmapLanes',{from:'2026-01-01',to:'2026-12-31',marks:0,tasks:['t1','t2'],sections:[]}]]);
+  t.next('roadmapLanes').resolve({...projection('p1'),tracks:[],milestones:[],lanes:lanesRead({tasks:[view('t1')],days:{from:'2026-01-01',to:'2026-12-31',sections:[]}})});
   assert.equal((await live).stale,false);
-  assert.deepEqual([t.data.roadmap.taskIds,t.data.roadmap.overdue],[['t1'],1]);
+  assert.deepEqual([t.data.roadmap.open,t.data.roadmap.overdue,t.data.roadmap.window],[[],1,{from:'2026-01-01',to:'2026-12-31'}]);
+});
+
+test('a teammate\'s track or milestone change reads the Roadmap\'s tracks, epics and milestones alone, and an epic\'s change the lanes in view too',async()=>{
+  const t=page({view:'roadmap',projectId:'p1'});
+  t.data.roadmap=heldLanes();
+  const lanes=t.data.roadmap;
+  const renamed=t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'track',entityId:'t1'},{entityType:'milestone',entityId:'m1'}]});
+  await t.called(1);await settle();
+  assert.deepEqual(t.calls.map(call=>call.name),['roadmap'],'no lanes and no bootstrap');
+  t.next('roadmap').resolve({...projection('p1'),projectId:'p1',tracks:[{id:'t1',projectId:'p1',name:'Renamed',position:1,revision:2}],lanes:null});
+  assert.equal((await renamed).stale,false);
+  assert.equal(t.data.tracks.find(track=>track.id==='t1').name,'Renamed');
+  assert.equal(t.data.roadmap,lanes,'the lanes stay as they are');
+  const moved=t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'epic',entityId:'e1'}]});
+  await t.called(2);await settle();
+  assert.deepEqual(t.calls.slice(1).map(call=>[call.name,call.args[1]]),[['roadmapLanes',{from:'2026-03-01',to:'2026-06-01',anchor:'2026-04-15'}]]);
+  t.next('roadmapLanes').resolve({...projection('p1'),projectId:'p1',lanes:lanesRead()});
+  assert.equal((await moved).stale,false);
+});
+
+test('a teammate\'s epic change reads an open epic drawer again with the lanes',{timeout:5_000},async()=>{
+  const t=page({view:'roadmap',projectId:'p1',peek:'e1'});
+  t.data.roadmap=heldLanes();
+  t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'epic',entityId:'e1'}]});
+  await waitFor(()=>t.calls.some(call=>call.name==='epicTasks'));
+  assert.deepEqual(t.calls.map(call=>call.name).filter(name=>name!=='epicActivity'),['roadmapLanes','epicTasks']);
 });
 
 // Without the drawer read, the fourth call never comes and the test times out.

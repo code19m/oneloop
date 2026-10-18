@@ -8,7 +8,7 @@ import { sectionKey } from '../../src/data/projection-store.js';
 import {
   DAY, I, STATUS, UIAction, d, esc, formatInstant, humanShort, setHTML, stIcon, today,
 } from './format.js';
-import { App, D, epicById, epics, instanceNow, state, taskById, trackById, tracks, userById } from './model.js';
+import { App, D, epicById, epics, instanceNow, runtime, state, taskById, trackById, tracks, userById } from './model.js';
 import { EPIC_TIP, hideEpicTip, mountRoadmapTip } from './overlays.js';
 
 // ---------- geometry: one 32 px row, an 8 px rhythm, three type sizes ----------
@@ -62,15 +62,15 @@ const blockedOf = (task) => !!task.block && task.state !== 'done';
 /** When work on a task started: when it first entered In Progress, or its last change for data from before that was kept. */
 const startOf = (task) => task.startedAt ?? task.updatedAt;
 
-/** A task as a mark: done at the day it finished, planned at its deadline, or a bar of work in progress. Plans without a date are not drawn. */
-function taskItem(task, scale, now) {
-  const blocked = blockedOf(task), late = isLate(task);
-  if (task.state === 'done') return task.completedAt ? { kind: 'done', task, at: Math.min(scale.ofInstant(task.completedAt), now) } : null;
-  if (task.state === 'planning') return task.deadline ? { kind: 'planned', task, at: scale.ofDate(task.deadline) + 0.5, blocked, late } : null;
+/**
+ * Work in progress as a bar: from when work started to its deadline, red
+ * past it when late, or to now without one.
+ */
+function flightItem(task, scale, now) {
   const from = Math.min(scale.ofInstant(startOf(task)), now);
-  const end = task.deadline ? scale.ofDate(task.deadline) + 1 : null;
+  const end = task.deadline ? scale.ofDate(task.deadline) + 1 : null, late = isLate(task);
   return {
-    kind: 'flight', task, from, blocked, late, open: end === null,
+    kind: 'flight', task, from, blocked: blockedOf(task), late, open: end === null,
     to: late ? Math.max(from, end) : Math.max(from, end ?? now),
     slip: late ? [Math.max(from, end), now] : null,
   };
@@ -79,19 +79,24 @@ function taskItem(task, scale, now) {
 /** An epic with an end date sits on the time scale; one without is drawn from its work. */
 export const epicDated = (epic) => !!epic?.end;
 
-/** The tasks of the project on screen that its lanes draw. */
-export function laneTaskList() {
-  const lanes = roadmapLanes(), ids = new Set(lanes?.taskIds), tracked = new Set(tracks().map((track) => track.id));
-  return lanes ? D.tasks.filter((task) => ids.has(task.internalId) && tracked.has(task.trackId)) : [];
+/** The work in progress the lanes draw, on the project's tracks. */
+function openTasks() {
+  const lanes = roadmapLanes(), ids = new Set(lanes?.open), tracked = new Set(tracks().map((track) => track.id));
+  return lanes ? D.tasks.filter((task) => ids.has(task.internalId) && tracked.has(task.trackId) && (task.state === 'progress' || task.state === 'review')) : [];
 }
 
-/** The first and last dates the lanes' tasks reach: when work finished or started, and deadlines; null without any. */
+/** The task `key` names, as the page holds it or as a mark of the lanes or their late tasks shows it. */
+export function laneTask(key) {
+  const lanes = roadmapLanes();
+  return taskById(key) ?? (lanes && (Object.values(lanes.marks).find((mark) => mark.id === key) ?? lanes.late.find((mark) => mark.id === key))) ?? null;
+}
+
+/** The first and last dates the work in progress reaches, from its start to its deadline; null without any. */
 export function laneDates() {
   let min = null, max = null;
   const take = (date) => { if (!min || date < min) min = date; if (!max || date > max) max = date; };
-  for (const task of laneTaskList()) {
-    if (task.state === 'done') { if (task.completedAt) take(instantDay(task.completedAt).date); continue; }
-    if (task.state !== 'planning') take(instantDay(startOf(task)).date);
+  for (const task of openTasks()) {
+    take(instantDay(startOf(task)).date);
     if (task.deadline) take(task.deadline);
   }
   return min && { min: d(min), max: d(max) };
@@ -100,17 +105,40 @@ export function laneDates() {
 const NO_TASKS = { planning: 0, progress: 0, review: 0, done: 0 };
 
 /**
+ * A section's done work and dated plans of one day: how many, and the task
+ * itself on a day with one, when the lanes hold it. Both sit in the middle
+ * of their day; done work never after now.
+ */
+function dayItems(day, counts, scale, now, marks) {
+  const at = scale.ofDate(day) + 0.5, items = [];
+  if (counts.done) items.push({ kind: 'done', day, count: counts.done, at: Math.min(at, now), task: counts.done === 1 ? marks.get(`${day}|done`) ?? null : null });
+  if (counts.plans) items.push({ kind: 'planned', day, count: counts.plans, at, late: d(day) < today, blocked: counts.blocked > 0, task: counts.plans === 1 ? marks.get(`${day}|planning`) ?? null : null });
+  return items;
+}
+
+/**
  * Each track's lane: its own work (tasks without an epic), then its epics by
- * start date, with their tasks. A track's head counts its work in progress
+ * start date, with their work. A track's head counts its work in progress
  * and its plans, dated or not, as the Board's columns do; each section knows
- * its own counts, which hold the tasks the Roadmap doesn't load too.
+ * its own counts, which hold the work in progress the lanes don't draw too.
  */
 export function laneModels(start) {
   const scale = dayScale(start), now = scale.ofInstant(instanceNow()), lanes = roadmapLanes();
-  const byTrack = new Map(tracks().map((track) => [track.id, []]));
-  for (const task of laneTaskList()) byTrack.get(task.trackId).push(task);
+  const flights = new Map(tracks().map((track) => [track.id, []]));
+  for (const task of openTasks()) flights.get(task.trackId).push(flightItem(task, scale, now));
+  // The tasks of days with one, by section, day and kind.
+  const marks = new Map();
+  for (const mark of Object.values(lanes?.marks ?? {})) if (mark.day) {
+    const key = sectionKey(mark.trackId, mark.epicId);
+    if (!marks.has(key)) marks.set(key, new Map());
+    marks.get(key).set(`${mark.day}|${mark.state === 'done' ? 'done' : 'planning'}`, mark);
+  }
   const all = epics();
-  const section = (track, epic) => ({ epic, items: [], key: sectionKey(track.id, epic?.id), counts: lanes?.sections[sectionKey(track.id, epic?.id)] ?? NO_TASKS });
+  const section = (track, epic) => {
+    const key = sectionKey(track.id, epic?.id), held = marks.get(key) ?? new Map();
+    const items = Object.entries(lanes?.days[key] ?? {}).flatMap(([day, counts]) => dayItems(day, counts, scale, now, held));
+    return { epic, items, key, counts: lanes?.sections[key] ?? NO_TASKS };
+  };
   return {
     now, ready: !!lanes,
     lanes: tracks().map((track) => {
@@ -118,10 +146,7 @@ export function laneModels(start) {
       const boxes = all.filter((epic) => epic.trackId === track.id).sort((a, b) => d(a.start) - d(b.start) || a.order - b.order)
         .map((epic) => ({ ...section(track, epic), ...(epicDated(epic) ? { from: scale.ofDate(epic.start), to: scale.ofDate(epic.end) + 1 } : { from: scale.ofDate(epic.start) }) }));
       const byEpic = new Map(boxes.map((box) => [box.epic.id, box]));
-      for (const task of byTrack.get(track.id)) {
-        const item = taskItem(task, scale, now);
-        if (item) (byEpic.get(task.epicId) ?? own).items.push(item);
-      }
+      for (const item of flights.get(track.id)) (byEpic.get(item.task.epicId) ?? own).items.push(item);
       const counts = lanes?.trackCounts[track.id] ?? NO_TASKS;
       return {
         track, sections: [own, ...boxes],
@@ -163,21 +188,21 @@ const personOf = (task) => userById((task.assignees || []).find(userById));
 const firstName = (task) => personOf(task)?.name.split(' ')[0] || '';
 const dayText = (ms) => humanShort(d(formatInstant(ms).slice(0, 10)));
 /** A count's span of days, for its list and its name. */
-function countSpan(items, done) {
-  const days = items.map((item) => done ? dayText(item.task.completedAt) : humanShort(d(item.task.deadline)));
-  return days[0] === days[days.length - 1] ? days[0] : `${days[0]} – ${days[days.length - 1]}`;
+function countSpan(items) {
+  const first = items[0].day, last = items[items.length - 1].day;
+  return first === last ? humanShort(d(first)) : `${humanShort(d(first))} – ${humanShort(d(last))}`;
 }
 
-/** Marks closer than they can be drawn merge into a count: one small number in the middle of what it holds. */
+/** Marks closer than they can be drawn merge into a count: one small number, as wide as its digits, in the middle of what it holds. */
 function cluster(items, ppd, size) {
   const groups = [];
   for (const item of items.slice().sort((a, b) => a.at - b.at)) {
     const x = item.at * ppd, group = groups[groups.length - 1];
-    if (group && x - group.last < Math.max(size, 18) + 4) { group.items.push(item); group.last = x; continue; }
-    groups.push({ items: [item], first: x, last: x });
+    if (group && x - group.last < Math.max(size, 18) + 4) { group.items.push(item); group.count += item.count; group.last = x; continue; }
+    groups.push({ items: [item], count: item.count, first: x, last: x });
   }
   for (const group of groups) {
-    const mid = (group.first + group.last) / 2, half = group.items.length > 1 ? (String(group.items.length).length > 1 ? 12 : 9) : size / 2;
+    const mid = (group.first + group.last) / 2, half = group.count > 1 ? Math.max(9, String(group.count).length * 3.5 + 5) : size / 2;
     Object.assign(group, { x: mid, extent: [mid - half, mid + half] });
   }
   return groups;
@@ -264,11 +289,14 @@ function spread(marks, gap = 2) {
  */
 function layoutSection(section, ppd, now) {
   const nowX = now * ppd, marks = [];
-  for (const group of cluster(section.items.filter((item) => item.kind === 'done'), ppd, DOT)) marks.push({ type: group.items.length > 1 ? 'doneCluster' : 'done', row: 0, group, x: group.x, box: group.extent });
-  for (const group of cluster(section.items.filter((item) => item.kind === 'planned'), ppd, RING)) {
-    marks.push(group.items.length > 1
-      ? { type: 'plannedCluster', row: 0, group, x: group.x, box: group.extent }
-      : { type: 'planned', row: 0, item: group.items[0], x: group.x, box: group.extent });
+  // A day with one task the lanes hold shows it; others show their count, which lists them.
+  for (const [kind, size, type] of [['done', DOT, 'done'], ['planned', RING, 'planned']]) {
+    for (const group of cluster(section.items.filter((item) => item.kind === kind), ppd, size)) {
+      const single = group.count === 1 && group.items[0].task;
+      marks.push(single
+        ? { type, row: 0, group, item: group.items[0], key: navKey(group.items[0].task), x: group.x, box: group.extent }
+        : { type: `${type}Count`, row: 0, group, key: `c:${section.key}:${kind}:${group.items[0].day}`, x: group.x, box: group.extent });
+    }
   }
   spread(marks);
   const line = marks.length > 0, first = line ? 1 : 0;
@@ -283,7 +311,7 @@ function layoutSection(section, ppd, now) {
   // Work in progress: a row each.
   const ranked = section.items.filter((item) => item.kind === 'flight').sort(byUrgency);
   const bars = ranked.slice(0, MAX_BARS).sort((a, b) => a.from - b.from || a.task.order - b.task.order), hidden = ranked.slice(MAX_BARS);
-  bars.forEach((item, index) => marks.push({ type: 'bar', row: first + index, item, x: Math.round(item.from * ppd), ...barGeometry(item, ppd) }));
+  bars.forEach((item, index) => marks.push({ type: 'bar', row: first + index, item, key: navKey(item.task), x: Math.round(item.from * ppd), ...barGeometry(item, ppd) }));
   // Past the most the Roadmap loads, the section's counts know how many more there are.
   const shown = (state) => bars.filter((item) => item.task.state === state).length;
   const more = (state) => Math.max(hidden.filter((item) => item.task.state === state).length, section.counts[state] - shown(state));
@@ -293,7 +321,7 @@ function layoutSection(section, ppd, now) {
     // Beside the titles of the bars, or, with none loaded, just before now.
     const leads = marks.filter((mark) => mark.type === 'bar').map((mark) => mark.left - mark.lead - 8);
     const left = leads.length ? Math.min(...leads) : Math.round(nowX - width - 8);
-    marks.push({ type: 'more', row: first + bars.length, items: hidden, count, key: `f:${section.key}`, x: left, left, width, label });
+    marks.push({ type: 'more', row: first + bars.length, items: hidden, shown: bars, count, key: `f:${section.key}`, x: left, left, width, label });
   }
   const rows = Math.max(first, ...marks.map((mark) => mark.row + 1));
   // The line joins its marks, solid before now and dotted after it; a single mark needs none.
@@ -368,16 +396,28 @@ function markHtml(laid, mark, focus) {
     const face = done ? '<span class="rt-dot" aria-hidden="true"></span>' : item.late ? lateIcon(RING) : item.blocked ? BLOCKED_SVG : RING_SVG;
     return `<button type="button" class="${cls}" data-task="${esc(task.id)}" data-nav="${esc(navKey(task))}" ${tab(focus, navKey(task))} aria-label="${esc(taskLabel(task))}" style="left:${px(x - HIT / 2)};top:${px(y - HIT / 2)}">${face}${title}</button>`;
   }
-  if (mark.type === 'doneCluster' || mark.type === 'plannedCluster') {
-    const { items } = mark.group, extent = mark.box, ids = items.map((item) => item.task.id);
-    const key = `c:${ids[0]}`, done = mark.type === 'doneCluster', span = countSpan(items, done);
-    const name = `${items.length} ${done ? 'done' : 'due'} · ${span}`, spoken = `${items.length} ${done ? 'done' : 'planned'} tasks, ${span}`;
-    const tone = done ? '' : items.some((item) => item.late) ? ' rt-late' : items.some((item) => item.blocked) ? ' rt-blocked' : '';
-    return `<button type="button" class="rt-count ${done ? 'rt-count-done' : 'rt-count-planned'}${tone}${boxed}" data-cluster="${esc(ids.join(' '))}" data-span="${esc(name)}" data-nav="${esc(key)}" ${tab(focus, key)} aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(spoken)}" style="left:${px(extent[0])};top:${px(y - 9)};width:${px(extent[1] - extent[0])}">${items.length}</button>`;
+  if (mark.type === 'doneCount' || mark.type === 'plannedCount') {
+    // A count lists its tasks: from the lanes when they hold them all, else from a read of its days.
+    const { items, count } = mark.group, extent = mark.box, key = mark.key, done = mark.type === 'doneCount', span = countSpan(items);
+    const held = items.every((item) => item.task) ? ` data-cluster="${esc(items.map((item) => item.task.id).join(' '))}"` : '';
+    const late = !done && items.some((item) => item.late), blocked = !done && items.some((item) => item.blocked);
+    const list = `data-list="${esc(done ? 'done' : 'plans')}" data-section="${esc(laid.section.key)}" data-from="${esc(items[0].day)}" data-to="${esc(items[items.length - 1].day)}" data-count="${esc(String(count))}"${held}`;
+    const spoken = count === 1 ? (done ? `1 done task, ${span}` : `1 planned task, due ${span}`) : `${count} ${done ? 'done' : 'planned'} tasks, ${span}`;
+    const name = `${count} ${done ? 'done' : 'due'} · ${span}`, opens = `data-span="${esc(name)}" data-nav="${esc(key)}" ${tab(focus, key)} aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(spoken)}"`;
+    // One task the lanes don't hold yet: its dot or ring, which lists it.
+    if (count === 1) {
+      const cls = ['rt-mark', done ? 'rt-done' : 'rt-planned', blocked ? 'rt-blocked' : '', late ? 'rt-late' : ''].filter(Boolean).join(' ') + boxed;
+      const face = done ? '<span class="rt-dot" aria-hidden="true"></span>' : late ? lateIcon(RING) : blocked ? BLOCKED_SVG : RING_SVG;
+      return `<button type="button" class="${cls}" ${list} ${opens} style="left:${px(mark.x - HIT / 2)};top:${px(y - HIT / 2)}">${face}</button>`;
+    }
+    const tone = late ? ' rt-late' : blocked ? ' rt-blocked' : '';
+    return `<button type="button" class="rt-count ${done ? 'rt-count-done' : 'rt-count-planned'}${tone}${boxed}" ${list} ${opens} style="left:${px(extent[0])};top:${px(y - 9)};width:${px(extent[1] - extent[0])}">${count}</button>`;
   }
   if (mark.type === 'more') {
-    const ids = mark.items.map((item) => item.task.id), key = mark.key;
-    return `<button type="button" class="rt-more${boxed}" data-more="${esc(ids.join(' '))}" data-count="${esc(String(mark.count))}" data-span="${esc(mark.label)}" data-left="${esc(numbers(mark.left))}" data-nav="${esc(key)}" ${tab(focus, key)} aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(`${mark.count} more in progress`)}" style="left:${px(mark.left)};top:${px(y - 10)}">${esc(mark.label)}</button>`;
+    // The rest of the work in progress, past the bars: listed from the lanes when they hold it all, else read.
+    const ids = mark.items.map((item) => item.task.id), shown = mark.shown.map((item) => item.task.id), key = mark.key;
+    const held = ids.length >= mark.count ? ` data-cluster="${esc(ids.join(' '))}"` : ` data-shown="${esc(shown.join(' '))}"`;
+    return `<button type="button" class="rt-more${boxed}" data-more${held} data-section="${esc(laid.section.key)}" data-count="${esc(String(mark.count))}" data-span="${esc(mark.label)}" data-left="${esc(numbers(mark.left))}" data-nav="${esc(key)}" ${tab(focus, key)} aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(`${mark.count} more in progress`)}" style="left:${px(mark.left)};top:${px(y - 10)}">${esc(mark.label)}</button>`;
   }
   // A bar: its icon and title lead a thin line; a firm end at its deadline (red past it when late), or a fade at now without one.
   const { item, left, width, solid, slip, fade, lead } = mark, task = item.task;
@@ -407,23 +447,39 @@ function laneOrder(layout) {
   const keys = [];
   for (const laid of layout.sections) {
     if (laid.section.epic) keys.push(`e:${laid.section.epic.id}`);
-    for (const mark of laid.marks.slice().sort((a, b) => a.row - b.row || a.x - b.x)) keys.push(markKey(mark));
+    for (const mark of laid.marks.slice().sort((a, b) => a.row - b.row || a.x - b.x)) keys.push(mark.key);
   }
   return keys;
 }
-const markItems = (mark) => mark.group ? mark.group.items : mark.items ? mark.items : [mark.item];
-const markKey = (mark) => mark.type === 'more' ? mark.key : mark.group && mark.group.items.length > 1 ? `c:${mark.group.items[0].task.id}` : navKey(markItems(mark)[0].task);
+
+/** Where a task shows: its section, and its day and kind on the line, or its work in progress. */
+function placeOf(task) {
+  if (task.state === 'progress' || task.state === 'review') return { section: sectionKey(task.trackId, task.epicId), kind: 'flight' };
+  const day = task.day ?? (task.state === 'done' ? task.completedAt && instantDay(task.completedAt).date : task.deadline);
+  return day ? { section: sectionKey(task.trackId, task.epicId), kind: task.state === 'done' ? 'done' : 'planned', day } : null;
+}
+
+/** The key of the mark that shows a place in a lane's layout: the count or mark of its day, or for work in progress, its "+N". */
+function holderOf(layout, place) {
+  for (const laid of layout.sections) {
+    if (laid.section.key !== place.section) continue;
+    for (const mark of laid.marks) {
+      if (place.kind === 'flight' ? mark.type === 'more' : mark.group?.items.some((item) => item.kind === place.kind && item.day === place.day)) return mark.key;
+    }
+  }
+  return null;
+}
 
 /**
  * The key of the element that shows `key` at this zoom: the same task or
- * epic, or the count a task merged into, or the task a count split into.
+ * epic, or the count a task merged into, or what holds a count's first day.
  */
 function resolveKey(layout, key) {
   if (!key) return null;
   if (laneOrder(layout).includes(key)) return key;
-  if (!/^[tcf]:/.test(key)) return null;
-  const id = key.slice(2), holder = layout.sections.flatMap((laid) => laid.marks).find((mark) => markItems(mark).some((item) => item.task.id === id));
-  return holder ? markKey(holder) : null;
+  if (key.startsWith('t:')) { const task = laneTask(key.slice(2)), place = task && placeOf(task); return place ? holderOf(layout, place) : null; }
+  if (key.startsWith('c:')) { const [section, kind, day] = key.slice(2).split(':'); return holderOf(layout, { section, kind, day }); }
+  return null;
 }
 
 /** The item a lane's Tab stop starts on: the last one focused, else the first in progress, else the latest done. */
@@ -432,9 +488,9 @@ export function laneEntry(layout, remembered) {
   if (known) return known;
   const marks = layout.sections.flatMap((laid) => laid.marks);
   const flight = marks.find((mark) => mark.type === 'bar');
-  if (flight) return markKey(flight);
-  const done = marks.filter((mark) => mark.type === 'done' || mark.type === 'doneCluster').sort((a, b) => b.x - a.x)[0];
-  if (done) return markKey(done);
+  if (flight) return flight.key;
+  const done = marks.filter((mark) => mark.type === 'done' || mark.type === 'doneCount').sort((a, b) => b.x - a.x)[0];
+  if (done) return done.key;
   return laneOrder(layout)[0] || null;
 }
 
@@ -504,6 +560,17 @@ function listRows(list, kind) {
   }).join('');
 }
 
+/** A list's rows, and what it counts but doesn't show: the Board has those. */
+function listBody(list, kind, count) {
+  const unlisted = count - list.length;
+  return `${listRows(list, kind)}${unlisted > 0 ? `<li class="rt-pop-note">${esc(`${list.length ? `${unlisted} more` : `All ${unlisted}`} on the Board`)}</li>` : ''}`;
+}
+
+/**
+ * Open the list of a count or "+N in progress". A count whose tasks the
+ * lanes hold lists them at once; another, and "+N", read them first, while
+ * the list says so.
+ */
 function openList(anchor, { pinned, focusFirst = false }) {
   if (LIST.anchor === anchor && LIST.el) {
     if (pinned) LIST.pinned = true;
@@ -512,28 +579,29 @@ function openList(anchor, { pinned, focusFirst = false }) {
   }
   closeTimelineList();
   hideEpicTip();
-  const more = anchor.dataset.more !== undefined;
-  const list = (anchor.dataset.cluster || anchor.dataset.more).split(' ').map(taskById).filter(Boolean);
-  // "+N in progress" can count more tasks than the Roadmap loads: the Board has them all.
-  const count = more ? Number(anchor.dataset.count) || list.length : list.length, unlisted = count - list.length;
+  const more = anchor.dataset.more !== undefined, count = Number(anchor.dataset.count) || 0;
+  const kind = more ? 'flight' : anchor.dataset.list === 'done' ? 'done' : 'planned';
+  const held = anchor.dataset.cluster ? anchor.dataset.cluster.split(' ').map(laneTask).filter(Boolean) : null;
   if (!count) return;
-  const kind = more ? 'flight' : list[0].state === 'done' ? 'done' : 'planned';
-  if (kind === 'done') list.sort((a, b) => b.completedAt - a.completedAt);
+  const byDone = (list) => (kind === 'done' ? list.sort((a, b) => b.completedAt - a.completedAt) : list);
   const title = more ? `${count} more in progress` : anchor.dataset.span;
   const el = document.createElement('div');
   el.className = 'epic-tooltip rt-pop';
   el.id = 'roadmap-list';
   el.setAttribute('role', 'dialog');
   el.setAttribute('aria-label', title);
-  setHTML(el, `<div class="rt-pop-head">${esc(title)}</div><ul class="rt-pop-list">${listRows(list, kind)}${unlisted > 0 ? `<li class="rt-pop-note">${esc(`${list.length ? `${unlisted} more` : `All ${unlisted}`} on the Board`)}</li>` : ''}</ul>`);
+  setHTML(el, `<div class="rt-pop-head">${esc(title)}</div><ul class="rt-pop-list" aria-busy="${held ? 'false' : 'true'}">${held ? listBody(byDone(held), kind, count) : '<li class="rt-pop-note">Loading…</li>'}</ul>`);
   document.body.append(el);
   Object.assign(LIST, { el, anchor, pinned });
   anchor.setAttribute('aria-expanded', 'true');
   anchor.setAttribute('aria-controls', el.id);
-  const box = anchor.getBoundingClientRect(), width = el.offsetWidth, height = el.offsetHeight;
-  const below = box.bottom + 8 + height <= innerHeight - 8;
-  el.style.left = `${Math.max(8, Math.min(box.left, innerWidth - width - 8))}px`;
-  el.style.top = `${Math.max(8, below ? box.bottom + 8 : box.top - height - 8)}px`;
+  const place = () => {
+    const box = anchor.getBoundingClientRect(), width = el.offsetWidth, height = el.offsetHeight;
+    const below = box.bottom + 8 + height <= innerHeight - 8;
+    el.style.left = `${Math.max(8, Math.min(box.left, innerWidth - width - 8))}px`;
+    el.style.top = `${Math.max(8, below ? box.bottom + 8 : box.top - height - 8)}px`;
+  };
+  place();
   UIMotion.enter(el);
   el.addEventListener('pointerenter', () => clearTimeout(LIST.hideTimer));
   el.addEventListener('pointerleave', () => { if (!LIST.pinned) leaveList(); });
@@ -545,7 +613,25 @@ function openList(anchor, { pinned, focusFirst = false }) {
     else if (event.key === 'Tab') { event.preventDefault(); closeTimelineList({ focusAnchor: true }); }
   });
   el.addEventListener('focusout', (event) => { if (!el.contains(event.relatedTarget) && event.relatedTarget !== anchor) closeTimelineList(); });
-  if (focusFirst) el.querySelector('.rt-pop-row')?.focus();
+  if (held) { if (focusFirst) el.querySelector('.rt-pop-row')?.focus(); return; }
+  const [track, epic] = anchor.dataset.section.split('/');
+  const days = more ? {} : { from: anchor.dataset.from, to: anchor.dataset.to };
+  runtime().roadmapList({ track, epic: epic || null, kind: more ? 'open' : anchor.dataset.list, ...days }).then(({ items, total }) => {
+    if (LIST.el !== el) return;
+    // "+N" lists the work after the bars the lane draws.
+    const shown = new Set((anchor.dataset.shown || '').split(' '));
+    const list = more ? items.filter((task) => !shown.has(task.id)) : items;
+    const body = el.querySelector('.rt-pop-list');
+    setHTML(body, listBody(byDone(list), kind, more ? count : total));
+    body.setAttribute('aria-busy', 'false');
+    place();
+    if (focusFirst && (document.activeElement === anchor || el.contains(document.activeElement))) el.querySelector('.rt-pop-row')?.focus();
+  }, () => {
+    if (LIST.el !== el) return;
+    const body = el.querySelector('.rt-pop-list');
+    setHTML(body, '<li class="rt-pop-note">Couldn’t load these tasks.</li>');
+    body.setAttribute('aria-busy', 'false');
+  });
 }
 function leaveList() {
   clearTimeout(LIST.hideTimer);
@@ -567,7 +653,7 @@ function epicTipHtml(epic) {
 
 /** The card of the task or epic that `anchor` shows. */
 function showCard(anchor) {
-  const task = anchor.dataset.task ? taskById(anchor.dataset.task) : null, epic = task ? null : epicById(anchor.dataset.epic);
+  const task = anchor.dataset.task ? laneTask(anchor.dataset.task) : null, epic = task ? null : epicById(anchor.dataset.epic);
   if (!(task || epic) || !anchor.isConnected) return;
   closeTimelineList();
   mountRoadmapTip(anchor, task ? 'task-tooltip' : 'epic-tooltip', task ? taskTipHtml(task) : epicTipHtml(epic));
@@ -639,7 +725,7 @@ export const laneFocus = new Map();
 
 const fine = () => window.matchMedia('(hover: hover) and (pointer: fine)').matches;
 const navItems = (lane) => [...lane.querySelectorAll('.rt-body [data-nav]')];
-const OPENS_LIST = '[data-cluster],[data-more]';
+const OPENS_LIST = '[data-list],[data-more]';
 const CARD = '[data-task],.rt-epic-label';
 const DETAIL = `${CARD},${OPENS_LIST}`;
 
@@ -660,11 +746,14 @@ function moveFocus(sc, next, rail) {
 }
 
 /**
- * Focus what shows task `id` (its own mark, or the count or "+N" that holds
+ * Focus what shows `task` (its own mark, or the count or "+N" that holds
  * it), bring it into view and show its card. Returns whether it shows.
  */
-export function focusTask(sc, id, rail) {
-  const el = [...sc.querySelectorAll('.rt-body [data-nav]')].find((item) => item.dataset.task === id || (item.dataset.cluster || item.dataset.more || '').split(' ').includes(id));
+export function focusTask(sc, task, rail) {
+  const place = placeOf(task), items = [...sc.querySelectorAll('.rt-body [data-nav]')];
+  // Its own mark, else what holds it: the count of its day, or its section's "+N".
+  const el = items.find((item) => item.dataset.task === task.id) ?? (place && items.find((item) => item.dataset.section === place.section
+    && (place.kind === 'flight' ? item.dataset.more !== undefined : item.dataset.list === (place.kind === 'done' ? 'done' : 'plans') && item.dataset.from <= place.day && place.day <= item.dataset.to)));
   if (!el) return false;
   hideEpicTip(); closeTimelineList();
   moveFocus(sc, el, rail);

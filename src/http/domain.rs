@@ -13,8 +13,8 @@ use crate::{
     auth::Actor,
     domain::{
         BoardCounts, BoardQuery, BoardView, BoardViewQuery, BootstrapQuery, DoneOrder, LanesQuery,
-        Page, PageQuery, PoolItemView, PoolQuery, RoadmapPage, RoadmapPageQuery, RoadmapView,
-        RoadmapWindow, TaskFilter, TaskStatus, TaskView,
+        ListKind, Page, PageQuery, PoolItemView, PoolQuery, RoadmapDays, RoadmapList,
+        RoadmapListQuery, RoadmapView, RoadmapWindow, TaskFilter, TaskStatus, TaskView,
     },
     error::AppResult,
 };
@@ -32,10 +32,8 @@ pub(crate) fn read_router() -> Router<AppState> {
             "/api/projects/{project_id}/roadmap/lanes",
             get(roadmap_lanes),
         )
-        .route(
-            "/api/projects/{project_id}/roadmap/tasks",
-            get(roadmap_tasks),
-        )
+        .route("/api/projects/{project_id}/roadmap/days", get(roadmap_days))
+        .route("/api/projects/{project_id}/roadmap/list", get(roadmap_list))
         .route("/api/projects/{project_id}/pool", get(pool))
         .route("/api/epics/{epic_id}/tasks", get(epic_tasks))
         .route("/api/epics/{epic_id}/activity", get(epic_activity))
@@ -105,6 +103,7 @@ with_board_filter! {
         switched_by: Option<String>,
         roadmap_from: Option<String>,
         roadmap_to: Option<String>,
+        roadmap_anchor: Option<String>,
     }
 }
 
@@ -157,6 +156,8 @@ async fn bootstrap(
         roadmap: RoadmapWindow {
             from: query.roadmap_from,
             to: query.roadmap_to,
+            anchor: query.roadmap_anchor,
+            marks: None,
         },
     };
     state.domain.bootstrap(&actor, query).await.map(Json)
@@ -193,15 +194,21 @@ async fn roadmap(
         .map(Json)
 }
 
-/// The Roadmap page: what `roadmap` gives, and what its lanes draw: the
-/// tasks of a window of days, or only the tasks that `tasks` names, as for a
-/// change made elsewhere.
+/// The Roadmap page: what `roadmap` gives, and what its lanes draw for a
+/// window of days. A change made elsewhere names the tasks it changed
+/// (`tasks`) and the sections they may have left (`sections`), each a
+/// comma-separated list, and whether one of them is among the longest
+/// overdue the page shows (`late`).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RoadmapLanesParams {
     from: Option<String>,
     to: Option<String>,
+    anchor: Option<String>,
+    marks: Option<usize>,
     tasks: Option<String>,
+    sections: Option<String>,
+    late: Option<bool>,
 }
 
 async fn roadmap_lanes(
@@ -210,18 +217,24 @@ async fn roadmap_lanes(
     Path(project_id): Path<String>,
     ApiQuery(query): ApiQuery<RoadmapLanesParams>,
 ) -> AppResult<Json<RoadmapView>> {
-    let lanes = match query.tasks {
-        Some(_) if query.from.is_some() || query.to.is_some() => {
-            return Err(AppError::validation(
-                "tasks",
-                "is read without a window of days",
-            ));
+    if query.tasks.is_none() {
+        if query.sections.is_some() {
+            return Err(AppError::validation("sections", "go with tasks"));
         }
-        Some(tasks) => LanesQuery::Tasks(id_list(Some(&tasks))),
-        None => LanesQuery::Days(RoadmapWindow {
+        if query.late.is_some() {
+            return Err(AppError::validation("late", "goes with tasks"));
+        }
+    }
+    let lanes = LanesQuery {
+        window: RoadmapWindow {
             from: query.from,
             to: query.to,
-        }),
+            anchor: query.anchor,
+            marks: query.marks,
+        },
+        tasks: query.tasks.map(|tasks| id_list(Some(&tasks))),
+        sections: id_list(query.sections.as_deref()),
+        late: query.late.unwrap_or(false),
     };
     state
         .domain
@@ -230,29 +243,63 @@ async fn roadmap_lanes(
         .map(Json)
 }
 
+/// The days of a window on the Roadmap, as its view comes to them.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RoadmapTasksParams {
-    cursor: String,
-    from: Option<String>,
-    to: Option<String>,
-    limit: Option<usize>,
+struct RoadmapDaysParams {
+    from: String,
+    to: String,
+    anchor: Option<String>,
+    marks: Option<usize>,
 }
 
-async fn roadmap_tasks(
+async fn roadmap_days(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Path(project_id): Path<String>,
-    ApiQuery(query): ApiQuery<RoadmapTasksParams>,
-) -> AppResult<Json<RoadmapPage>> {
-    let query = RoadmapPageQuery {
+    ApiQuery(query): ApiQuery<RoadmapDaysParams>,
+) -> AppResult<Json<RoadmapDays>> {
+    let window = RoadmapWindow {
+        from: Some(query.from),
+        to: Some(query.to),
+        anchor: query.anchor,
+        marks: query.marks,
+    };
+    state
+        .domain
+        .roadmap_days(&actor, project_id, window)
+        .await
+        .map(Json)
+}
+
+/// The tasks of one section that a mark counting several stands for: its
+/// done tasks or plans of the days `from` to `to`, or its work in progress.
+/// Without `epic`, the track's own work.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RoadmapListParams {
+    track: String,
+    epic: Option<String>,
+    kind: ListKind,
+    from: Option<String>,
+    to: Option<String>,
+}
+
+async fn roadmap_list(
+    State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
+    Path(project_id): Path<String>,
+    ApiQuery(query): ApiQuery<RoadmapListParams>,
+) -> AppResult<Json<RoadmapList>> {
+    let query = RoadmapListQuery {
         project_id,
-        cursor: query.cursor,
+        track_id: query.track,
+        epic_id: query.epic,
+        kind: query.kind,
         from: query.from,
         to: query.to,
-        limit: query.limit,
     };
-    state.domain.roadmap_tasks(&actor, query).await.map(Json)
+    state.domain.roadmap_list(&actor, query).await.map(Json)
 }
 
 #[derive(Deserialize)]
