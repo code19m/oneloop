@@ -107,7 +107,7 @@ test.describe('with an instance time zone ahead of the browser', () => {
     await expect(page.locator('.card .dl')).toHaveText('Sep 27');
     await expect(page.locator('.card .dl')).toHaveAttribute('data-tip', 'Deadline 2026-09-27');
     await page.getByRole('button', { name: 'Roadmap', exact: true }).click();
-    await expect(page.locator('.today-pill')).toHaveText('Sep 27');
+    await expect(page.locator('.rt-today')).toContainText('Sep 27');
     await page.evaluate(key => App.openTask(key), task.taskKey);
     await expect(page.locator('.tp-title')).toBeVisible();
     await page.getByRole('button', { name: 'Open deadline calendar' }).click();
@@ -129,7 +129,7 @@ test.describe('with an instance time zone ahead of the browser', () => {
     await expect(page.locator('.cal-d.today')).toHaveAttribute('data-d', '2026-09-28');
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'Roadmap', exact: true }).click();
-    await expect(page.locator('.today-pill')).toHaveText('Sep 28');
+    await expect(page.locator('.rt-today')).toContainText('Sep 28');
   });
 
   test('midnight hydrates visible epic throughput without periodic projection probes', async ({ page, instance }) => {
@@ -137,7 +137,7 @@ test.describe('with an instance time zone ahead of the browser', () => {
     await page.clock.pauseAt(new Date('2026-09-27T09:59:00Z'));
     await serverDateFromBrowserClock(page);
     await openApp(page, instance, 'roadmap');
-    await page.locator('[data-epic]').first().click();
+    await page.locator('.rt-epic-label[data-epic]').first().click();
     await expect(page.locator('[data-epic-throughput]')).toBeVisible();
     let reads = 0;
     await page.route('**/api/projects/*/roadmap', async route => {
@@ -177,7 +177,7 @@ test.describe('with an instance time zone ahead of the browser', () => {
       await route.fulfill({ response, headers: { ...response.headers(), date: 'Sun, 27 Sep 2026 09:00:00 GMT' } });
     });
     await openApp(page, instance, 'roadmap');
-    await expect(page.locator('.today-pill')).toHaveText('Sep 27');
+    await expect(page.locator('.rt-today')).toContainText('Sep 27');
     await page.getByRole('button', { name: 'Epic', exact: true }).click();
     await expect(page.locator('.modal input[name="start"]')).toHaveValue('2026-09-27');
   });

@@ -134,7 +134,7 @@ test('dialogs, drawer, menu and searchable selector keep keyboard focus', async 
   const countRead = page.waitForResponse(response => response.url().includes(`/api/projects/${project.id}/counts`));
   await page.getByRole('button', { name: 'Roadmap', exact: true }).click();
   await Promise.all([roadmapRead, countRead]);
-  const epic = page.locator('[data-epic]').first();
+  const epic = page.locator('.rt-epic-label[data-epic]').first();
   await expect(epic).toBeVisible();
   await epic.press('Enter');
   const drawer = page.locator('.peek');
