@@ -44,9 +44,9 @@ const people = {
 };
 
 const tracks = [
-  { key: 'design', name: 'Design', description: 'Visual language, flows and research.' },
-  { key: 'mobile', name: 'Mobile apps', description: 'The iOS and Android apps.' },
-  { key: 'platform', name: 'Platform', description: 'APIs and services behind the apps.' },
+  { key: 'design', name: 'Design' },
+  { key: 'mobile', name: 'Mobile apps' },
+  { key: 'platform', name: 'Platform' },
 ];
 
 // Start and end are days from today. A `done` epic is completed after its tasks.
@@ -74,13 +74,13 @@ const featured = 'Balance cards carousel';
 const blocked = 'Instant transfer confirmation sheet';
 
 // Listed in their order within each column, from the top. The Planning tasks
-// are added later than the rest. `status` is where each task ends up; a
-// deadline is in days from today; `checklist` has the task's steps and how
-// many of them are done.
+// are added later than the rest. A task is on its epic's track, or on `track`
+// without an epic. `status` is where each task ends up; a deadline is in days
+// from today; `checklist` has the task's steps and how many of them are done.
 const tasks = [
   { title: 'Typography and spacing tokens', epic: 'system', status: 'done', assignees: ['priya'] },
   { title: 'Icon set export for iOS and Android', epic: 'system', status: 'done', assignees: ['priya'] },
-  { title: 'Rate limiting on the payments gateway', epic: 'payments', status: 'done', assignees: ['kenji'] },
+  { title: 'Rate limiting on the payments gateway', track: 'platform', status: 'done', assignees: ['kenji'] },
   { title: 'Skeleton loading states', epic: 'home', status: 'done', assignees: ['daniel'] },
   { title: 'Phone number verification', epic: 'onboarding', status: 'done', assignees: ['sofia'] },
   { title: featured, epic: 'home', status: 'in_progress', assignees: ['daniel'], deadline: 3,
@@ -96,7 +96,7 @@ const tasks = [
   { title: 'Idempotent transfer requests', epic: 'payments', status: 'in_progress', assignees: ['kenji'] },
   { title: 'Payee search with fuzzy matching', epic: 'payments', status: 'in_review', assignees: ['kenji'], deadline: 1,
     checklist: { done: 3, steps: ['Index payee names', 'Match names despite typos', 'Rank recent payees first'] } },
-  { title: 'Biometric sign-in on Android', epic: 'onboarding', status: 'in_review', assignees: ['sofia'] },
+  { title: 'Biometric sign-in on Android', track: 'mobile', status: 'in_review', assignees: ['sofia'] },
   { title: 'Dark mode for the accounts home', epic: 'home', status: 'in_review', assignees: ['priya', 'daniel'] },
   { title: 'Accessibility review of the accounts home', epic: 'home', status: 'planning', assignees: ['priya'], deadline: 9,
     checklist: { done: 0, steps: ['Contrast of the balance cards', 'Screen reader order', 'Larger text sizes'] } },
@@ -228,7 +228,7 @@ async function seed(browser, log) {
     }
     const trackIds = {}, epicIds = {}, created = {};
     for (const track of tracks) {
-      trackIds[track.key] = (await write(lead, 'track.create', { projectId: project.id, name: track.name, description: track.description })).id;
+      trackIds[track.key] = (await write(lead, 'track.create', { projectId: project.id, name: track.name })).id;
     }
     for (const epic of epics) {
       epicIds[epic.key] = (await write(lead, 'epic.create', {
@@ -240,8 +240,10 @@ async function seed(browser, log) {
       await write(lead, 'milestone.create', { projectId: project.id, title: milestone.title, description: milestone.description, milestoneDate: day(milestone.day) });
     }
     const create = async task => {
+      const track = task.track ?? epics.find(epic => epic.key === task.epic).track;
       created[task.title] = await write(lead, 'task.create', {
-        projectId: project.id, epicId: epicIds[task.epic], title: task.title, description: task.description ?? '',
+        projectId: project.id, trackId: trackIds[track], ...(task.epic ? { epicId: epicIds[task.epic] } : {}),
+        title: task.title, description: task.description ?? '',
         deadline: task.deadline === undefined ? null : day(task.deadline), assigneeIds: task.assignees.map(key => userIds[key]),
       });
     };
