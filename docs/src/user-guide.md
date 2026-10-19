@@ -38,7 +38,7 @@ first page you see after you sign in.
 
 - **Done work** shows as dots on the day it was finished. Where dots would be
   too close to tell apart, the work of a few days becomes a number: one a
-  day at **Weeks**, every four days at **Months** and every ten days at
+  day at **Weeks**, every four days at **Months** and every twelve days at
   **Quarters**, so steady work reads as a row of numbers across time. Click a
   number to list its tasks. A list shows up to 50 tasks and says how many
   more the **Board** has. Where a plan falls on a day with done work, the two

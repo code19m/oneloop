@@ -157,7 +157,7 @@ export function laneModels(start) {
   const flights = new Map(tracks().map((track) => [track.id, []]));
   for (const task of openTasks()) flights.get(task.trackId).push(flightItem(task, scale, now));
   // The tasks of days with one, by section, day and kind.
-  const marks = new Map();
+  const marks = new Map(), origin = Math.round(+start / DAY);
   for (const mark of Object.values(lanes?.marks ?? {})) if (mark.day) {
     const key = sectionKey(mark.trackId, mark.epicId);
     if (!marks.has(key)) marks.set(key, new Map());
@@ -167,7 +167,7 @@ export function laneModels(start) {
   const section = (track, epic) => {
     const key = sectionKey(track.id, epic?.id), held = marks.get(key) ?? new Map();
     const items = Object.entries(lanes?.days[key] ?? {}).flatMap(([day, counts]) => dayItems(day, counts, scale, now, held));
-    return { epic, items, key, counts: lanes?.sections[key] ?? NO_TASKS };
+    return { epic, items, key, origin, counts: lanes?.sections[key] ?? NO_TASKS };
   };
   return {
     now, ready: !!lanes,
@@ -225,8 +225,11 @@ function countSpan(items) {
 
 /** Half the width of a count: as wide as its digits. */
 const countHalf = (count) => Math.max(9, String(count).length * 3.5 + 5);
-/** The narrowest a cell is: a two-digit count and the room between marks (spread). */
-const CELL_WIDTH = 2 * countHalf(99) + 2;
+/**
+ * The narrowest a cell is: a two-digit count, the room between marks, and a
+ * little to spare, which a crowded neighbour may take (spread).
+ */
+const CELL_WIDTH = 2 * countHalf(99) + 2 + 4;
 /**
  * The days one mark stands for at `ppd`, done or planned: the fewest that
  * are CELL_WIDTH wide. Cells start on whole multiples of their days since
@@ -238,21 +241,79 @@ export const markCell = (ppd) => Math.max(1, Math.ceil(CELL_WIDTH / ppd - 1e-9))
 /**
  * A section's marks of one kind, a mark for each cell with work: a day's
  * own mark, or a count, one small number in the middle of the days it
- * holds. Marks of cells next to each other that come too close stand apart
- * (spread).
+ * holds. Each knows its cell's pixels (`cell`), from `origin`, the day
+ * since 1970 the timeline starts on.
  */
-function cluster(items, ppd, size) {
+function cluster(items, ppd, size, origin) {
   const days = markCell(ppd), groups = [];
   for (const item of items.slice().sort((a, b) => a.at - b.at)) {
-    const x = item.at * ppd, cell = Math.floor(item.number / days), group = groups[groups.length - 1];
-    if (group?.cell === cell) { group.items.push(item); group.count += item.count; group.last = x; continue; }
-    groups.push({ items: [item], count: item.count, first: x, last: x, cell });
+    const x = item.at * ppd, index = Math.floor(item.number / days), group = groups[groups.length - 1];
+    if (group?.index === index) { group.items.push(item); group.count += item.count; group.last = x; continue; }
+    groups.push({ items: [item], count: item.count, first: x, last: x, index, cell: [(index * days - origin) * ppd, ((index + 1) * days - origin) * ppd] });
   }
   for (const group of groups) {
     const mid = (group.first + group.last) / 2, half = group.count > 1 ? countHalf(group.count) : size / 2;
     Object.assign(group, { x: mid, extent: [mid - half, mid + half] });
   }
   return groups;
+}
+
+/** The room a mark takes on the line: its hit area, or its count's width. */
+const markWidth = (mark) => Math.max(HIT, mark.box[1] - mark.box[0]);
+const moveMark = (mark, shift) => { mark.x += shift; mark.box = [mark.box[0] + shift, mark.box[1] + shift]; };
+
+/**
+ * Each cell lays out its own marks on the line, inside it: a mark where it
+ * is, or as near as fits; done work and plans side by side, as a late plan
+ * on a day with done work. So marks keep clear of other cells' marks without
+ * moving them, and a cell that loads or changes moves only its own. A cell
+ * too narrow for both centers them on itself, and spread then moves its
+ * neighbours into the room their cells spare.
+ */
+function keepInCells(marks, gap = 2) {
+  const cells = new Map();
+  for (const mark of marks) {
+    const key = mark.group.cell[0];
+    if (!cells.has(key)) cells.set(key, []);
+    cells.get(key).push(mark);
+  }
+  for (const inCell of cells.values()) {
+    const [from, to] = inCell[0].group.cell, widths = inCell.sort((a, b) => a.x - b.x).map(markWidth);
+    const total = widths.reduce((sum, width) => sum + width, 0) + gap * (inCell.length - 1);
+    const want = inCell.reduce((sum, mark) => sum + mark.x, 0) / inCell.length - total / 2;
+    let at = total + gap > to - from ? (from + to - total) / 2 : Math.min(Math.max(want, from + gap / 2), to - gap / 2 - total);
+    inCell.forEach((mark, index) => { moveMark(mark, at + widths[index] / 2 - mark.x); at += widths[index] + gap; });
+  }
+}
+
+/**
+ * Marks on one line, apart: where a crowded cell's marks still overlap
+ * their neighbours', they sit side by side around their places. Each takes
+ * its hit area, or its count's width. The room cells spare (CELL_WIDTH)
+ * stops this within a few cells.
+ */
+function spread(marks, gap = 2) {
+  const blocks = [];
+  for (const mark of marks.slice().sort((a, b) => a.x - b.x)) {
+    const width = markWidth(mark);
+    // A block's left edge is where its marks want it on average: each mark's own left, less its place in the block.
+    let block = { marks: [mark], widths: [width], width, sum: mark.x - width / 2, n: 1 };
+    block.left = block.sum;
+    // Marks of cells next to each other may just touch: a hundredth of a pixel apart is apart.
+    for (let last = blocks[blocks.length - 1]; last && last.left + last.width + gap > block.left + 0.01; last = blocks[blocks.length - 1]) {
+      blocks.pop();
+      last.sum += block.sum - (last.width + gap) * block.n;
+      last.n += block.n; last.marks.push(...block.marks); last.widths.push(...block.widths);
+      last.width += gap + block.width; last.left = last.sum / last.n;
+      block = last;
+    }
+    blocks.push(block);
+  }
+  for (const block of blocks) {
+    if (block.n === 1) continue;
+    let at = block.left;
+    block.marks.forEach((mark, index) => { moveMark(mark, at + block.widths[index] / 2 - mark.x); at += block.widths[index] + gap; });
+  }
 }
 
 /** Which bars a section shows: late, then blocked, then the nearest deadline, then the oldest start. */
@@ -298,37 +359,6 @@ export function roomAfterNow(model, ahead) {
 }
 
 /**
- * Marks of both kinds on one line, apart: where done work and dated plans
- * would overlap, as a late plan on a day with done work does, they sit side
- * by side around their days. Each takes its hit area, or its count's width.
- */
-function spread(marks, gap = 2) {
-  const blocks = [];
-  for (const mark of marks.slice().sort((a, b) => a.x - b.x)) {
-    const width = Math.max(HIT, mark.box[1] - mark.box[0]);
-    // A block's left edge is where its marks want it on average: each mark's own left, less its place in the block.
-    let block = { marks: [mark], widths: [width], width, sum: mark.x - width / 2, n: 1 };
-    block.left = block.sum;
-    for (let last = blocks[blocks.length - 1]; last && last.left + last.width + gap > block.left; last = blocks[blocks.length - 1]) {
-      blocks.pop();
-      last.sum += block.sum - (last.width + gap) * block.n;
-      last.n += block.n; last.marks.push(...block.marks); last.widths.push(...block.widths);
-      last.width += gap + block.width; last.left = last.sum / last.n;
-      block = last;
-    }
-    blocks.push(block);
-  }
-  for (const block of blocks) {
-    let at = block.left;
-    block.marks.forEach((mark, index) => {
-      const shift = Math.round(at + block.widths[index] / 2 - mark.x);
-      if (shift) { mark.x += shift; mark.box = [mark.box[0] + shift, mark.box[1] + shift]; }
-      at += block.widths[index] + gap;
-    });
-  }
-}
-
-/**
  * A section's rows, the same in every lane: the line (done work as dots and
  * counts, dated plans as rings at their dates, titled where there is room),
  * then one row per task in progress, at most three, then "+N in progress",
@@ -338,13 +368,14 @@ function layoutSection(section, ppd, now) {
   const nowX = now * ppd, marks = [];
   // A day with one task the lanes hold shows it; others show their count, which lists them.
   for (const [kind, size, type] of [['done', DOT, 'done'], ['planned', RING, 'planned']]) {
-    for (const group of cluster(section.items.filter((item) => item.kind === kind), ppd, size)) {
+    for (const group of cluster(section.items.filter((item) => item.kind === kind), ppd, size, section.origin)) {
       const single = group.count === 1 && group.items[0].task;
       marks.push(single
         ? { type, row: 0, group, item: group.items[0], key: navKey(group.items[0].task), x: group.x, box: group.extent }
         : { type: `${type}Count`, row: 0, group, key: `c:${section.key}:${kind}:${group.items[0].day}`, x: group.x, box: group.extent });
     }
   }
+  keepInCells(marks);
   spread(marks);
   const line = marks.length > 0, first = line ? 1 : 0;
   // A dated plan's title, where it fits before the next mark on the line; for a plan whose task is still

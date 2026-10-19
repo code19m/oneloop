@@ -270,6 +270,23 @@ test('steady done work reads as a row of counts across time, each holding the da
   assert(counts.every(el => parseFloat(el.style.width) <= 24));
 });
 
+test('a late plan among steady done work sits beside its cell\'s count, and moves only the counts next to it', () => {
+  // Two tasks done every day for four months: at Quarters, a two-digit count every twelve days.
+  const daily = D => {
+    const days = {};
+    for (let at = Date.parse('2026-05-30'); at <= Date.parse('2026-09-27'); at += 86400000) days[new Date(at).toISOString().slice(0, 10)] = { done: 2, plans: 0, blocked: 0 };
+    D.roadmap.days['t2/e5'] = days;
+  };
+  const t = boot('roadmap/p1?scale=quarters', { width: 2400, prepare: daily });
+  const counts = () => [...lane(t.d, 't2').querySelectorAll('.rt-count-done')], before = new Map(counts().map(el => [el.dataset.from, parseFloat(el.style.left)]));
+  t.D.roadmap.days['t2/e5']['2026-07-20'].plans = 1; t.A.refreshRoadmap();
+  const line = [...lane(t.d, 't2').querySelectorAll('.rt-count-done, .rt-planned')].map(el => [parseFloat(el.style.left), parseFloat(el.style.left) + (parseFloat(el.style.width) || 20), el.dataset.from]).sort((x, y) => x[0] - y[0]);
+  for (let index = 1; index < line.length; index++) assert(line[index - 1][1] <= line[index][0], JSON.stringify(line.slice(index - 1, index + 1)));
+  const moved = counts().filter(el => Math.abs(parseFloat(el.style.left) - before.get(el.dataset.from)) > 0.5).map(el => el.dataset.from);
+  // Within two cells of the plan's.
+  assert(moved.length && moved.every(day => Math.abs(Date.parse(day) - Date.parse('2026-07-20')) <= 30 * 86400000), moved.join(' '));
+});
+
 test('a lane drawn again keeps focus on its count, leaves its list as it is, and shows it again only if it showed', async () => {
   const asked = [];
   const { w, d, D, A } = boot('roadmap/p1?scale=months', { actions: true, reads: { roadmapList: async (_projectId, query) => { asked.push(query); return { items: [D.tasks.find(task => task.id === 'BIR-061')], total: 4 }; } } });
