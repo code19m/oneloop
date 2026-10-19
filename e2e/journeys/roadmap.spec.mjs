@@ -35,7 +35,10 @@ test('each track\'s lane shows its work, and a teammate\'s changes reach it', { 
   expect(await page.evaluate(() => document.getElementById('rmScroll') === window.shownScroller)).toBe(true);
 });
 
-test('an epic created on the Roadmap shows at once with its dates and its progress', async ({ page, instance }) => {
+test('an epic created on the Roadmap shows at once with its dates and its progress, and its New task fills in the epic and its track', async ({ page, instance }) => {
+  const { project, track } = instance.projects[0];
+  // A second track, so the epic's track is not the only one there is to fill in.
+  await command(instance.api, 'track.create', { projectId: project.id, name: 'Second track' });
   await openApp(page, instance, 'roadmap');
   await page.getByRole('button', { name: 'Epic', exact: true }).click();
   const dialog = page.locator('.modal');
@@ -50,6 +53,16 @@ test('an epic created on the Roadmap shows at once with its dates and its progre
   const header = page.locator('.rt-epic-label').filter({ hasText: 'Fresh epic' });
   await expect(header).toContainText('0/0');
   await expect(header.locator('.rt-epic-dates')).toBeVisible();
+  // Its details offer New task, which opens the task form with the epic and its track.
+  await header.click();
+  await page.locator('.peek').getByRole('button', { name: 'New task', exact: true }).click();
+  const task = page.getByRole('dialog', { name: 'New task' });
+  await expect(task.getByRole('button', { name: /^Track / })).toContainText(track.name);
+  await expect(task.getByRole('button', { name: /^Epic / })).toContainText('Fresh epic');
+  await task.locator('input[name="title"]').fill('Task in the fresh epic');
+  await task.getByRole('button', { name: 'Create task', exact: true }).click();
+  await expect(task).toHaveCount(0);
+  await expect(header).toContainText('0/1');
 });
 
 test('a zoom keeps the Roadmap in place, months follow it, and both themes draw', async ({ page, instance, browserName, allowedConsoleErrors }, testInfo) => {
@@ -235,6 +248,19 @@ test('a done dot, a plan\'s ring and Overdue\'s late plan open their task with a
   await page.goBack();
   await expect(ring).toHaveCount(0);
   await expect(lane.locator('.rt-body')).toBeFocused();
+});
+
+test('a task of another project opened from the Roadmap reads that project\'s tracks and epics alone, not its lanes', async ({ page, instance }) => {
+  const { task } = instance.projects[1];
+  await openApp(page, instance, `roadmap/${instance.projects[0].project.id}`);
+  await expect(page.locator('.rt-body [data-nav]').first()).toBeAttached();
+  const reads = [];
+  page.on('response', async response => { const url = new URL(response.url()); if (url.pathname.includes('/roadmap')) reads.push([url.pathname, (await response.body()).length]); });
+  await page.evaluate(key => { location.hash = `#/task/${key}`; }, task.taskKey);
+  await expect(page.getByRole('textbox', { name: 'Task title', exact: true })).toHaveValue(task.title);
+  await expect.poll(() => reads.length).toBe(1);
+  expect(reads[0][0]).toBe(`/api/projects/${instance.projects[1].project.id}/roadmap`);
+  expect(reads[0][1]).toBeLessThan(2 * 1024);
 });
 
 test('at Quarters, the titles of plans spread over more than a year load, in reads the server allows', async ({ page, instance }) => {

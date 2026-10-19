@@ -53,8 +53,8 @@ All notable changes to oneloop are recorded here. The format follows
 - A task's page shows its **Track** beside its **Epic**. Moving the task to
   another track takes it out of its epic, and a note under **Epic** says why.
   **No epic** takes a task out of its epic.
-- An epic's details on the **Roadmap** offer **New task**, which adds a task
-  to the epic, to people with the **Board** permission.
+- An epic's details on the **Roadmap** offer **New task** to people with the
+  **Board** permission, with the epic and its track filled in.
 
 ### Changed
 
@@ -77,9 +77,10 @@ All notable changes to oneloop are recorded here. The format follows
   any scale. Where they are too close to tell apart, the work of a few days
   becomes a number, whose list shows 50 tasks, so steady work reads as a row
   of numbers across time. A plan's title that couldn't load says so, and
-  loads again as you scroll or when the connection comes back. **Overdue** steps through the 20 longest overdue. A change made
-  elsewhere reads only what it changed, and a change to a track or milestone
-  reads no tasks. Its header no longer counts tracks, epics and milestones.
+  loads again as you scroll or when the connection comes back. **Overdue**
+  steps through the 20 longest overdue. A change made elsewhere reads only
+  what it changed, and a change to a track or milestone reads no tasks. Its
+  header no longer counts tracks, epics and milestones.
 - On a phone, each track's name on the **Roadmap** sits above its lane.
 - An epic's details no longer say **Ongoing**: an epic without an end date
   shows from when it runs.
@@ -91,10 +92,10 @@ All notable changes to oneloop are recorded here. The format follows
 - A track can be deleted only when it has no tasks and no epics, and the
   message says how many it has. Moving an epic to another track moves its
   tasks with it.
-- A task's **Epic** offers the epics of the task's track. Choosing an epic, on
-  a task's page or in **New task**, puts the task on the epic's track, also
-  when the epic moved to another track meanwhile. In MCP, an epic on another
-  track than the task's is refused.
+- A task's **Epic** offers the epics of the task's track. Choosing an epic on
+  a task's page puts the task on the epic's track, also when the epic moved
+  to another track meanwhile. In MCP, an epic on another track than the
+  task's is refused.
 - A **Board** card names the task's epic, or its track when it has no epic.
 - The activity of a task says where it went: "moved the task to iOS", "added
   the task to Payments v2" or "removed the task from Payments v2", instead of

@@ -104,8 +104,8 @@ first page you see after you sign in.
   track** says how many to move or delete first. Moving an epic to another
   track moves its tasks with it. Deleting an epic keeps its tasks on its
   track, without an epic, and **Undo** right after brings it back with them.
-  With the **Board** permission, **New task** in an epic's details adds a task
-  to it.
+  With the **Board** permission, **New task** in an epic's details opens the
+  task form with the epic and its track filled in.
 
 ### Epic status
 
