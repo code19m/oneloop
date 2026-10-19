@@ -2,8 +2,8 @@
 //! counts, and the lists of its marks that count several tasks.
 
 use oneloop::domain::{
-    DayMark, LanesQuery, ListKind, RoadmapDays, RoadmapListQuery, RoadmapMark, RoadmapTimeline,
-    RoadmapWindow, SectionDays, TaskView,
+    DayMark, DayRange, LanesQuery, ListKind, RoadmapDays, RoadmapListQuery, RoadmapMark,
+    RoadmapTimeline, RoadmapWindow, SectionDays, TaskView,
 };
 
 use super::*;
@@ -270,9 +270,35 @@ async fn the_lanes_count_done_work_and_plans_by_day_and_give_the_task_of_a_day_w
     )
     .await;
     assert_eq!(day_mark_ids(&one.days), ["done-epic"]);
+    // All the tasks of Jan 4 to 6 came; Jan 3's didn't.
+    assert_eq!(
+        one.days.marked,
+        Some(DayRange {
+            from: "2026-01-04".into(),
+            to: "2026-01-06".into()
+        })
+    );
+    assert_eq!(
+        lanes
+            .days
+            .marked
+            .as_ref()
+            .map(|range| (range.from.as_str(), range.to.as_str())),
+        Some(("2026-01-01", "2026-01-10")),
+        "all of them, of every day"
+    );
+    // What one read may ask for, which the page keeps to.
+    assert_eq!(
+        (
+            lanes.limits.days,
+            lanes.limits.marks,
+            lanes.limits.change_days
+        ),
+        (400, 400, 3660)
+    );
     // None, for a read of the counts alone, as when a read asks for none.
     let counts = read_lanes(&f, days_of(window("2026-01-01", "2026-01-10"))).await;
-    assert!(day_marks(&counts.days).is_empty());
+    assert!(day_marks(&counts.days).is_empty() && counts.days.marked.is_none());
     assert_eq!(sections(&counts.days.sections), sections(&days.sections));
     // The same days on their own.
     let alone = f

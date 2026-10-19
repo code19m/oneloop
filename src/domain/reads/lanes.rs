@@ -12,9 +12,9 @@ use super::board::task_views;
 use super::roadmap::{local_date, local_midnight};
 use super::*;
 use crate::domain::{
-    DayMark, LanesQuery, ListKind, NAMED_TASKS_LIMIT, RoadmapDays, RoadmapList, RoadmapListQuery,
-    RoadmapMark, RoadmapTimeline, RoadmapWindow, SectionCounts, SectionDays,
-    service::validation::date,
+    DayMark, DayRange, LanesQuery, ListKind, NAMED_TASKS_LIMIT, RoadmapDays, RoadmapLimits,
+    RoadmapList, RoadmapListQuery, RoadmapMark, RoadmapTimeline, RoadmapWindow, SectionCounts,
+    SectionDays, service::validation::date,
 };
 
 /// The work in progress each section draws as bars, the most urgent first;
@@ -221,6 +221,11 @@ pub(super) fn timeline(
             open: views,
             late,
             days,
+            limits: RoadmapLimits {
+                days: WINDOW_DAYS_MAX,
+                marks: MARKS_MAX,
+                change_days: SECTIONS_WINDOW_DAYS_MAX,
+            },
             tasks,
         },
         changed,
@@ -390,6 +395,20 @@ pub(super) fn days(
         .take(marks)
         .map(|(_, id)| (*id).clone())
         .collect();
+    // The days all of whose tasks came: those nearer the anchor than the
+    // first task left out.
+    let marked = (marks > 0).then(|| {
+        let reach = singles.get(marks).map(|(distance, _)| *distance - 1);
+        let day = |offset: i64| first + offset.days();
+        DayRange {
+            from: reach
+                .map_or(from, |reach| day(anchor - reach).max(from))
+                .to_string(),
+            to: reach
+                .map_or(to, |reach| day(anchor + reach).min(to))
+                .to_string(),
+        }
+    });
     let mut sections: Vec<SectionDays> = sections
         .into_iter()
         .map(|((track_id, epic_id), section)| SectionDays {
@@ -417,6 +436,7 @@ pub(super) fn days(
         from: from.to_string(),
         to: to.to_string(),
         sections,
+        marked,
     })
 }
 

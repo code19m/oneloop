@@ -258,6 +258,8 @@ pub struct RoadmapTimeline {
     pub late: Option<Vec<RoadmapMark>>,
     /// The window's done tasks and dated plans.
     pub days: RoadmapDays,
+    /// What one read of the lanes may ask for.
+    pub limits: RoadmapLimits,
     /// The tasks a change named that are still in the project, when a read
     /// names them, but for those among `open`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -274,6 +276,29 @@ pub struct RoadmapDays {
     pub to: String,
     /// Each section with a done task or dated plan in the window.
     pub sections: Vec<SectionDays>,
+    /// The days whose tasks of days with one all came, when the read asked
+    /// for them: the window, or the days nearest its anchor when there were
+    /// more of those tasks than it gives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marked: Option<DayRange>,
+}
+
+/// A span of days, `from` to `to`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DayRange {
+    pub from: String,
+    pub to: String,
+}
+
+/// The most one read of the Roadmap's lanes may ask for: days in a window,
+/// tasks of days with one, and days in a read of a change's sections alone.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoadmapLimits {
+    pub days: i64,
+    pub marks: usize,
+    pub change_days: i64,
 }
 
 /// One section's days: for each day of the window, from its first, the
