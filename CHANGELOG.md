@@ -74,10 +74,10 @@ All notable changes to oneloop are recorded here. The format follows
   around what it shows, and more days as you scroll to them, and draws only
   what is near the view. Each day shows all of its done work and plans at
   any scale, a number for those too close to tell apart, whose list shows 50
-  tasks. **Overdue** steps through the 20
-  longest overdue. A change made elsewhere reads only what it changed, and a
-  change to a track or milestone reads no tasks. Its header no longer counts
-  tracks, epics and milestones.
+  tasks. A plan's title that couldn't load says so and loads again as you
+  scroll. **Overdue** steps through the 20 longest overdue. A change made
+  elsewhere reads only what it changed, and a change to a track or milestone
+  reads no tasks. Its header no longer counts tracks, epics and milestones.
 - On a phone, each track's name on the **Roadmap** sits above its lane.
 - An epic's details no longer say **Ongoing**: an epic without an end date
   shows from when it runs.
