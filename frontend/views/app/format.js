@@ -5,6 +5,7 @@
 import { UIAction, escapeHtml } from '../../src/app/markup.js';
 import { setTrustedHTML } from '../../src/app/trusted-types.js';
 import { formatInstant as formatInstantIn, formatShortInstant } from '../../src/data/time.js';
+import { statusLabel } from '../../src/data/wire.js';
 import { App, D, instanceNow, userById } from './model.js';
 
 export { UIAction };
@@ -42,7 +43,7 @@ export const avatarHtml = (uid, size) => {
   const initial=(u?.name||u?.username||uid||'?').trim()[0]||'?';
   return `<span class="avatar" style="width:${sz}px;height:${sz}px;font-size:${Math.round(sz * 0.55)}px">${esc(initial.toUpperCase())}</span>`;
 };
-export const STATUS = { planning: 'Planning', progress: 'In Progress', review: 'In Review', done: 'Done' };
+export const STATUS = Object.fromEntries(['planning', 'progress', 'review', 'done'].map((status) => [status, statusLabel(status)]));
 export const stIcon = (state) => I['st_' + state] || '';
 
 // ---------- icons ----------
@@ -51,6 +52,7 @@ export const I = {
   note: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 1.5h-7v13h11v-9l-4-4Z M9.5 1.5v4h4M5 8h6M5 11h4"/></svg>',
   blocked: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="m4 4 8 8"/></svg>',
 
+  track: '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="1.5" y="3" width="13" height="4" rx="1.2"/><rect x="1.5" y="9" width="13" height="4" rx="1.2"/></svg>',
   roadmap: '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="7" height="3" rx="1"/><rect x="4.5" y="6.5" width="9" height="3" rx="1"/><rect x="2.5" y="10.5" width="6" height="3" rx="1"/></svg>',
   board: '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="3.4" height="11" rx="1"/><rect x="6.3" y="2.5" width="3.4" height="7" rx="1"/><rect x="11.1" y="2.5" width="3.4" height="9" rx="1"/></svg>',
   settings: '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 4.5h2.2M7.8 4.5H14M2 11.5h6.2M11.8 11.5H14"/><circle cx="6" cy="4.5" r="1.8"/><circle cx="10" cy="11.5" r="1.8"/></svg>',

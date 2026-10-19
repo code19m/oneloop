@@ -12,7 +12,7 @@ const projection=(projectId,extra={})=>({timeZone:projectId,session:{userId:'u1'
   projects:[{id:'p1',name:'One',taskPrefix:'ONE',revision:1},{id:'p2',name:'Two',taskPrefix:'TWO',revision:1}],memberships:[],
   tracks:[{id:'t1',projectId,name:'Track',position:1,revision:1}],epics:[{id:'e1',projectId,trackId:'t1',title:'Epic',startDate:'2026-01-01',state:'active',position:1,revision:1}],
   milestones:[],tasks:[],selectedProjectId:projectId,view:'roadmap',...extra});
-const view=(id,projectId='p1')=>({id,projectId,epicId:'e1',taskKey:id.toUpperCase(),title:id,description:'',status:'planning',position:1,createdAt:1,updatedAt:1,revision:1,assigneeIds:[],activeBlock:null});
+const view=(id,projectId='p1')=>({id,projectId,trackId:'t1',epicId:'e1',taskKey:id.toUpperCase(),title:id,description:'',status:'planning',position:1,createdAt:1,updatedAt:1,revision:1,assigneeIds:[],activeBlock:null});
 
 /** A page with held API calls and the real bootstrap and read controllers. */
 function page(context){

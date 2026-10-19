@@ -10,7 +10,7 @@ import { pageOf } from '../address.js';
  * @param {ReturnType<typeof import('./account.js').installAccount>} account
  */
 export function installRoute(ctx, account) {
-  const { app, data, reads, recovery, reloadBootstrap, task, track, context, sessionScope, nav } = ctx;
+  const { app, data, reads, recovery, reloadBootstrap, task, context, sessionScope, nav } = ctx;
   const { loadUsers, loadProfileAccess } = account;
   let projectGeneration=0,routeGeneration=0;
 
@@ -80,11 +80,6 @@ export function installRoute(ctx, account) {
         const loaded=await reads.task(current.taskId);
         if(!stillCurrent())return {stale:true};
         if(!loaded?.stale&&loaded?.task){
-          // A task of another project needs that project's tracks and epics.
-          if(!track(loaded.task.trackId)){
-            const roadmap=await reads.roadmap(loaded.task.projectId);
-            if(!stillCurrent()||roadmap?.stale)return {stale:true};
-          }
           // The read already drew a page that shows this task, unless its loading state shows.
           const shown=context(),redraw=!!recovery.pageError||shown.view!=='task'||shown.taskId!==loaded.task.id;
           recovery.clearPageError();if(redraw)app.openTask(loaded.task.id);

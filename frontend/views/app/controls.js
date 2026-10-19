@@ -46,16 +46,19 @@ function failField(form, name, msg) {
 
 /**
  * Show `value` as the select `key`'s value: its label and tip, its form value
- * and the option its list marks. While its list is open, the select stays as
- * the person sees it.
+ * and the option its list marks, with `options` as its list when given, as
+ * when another field narrows it. A new value takes away the field's error.
+ * While its list is open, the select stays as the person sees it.
  */
-export function setSelectValue(key, value) {
+export function setSelectValue(key, value, options) {
   const def = SELS[key], button = document.getElementById(`select-${key}`);
   if (!def || !button || POP.id === 'sel:' + key) return;
+  if (options) def.options = options;
   const option = def.options.find((o) => o.v === value), label = option ? option.l : (def.placeholder || 'Select');
+  if (value !== def.value) clearFieldError(button);
   def.value = value;
   const hidden = button.parentNode.querySelector('input[type="hidden"]'); if (hidden) hidden.value = value ?? '';
-  button.classList.toggle('empty', value === '' || value == null);
+  button.classList.toggle('empty', !option);
   button.querySelector('.sel-label').textContent = label; button.dataset.tip = label;
 }
 
@@ -64,7 +67,7 @@ export function selectHtml(key, def) {
   const cur = def.options.find((o) => o.v === def.value);
   return `<div class="sel"${def.width ? ` style="width:${def.width}px"` : ''}>
     ${def.name ? `<input type="hidden" name="${def.name}" value="${esc(def.value ?? '')}">` : ''}
-    <button type="button" id="select-${esc(key)}" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${def.label ? `select-${key}-name ` : ''}select-${key}-value" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${cur ? '' : ' empty'}" data-tip="${esc(cur ? cur.l : (def.placeholder || 'Select'))}" data-tip-overflow ${def.disabled ? 'disabled' : UIAction('popSelect', UIAction.event, key)}>${def.label ? `<span class="sr-only" id="select-${esc(key)}-name">${esc(def.label)}</span>` : ''}${def.icon || ''}<span id="select-${esc(key)}-value" class="sel-label">${esc(cur ? cur.l : (def.placeholder || 'Select'))}</span>${def.cls ? '' : I.chev}</button>
+    <button type="button" id="select-${esc(key)}" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${def.label ? `select-${key}-name ` : ''}select-${key}-value"${def.describedBy ? ` aria-describedby="${esc(def.describedBy)}"` : ''} class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${cur ? '' : ' empty'}" data-tip="${esc(cur ? cur.l : (def.placeholder || 'Select'))}" data-tip-overflow ${def.disabled ? 'disabled' : UIAction('popSelect', UIAction.event, key)}>${def.label ? `<span class="sr-only" id="select-${esc(key)}-name">${esc(def.label)}</span>` : ''}${def.icon || ''}<span id="select-${esc(key)}-value" class="sel-label">${esc(cur ? cur.l : (def.placeholder || 'Select'))}</span>${def.cls ? '' : I.chev}</button>
   </div>`;
 }
 export const MULTI = {};
@@ -390,6 +393,7 @@ Object.assign(App, {
     POP.id = 'ms:' + key;
     el.id='multi-'+key;POP.trigger=btn;btn.setAttribute('aria-expanded','true');btn.setAttribute('aria-controls',el.id);
     POP.onClose = def.onClose || null;
+    def.onOpen?.();
     let q = '';
     const row = (o) => `<button type="button" class="pop-opt multi${def.values().includes(o.v) ? ' on' : ''}" aria-pressed="${def.values().includes(o.v)}" data-v="${esc(o.v)}">
         <span class="chk">${def.values().includes(o.v) ? I.tick : ''}</span>
@@ -436,6 +440,8 @@ Object.assign(App, {
     const searchable = def.search || def.options.length > 7;
     const el = openPop(btn);
     POP.id = 'sel:' + key;POP.trigger=btn;btn.setAttribute('aria-expanded','true');btn.setAttribute('aria-controls',`select-${key}-list`);
+    POP.onClose = def.onClose || null;
+    def.onOpen?.();
     setHTML(el,`${searchable ? '<div class="pop-search-wrap"><input class="pop-search" type="text" placeholder="Search options" spellcheck="false"></div>' : ''}<div class="pop-list"></div>`);
     const listEl = el.querySelector('.pop-list');
     const input = el.querySelector('.pop-search');

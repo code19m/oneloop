@@ -4,9 +4,9 @@
 import { blockReasonHtml } from './collaboration.js';
 import { dateHtml, dateValue, field, selectHtml } from './controls.js';
 import { UIAction, esc, iso, today } from './format.js';
-import { descriptionEditorHtml, taskModalHtml } from './forms.js';
+import { descriptionEditorHtml, taskModalHtml, trackOptions } from './forms.js';
 import {
-  D, activeAdmins, epicById, knowledge, state, taskById, trackById, tracks, userById, userHandle,
+  D, activeAdmins, epicById, knowledge, state, taskById, trackById, userById, userHandle,
 } from './model.js';
 import { poolViewHtml } from './pool.js';
 
@@ -28,7 +28,7 @@ export function renderModal() {
     body = `<h2>${e ? 'Edit epic' : 'New epic'}</h2>
     <form novalidate data-save-shortcut ${UIAction.on('submit', 'saveEpic', UIAction.event, m.id || '')}>
       ${field('Title', `<input class="ctl" name="title" placeholder="Payment integration" value="${esc(e ? e.title : '')}" maxlength="120" required autofocus>`)}
-      ${field('Track', selectHtml('mTrack', { name: 'trackId', value: e ? e.trackId : (m.trackId || ''), placeholder: 'Choose a track', options: tracks().map((t) => ({ v: t.id, l: t.name })) }))}
+      ${field('Track', selectHtml('mTrack', { name: 'trackId', value: e ? e.trackId : (m.trackId || ''), placeholder: 'Choose a track', options: trackOptions() }))}
       <div class="field-row">
         ${field('Start', dateHtml('mStart', { name: 'start', value: e ? e.start : iso(today), max: () => dateValue('mEnd'), maxError: 'Start date cannot be after the end date.' }))}
         ${field('End', dateHtml('mEnd', { name: 'end', value: (e && e.end) || '', clearable: true, min: () => dateValue('mStart'), minError: 'End date cannot be before the start date.', placeholder: 'No end date' }), true)}

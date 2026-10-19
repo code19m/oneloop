@@ -1189,6 +1189,8 @@ div.ms-label {cursor:default}
 .task-property { display:grid;grid-template-columns:76px minmax(0,1fr);align-items:start;gap:8px;min-width:0; }
 .task-property dt { color:var(--ink-muted);font-size:var(--text-label);padding-top:10px;line-height:20px; }
 .task-property dd { margin:0;min-width:0; }
+/* Why the epic went, under Epic, after a move to another track. */
+.task-property-note { margin:2px 0 0;padding:0 8px;font-size:var(--text-xs);line-height:16px;color:var(--ink-muted);overflow-wrap:anywhere; }
 .task-property .sel-btn.prop { min-height:40px;padding:8px;font-size:var(--text-body);color:var(--ink);align-items:flex-start;line-height:22px; }
 .task-property .sel-btn > svg,.task-property .sel-btn .avs { flex-shrink:0;margin-top:3px; }
 .task-property .sel-label { white-space:normal;overflow-wrap:anywhere;line-height:22px; }

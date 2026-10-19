@@ -34,7 +34,7 @@ test('in a dialog or a comment being edited, Cmd/Ctrl+S does what the primary bu
   const t = taskPage({ prepare: D => { D.tasks.find(item => item.id === 'BIR-079').comments = [{ id: 'c1', who: 'taylorwu', ts: Date.now(), text: 'First thought', mentions: [], revision: 1 }]; } });
   t.A.openModal('task');
   const form = t.d.querySelector('.modal form'), title = form.querySelector('[name="title"]');
-  title.value = 'Created with the shortcut'; form.querySelector('[name="epicId"]').value = 'e4'; title.focus();
+  title.value = 'Created with the shortcut'; form.querySelector('[name="trackId"]').value = 't1'; title.focus();
   assert.equal(press(t, title), true);
   assert.deepEqual(sent(t).map(([operation, payload]) => [operation, payload.title]), [['task.create', 'Created with the shortcut']]);
   t.A.closeOverlays();

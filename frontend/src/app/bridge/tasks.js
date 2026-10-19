@@ -17,16 +17,21 @@ export function installTasks(ctx) {
   const { app, data, gateway, reads, recovery, task, poolItem, context, sessionScope, nav, execute, offerRestore, fire, accepted, refusedAtOnce, formValues, fieldError, validOptionalDate, skipped, ifCurrent, drafts, draftKey, pruneDrafts, dropDrafts, taskBusy, unsavedDraft, paintDrafts } = ctx;
   const assigneeSaves=new Map();
   const pendingTaskForms = new WeakSet();
+  // The track of the last task each person created in each project in this
+  // tab, where the next new task starts when nothing else says where it goes.
+  /** @type {Map<string,string>} */
+  const lastTracks=new Map();
   let promotionSource=null;
 
   function noteTaskSaved(result,id){const item=task(id);if(!result?.stale&&!result?.skipped&&!recovery.isSavingTask()&&!(item&&(taskBusy(item.internalId)||unsavedDraft(item.internalId))))app.noteTaskSaved(id);return result;}
   const sameAssignees=(left,right)=>left.length===right.length&&left.every((id)=>right.includes(id));
 
-  function saveAssignees(item,assigneeIds){
+  /** @param {any} item @param {string[]} assigneeIds @param {number} [base] the revision the person's picks started from */
+  function saveAssignees(item,assigneeIds,base){
     const id=item.internalId,scope=sessionScope(),key=`${scope}:${id}`,desired=[...new Set(assigneeIds.map(String))];
     let state=assigneeSaves.get(key);
-    if(!state){state={desired,persisted:[...(item.assignees??[])],running:false,promise:null};assigneeSaves.set(key,state);}
-    state.desired=desired;item.assignees=[...desired];
+    if(!state){state={desired,persisted:[...(item.assignees??[])],running:false,promise:null,base};assigneeSaves.set(key,state);}
+    state.desired=desired;state.base=base;item.assignees=[...desired];
     if(state.running)return state.promise;
     state.running=true;
     state.promise=(async()=>{
@@ -35,7 +40,7 @@ export function installTasks(ctx) {
         while(!sameAssignees(state.persisted,state.desired)){
           const target=[...state.desired],current=task(id);if(sessionScope()!==scope||!current)break;
           const comparison={...current,assignees:[...state.persisted]};
-          const result=await execute('task.update',{taskId:id,assigneeIds:target},current,null,{compareEntity:comparison,paint:false});
+          const result=await execute('task.update',{taskId:id,assigneeIds:target},current,null,{compareEntity:comparison,paint:false,expectedRevision:state.base});
           if(result?.stale)break;
           changed ||= !result?.skipped;state.persisted=target;
           if(task(id))task(id).assignees=[...state.desired];
@@ -67,14 +72,16 @@ export function installTasks(ctx) {
     // Status shows the saved status again behind the dialog, which opens once
     // the Status menu has returned focus, so it takes focus and gives it back.
     if(field==='state'&&value==='done'&&item.block){app.refresh();queueMicrotask(()=>app.openModal('completeBlocked',item.id));return false;}
-    if(field==='state')return accepted(execute('task.move',{taskId:item.internalId,status:toWireStatus(value)},item,null,{reload:true,coalesce:true}).then((result)=>noteTaskSaved(result,item.id)));
-    const names={title:'title',desc:'description',deadline:'deadline',epicId:'epicId'};
+    if(field==='state')return accepted(execute('task.move',{taskId:item.internalId,status:toWireStatus(value)},item,null,{reload:true,coalesce:true,expectedRevision:base}).then((result)=>noteTaskSaved(result,item.id)));
+    const names={title:'title',desc:'description',deadline:'deadline',trackId:'trackId',epicId:'epicId'};
     if(!names[field])return false;
-    const next=field==='deadline'?(value||null):text(value,field==='title'?140:4000);
+    // No deadline and No epic are null.
+    const next=field==='deadline'||field==='epicId'?(value||null):field==='trackId'?String(value??''):text(value,field==='title'?140:4000);
     if(field==='title'&&!next)return fieldError(form,'title','Enter a task title.');
     if(field==='deadline'&&next&&!validDate(next)){app.toast('Enter a valid deadline in YYYY-MM-DD format.','error');return false;}
-    const chosenEpic=field==='epicId'?data.epics.find((entry)=>entry.id===next&&entry.projectId===item.projectId&&entry.state!=='done'):null;
-    if(field==='epicId'&&!chosenEpic){app.toast('Choose an open epic. Completed epics must be reopened first.','error');return false;}
+    if(field==='trackId'&&!data.tracks.some((entry)=>entry.id===next&&entry.projectId===item.projectId)){app.toast('This track is no longer available. Choose another one.','error');return false;}
+    const chosenEpic=field==='epicId'&&next?data.epics.find((entry)=>entry.id===next&&entry.projectId===item.projectId&&entry.state!=='done'):null;
+    if(field==='epicId'&&next&&!chosenEpic){app.toast('Choose an open epic. Completed epics must be reopened first.','error');return false;}
     let draft;pruneDrafts();
     if(field==='title'||field==='desc'){
       draft=draftKey(item.internalId,field);
@@ -85,9 +92,11 @@ export function installTasks(ctx) {
       if(next===(field==='title'?item.title:item.desc??'')&&!previous)draft=undefined;
       else{drafts.set(draft,{taskId:item.internalId,field,value:next,base,scope:sessionScope(),unsaved:false,retryOnline:false});if(previous?.unsaved)paintDrafts(item.internalId);}
     }else if(refusedAtOnce(form))return false;
-    // An epic on another track moves the task there with it.
+    // An epic on another track moves the task there with it; another track
+    // takes the task out of its epic, which the server does.
     const payload={taskId:item.internalId,[names[field]]:next,...(chosenEpic&&chosenEpic.trackId!==item.trackId?{trackId:chosenEpic.trackId}:{})};
-    return accepted(execute('task.update',payload,item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>document.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
+    const control={desc:'#task-description',title:'.task-title-field textarea',trackId:'#select-tpTrack',epicId:'#select-tpEpic'}[field]??`[name="${field}"]`;
+    return accepted(execute('task.update',payload,item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>document.querySelector(control)}).then((result)=>noteTaskSaved(result,item.id)));
   }
   function retryDrafts(){
     for(const draft of [...drafts.values()]){
@@ -97,10 +106,13 @@ export function installTasks(ctx) {
   }
   recovery.whenOnline(retryDrafts);
 
-  app.updTask = (id, field, value) => {
+  // A pick from a list passes `base`, the revision the list showed when it
+  // opened, so a change that landed while it was open meets the conflict
+  // question. Without it, a field builds on the revision its editor had.
+  app.updTask = (id, field, value, base) => {
     if(app.isRendering())return false;
     const item=task(id);if(!item)return false;
-    return saveTaskField(item,field,value);
+    return saveTaskField(item,field,value,{base});
   };
   app.saveTaskDraft=(id,field)=>{
     const item=task(id),draft=item&&drafts.get(draftKey(item.internalId,field));
@@ -115,11 +127,14 @@ export function installTasks(ctx) {
     const source=uncertainSource||(modal?.poolId?poolItem(modal.poolId):null);
     if(modal?.poolId&&!source)return fieldError(form,'title','This Pool item is no longer available. Return to Pool to continue.');
     if(source&&!uncertainSource)promotionSource={id:source.id,scope:sessionScope(),entity:{...source,revision:recovery.expectedRevision(recovery.revisionKey(source),source.revision)}};
-    const payload={projectId:context().projectId,epicId:String(values.get('epicId')||''),title:text(values.get('title'),140),description:text(values.get('desc'),4000),deadline:values.get('deadline')||null,assigneeIds:[...new Set(values.getAll('assignees').map(String))]};
+    const projectId=context().projectId,epicId=String(values.get('epicId')||'');
+    const chosenEpic=epicId?data.epics.find((entry)=>entry.id===epicId&&entry.projectId===projectId):null;
+    // An epic puts the task on its track, also one the epic moved to meanwhile. A task without an epic sends none.
+    const payload={projectId,trackId:chosenEpic?.trackId??String(values.get('trackId')||''),...(epicId?{epicId}:{}),title:text(values.get('title'),140),description:text(values.get('desc'),4000),deadline:values.get('deadline')||null,assigneeIds:[...new Set(values.getAll('assignees').map(String))]};
     if(!payload.title)return fieldError(form,'title','Give the task a title.');
-    const destination=data.epics.find((entry)=>entry.id===payload.epicId&&entry.projectId===payload.projectId);
-    if(!destination)return fieldError(form,'epicId','Choose an epic.');
-    if(destination.state==='done')return fieldError(form,'epicId','This epic is completed. Reopen it before adding tasks.');
+    if(epicId&&!chosenEpic)return fieldError(form,'epicId','This epic is no longer available. Choose another one, or No epic.');
+    if(chosenEpic?.state==='done')return fieldError(form,'epicId','This epic is completed. Reopen it before adding tasks.');
+    if(!data.tracks.some((entry)=>entry.id===payload.trackId&&entry.projectId===projectId))return fieldError(form,'trackId','Choose a track.');
     if(!validOptionalDate(form,'deadline',payload.deadline))return false;
     const project=data.projects.find((entry)=>entry.id===payload.projectId),eligible=new Set((project?.members??[]).map((member)=>member.userId));
     if(payload.assigneeIds.some((id)=>!eligible.has(id)||data.users.find((user)=>user.id===id)?.active===false))return fieldError(form,'assignees','Choose active project members. A selected person is no longer available.');
@@ -127,7 +142,7 @@ export function installTasks(ctx) {
     // Text the person left as the Pool item had it follows the item, so Keep
     // my changes never puts back a title or description changed meanwhile.
     const ownTitle=payload.title!==text(modal?.title,140),ownDescription=payload.description!==text(modal?.desc,4000);
-    const body=source?{poolItemId:source.id,epicId:payload.epicId,...(ownTitle?{title:payload.title}:{}),...(ownDescription?{description:payload.description}:{}),deadline:payload.deadline,assigneeIds:payload.assigneeIds}:payload;
+    const body=source?{poolItemId:source.id,trackId:payload.trackId,...(epicId?{epicId}:{}),...(ownTitle?{title:payload.title}:{}),...(ownDescription?{description:payload.description}:{}),deadline:payload.deadline,assigneeIds:payload.assigneeIds}:payload;
     pendingTaskForms.add(form);
     const buttons=/** @type {HTMLButtonElement[]} */([...form.querySelectorAll('button[type="submit"],input[type="submit"]')]);
     const disabled=buttons.map(button=>button.disabled);
@@ -150,7 +165,7 @@ export function installTasks(ctx) {
     }:{};
     return fire(execute(operation,body,source,source?'Task planning':'Task created',{
       create:!source,reload:true,interactionKey,form,...promotion,
-      onAccepted:()=>{if(promotionSource?.id===source?.id)promotionSource=null;completeForm(form,()=>app.closeOverlays());},
+      onAccepted:()=>{lastTracks.set(`${data.session?.userId}:${payload.projectId}`,payload.trackId);if(promotionSource?.id===source?.id)promotionSource=null;completeForm(form,()=>app.closeOverlays());},
     }).finally(()=>{
       pendingTaskForms.delete(form);
       if(!isFormRetryPending(form))buttons.forEach((button,index)=>button.disabled=disabled[index]);
@@ -172,6 +187,8 @@ export function installTasks(ctx) {
   };
 
   return {
+    /** @param {string} projectId @returns {string|null} the track of the last task this person created in the project in this tab */
+    lastTaskTrack(projectId){return lastTracks.get(`${data.session?.userId}:${projectId}`)??null;},
     /** The unsaved value of a task field, which the task page shows instead of the saved one. */
     taskDraft(taskId,field){pruneDrafts();const draft=drafts.get(draftKey(taskId,field));return draft?{value:draft.value,unsaved:draft.unsaved}:null;},
     /** Keep typed text that cannot be saved now, such as after edit rights ended, as a Not saved draft. */
@@ -181,8 +198,8 @@ export function installTasks(ctx) {
       pruneDrafts();
       drafts.set(draftKey(item.internalId,field),{taskId:item.internalId,field,value:next,base:recovery.expectedRevision(recovery.revisionKey(item),item.revision),scope:sessionScope(),unsaved:true,retryOnline:false});
     },
-    /** @param {string} taskId @param {string[]} assigneeIds */
-    async setAssignees(taskId,assigneeIds){const item=task(taskId);if(!item)return skipped();return saveAssignees(item,assigneeIds);},
+    /** @param {string} taskId @param {string[]} assigneeIds @param {number} [base] the revision the Assignees list showed when it opened */
+    async setAssignees(taskId,assigneeIds,base){const item=task(taskId);if(!item)return skipped();return saveAssignees(item,assigneeIds,base);},
     /**
      * Move a task to `status`, at `position` or before or after another task.
      * An `optimistic` move already shows, so it paints nothing and says nothing.

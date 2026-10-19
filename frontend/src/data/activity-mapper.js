@@ -1,9 +1,9 @@
 // @ts-check
 
 import {secondsToMilliseconds} from './time.js';
+import {statusLabel} from './wire.js';
 
 const clone = (value) => value == null ? value : JSON.parse(JSON.stringify(value));
-const statusName = (value) => ({planning:'Planning',in_progress:'In Progress',in_review:'In Review',done:'Done'})[value] ?? value;
 
 /**
  * What a change of a task's track or epic says, with the names the projection
@@ -32,7 +32,7 @@ export function mapActivity(event, users = [], roadmap = {}) {
     case 'task.created': text = 'created the task'; break;
     case 'task.deleted': text = 'deleted the task'; break;
     case 'task.restored': text = 'restored the task'; break;
-    case 'task.moved': text = event.fieldKey === 'status' ? `moved the task to ${statusName(event.after)}` : 'reordered the task'; break;
+    case 'task.moved': text = event.fieldKey === 'status' ? `moved the task to ${statusLabel(event.after)}` : 'reordered the task'; break;
     case 'task.assignee.added': text = `assigned ${userName(event.after)}`; break;
     case 'task.assignee.removed': text = `unassigned ${userName(event.before)}`; break;
     case 'task.blocked': text = `blocked the task${event.after?.reason ? ': '+event.after.reason : ''}`; break;

@@ -10,6 +10,9 @@
 | Milestone | A goal with a date, across all tracks. | Public launch |
 | Task | One thing to do, on a track. It can be part of an epic on the same track. | Add card payments |
 
+Every task is on a track. An epic is optional: put a task in one when it is
+part of that piece of work. A task without an epic stays on its track.
+
 An epic without an end date is **ongoing**. Use ongoing epics for recurring
 work, such as "Small fixes".
 
@@ -85,7 +88,13 @@ The Board shows the project's tasks in four columns:
 A task can move to any status at any time, for example back to In Progress after
 a review.
 
-- **+ Task** creates a task. It needs a title and an epic that isn't Done.
+- **+ Task** creates a task. It needs a title and a **Track**. Track starts
+  filled in when oneloop can tell where the task goes: the project's only
+  track, the track the Board is filtered to, or the track of the last task
+  you created in this project in this tab. **Epic** is optional and offers the
+  open epics of that track, or of every track until you choose one. Choosing
+  an epic also chooses its track. A project without tracks needs one first.
+- A card shows its epic under its title, or its track when it has no epic.
 - Drag a card to change its status or its place in the column. On a touch
   screen, drag it by its **⋮** button. The **⋮** menu can also move it, which
   works well with a keyboard.
@@ -110,7 +119,7 @@ a review.
 The **Pool** holds ideas that aren't tasks yet. An idea has a title and an
 optional description. Your **My** Pool is private, even from admins. The
 **Team** Pool is shared with the project. When an idea is ready, click it to
-turn it into a task.
+turn it into a task, with a track and an optional epic, as with **+ Task**.
 
 ## Tasks
 
@@ -130,6 +139,10 @@ and it doesn't save the page as a file, except from inside an HTML file preview.
   a task list show what the text says; to tick one, edit the text.
 - Links to other sites open in a new tab. Links to oneloop pages, such as a
   task, open in the same tab, in descriptions and in Markdown files alike.
+- **Track** and **Epic** show where the task is. An epic stays on one track,
+  so moving a task to another track takes it out of its epic, and a note under
+  **Epic** says why. **Epic** offers the open epics of the task's track;
+  **No epic** takes the task out of its epic and keeps it on its track.
 - **Assignees** can be any project members. They get an Inbox notification when
   you assign them.
 - **Deadline** is a date. When that day ends in your team's timezone, a task

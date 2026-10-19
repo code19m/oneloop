@@ -12,13 +12,14 @@ import { renderBoard } from './board.js';
 import { blockText, composerHtml, feedHtml, retryTaskPage, sizeCommentBodies, taskFeedState } from './collaboration.js';
 import { dateHtml, multiHtml, selectHtml, setSelectValue } from './controls.js';
 import {
-  I, STATUS, UIAction, ago, avatarHtml, d, esc, formatInstant, overdue, setHTML, stIcon,
+  I, STATUS, UIAction, ago, avatarHtml, esc, formatInstant, overdue, setHTML, stIcon,
 } from './format.js';
-import { mountDescription, sizeDescription, sizeTaskTitle } from './forms.js';
+import { epicOptions, mountDescription, sizeDescription, sizeTaskTitle, trackOptions } from './forms.js';
 import {
-  App, canBoard, epics, me, projectMembers, recovery, report, runtime, state, taskById, userById, userHandle,
+  App, canBoard, epicById, me, projectMembers, recovery, report, runtime, state, taskById, trackById, userById, userHandle,
 } from './model.js';
 import { openMenu } from './overlays.js';
+import { announce } from './toasts.js';
 
 let taskSaveFeedback = null, taskSaveTimer;
 function clearTaskSaved() {
@@ -185,6 +186,83 @@ document.addEventListener('focusout', (event) => {
   // An editor that stays, such as one whose text waits for its save, stays as it is.
   if (showsDescriptionEditor(t, canBoard())) placeEditButton(t); else paintDescription(t);
 });
+
+// ---------- status, track and epic ----------
+// An epic stays on its track, so moving a task to another track takes it out
+// of its epic. The person who moved it sees why under Epic until they leave
+// the task, or until it has an epic again or moves on.
+let clearedEpic = null;
+/** What the Epic cleared note under `t`'s Epic says, or nothing. */
+function epicNote(t) {
+  if (clearedEpic && (clearedEpic.taskId !== t.internalId || clearedEpic.userId !== me()?.id || t.epicId || t.trackId !== clearedEpic.trackId)) clearedEpic = null;
+  return clearedEpic?.text ?? '';
+}
+// Picks on their way to the server, by task and field. A select shows its
+// pick until the save settles, also when a change made elsewhere or a
+// conflict question draws the page meanwhile. A track pick keeps the epic and
+// track the task had when it was last drawn before it moved: the saved place
+// the move leaves, which the Epic cleared note names.
+const picks = new Map();
+/** What the select of `field` shows for `t`: its pick on the way, else the saved value. */
+function shownValue(t, field) {
+  const pick = picks.get(`${t.internalId}:${field}`);
+  return pick ? pick.value : field === 'state' ? t.state : t[field] ?? '';
+}
+/** Remember the place a track pick on its way leaves, as the page shows it now. */
+function notePlace(t) {
+  const pick = picks.get(`${t.internalId}:trackId`);
+  if (pick && t.trackId !== pick.value) Object.assign(pick, { epicId: t.epicId, trackId: t.trackId });
+}
+// The task's revision when the person last opened its Status, Track, Epic or
+// Assignees list. A pick builds on what its list showed: a change that lands
+// while the list is open meets the conflict question, and one the page
+// showed before the list opened doesn't.
+let opened = null;
+const noteOpened = (id) => () => { const t = taskById(id); opened = t ? { taskId: t.internalId, revision: t.revision } : null; };
+const openedRevision = (t) => opened?.taskId === t.internalId ? opened.revision : undefined;
+/**
+ * Save the task's status, track or epic as picked in its select. The
+ * selects show the saved values again once the save settles, so a pick that
+ * didn't save, such as offline, doesn't stay on screen.
+ */
+function saveProperty(id, field, value) {
+  const t = taskById(id), saving = t && App.updTask(id, field, value, openedRevision(t));
+  if (typeof saving?.then !== 'function') { App.refreshTaskHeader(); return; }
+  const key = `${t.internalId}:${field}`, pick = { value, epicId: t.epicId, trackId: t.trackId };
+  picks.set(key, pick);
+  saving.then((saved) => {
+    if (picks.get(key) === pick) picks.delete(key);
+    const moved = taskById(id), epic = epicById(pick.epicId), from = trackById(pick.trackId), to = field === 'trackId' && trackById(value);
+    // A task that left its epic for another track says why, while its page is open.
+    if (saved && to && epic && from && from !== to && moved && !moved.epicId && moved.trackId === value && state.view === 'task' && taskById(state.taskId) === moved) {
+      clearedEpic = { taskId: moved.internalId, userId: me()?.id, trackId: value, text: `Epic cleared: “${epic.title}” is on ${from.name}, not ${to.name}.` };
+      announce(clearedEpic.text);
+    }
+    App.refreshTaskHeader();
+  });
+}
+// A select skips changes from elsewhere while its list is open, so it shows them once the list closes.
+const showSaved = () => App.refreshTaskHeader();
+/** The task's Track and Epic, with the Epic cleared note. */
+function trackEpicHtml(t, canEdit) {
+  notePlace(t);
+  const note = epicNote(t);
+  return `<div class="task-property"><dt>Track</dt><dd>${selectHtml('tpTrack', { label: 'Track', cls: 'prop', disabled: !canEdit, icon: I.track, value: shownValue(t, 'trackId'), placeholder: 'Loading…', options: trackOptions(), pick: (v) => saveProperty(t.id, 'trackId', v), onOpen: noteOpened(t.id), onClose: showSaved })}</dd></div>
+        <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: shownValue(t, 'epicId'), placeholder: 'Loading…', search: true, describedBy: note ? 'tpEpic-note' : '', options: epicOptions(t.trackId, t.epicId), pick: (v) => saveProperty(t.id, 'epicId', v), onOpen: noteOpened(t.id), onClose: showSaved })}${note ? `<p class="task-property-note" id="tpEpic-note">${esc(note)}</p>` : ''}</dd></div>`;
+}
+/** Show the open task's track and epic in place: their choices, values and the Epic cleared note. */
+function paintTrackEpic(t, page) {
+  notePlace(t);
+  setSelectValue('tpTrack', shownValue(t, 'trackId'), trackOptions());
+  setSelectValue('tpEpic', shownValue(t, 'epicId'), epicOptions(t.trackId, t.epicId));
+  const button = page.querySelector('#select-tpEpic'), note = epicNote(t), old = page.querySelector('#tpEpic-note');
+  if (!button || (old?.textContent ?? '') === note) return;
+  old?.remove();
+  if (!note) { button.removeAttribute('aria-describedby'); return; }
+  const element = document.createElement('p'); element.className = 'task-property-note'; element.id = 'tpEpic-note'; element.textContent = note;
+  button.closest('dd').append(element); button.setAttribute('aria-describedby', element.id);
+}
+
 /** The task page's status and Blocked badge in the top bar, and its Properties heading with Block task. */
 const taskStatusHtml = (t) => `<span class="chip idle task-status-chip">${stIcon(t.state)}${STATUS[t.state]}</span>${t.block ? `<span class="blocked-badge">${I.blocked}Blocked</span>` : ''}`;
 const taskPropertiesHeadingHtml = (t, canEdit) => `<div class="task-properties-heading"><h2 id="task-properties-heading">Properties</h2>${canEdit && t.state !== 'done' && !t.block ? `<button class="btn block-task-action" ${UIAction('openModal', 'block', t.id)}>${I.blocked}Block task</button>` : ''}</div>`;
@@ -204,8 +282,8 @@ export function renderTask() {
     <aside class="tp-rail" aria-labelledby="task-properties-heading">
       ${taskPropertiesHeadingHtml(t, canEdit)}
       <dl class="task-properties">
-        <div class="task-property"><dt>Status</dt><dd>${selectHtml('tpState', { label: 'Status', cls: 'prop', disabled: !canEdit, icon: stIcon(t.state), value: t.state, options: Object.entries(STATUS).map(([v, l]) => ({ v, l, icon: stIcon(v) })), pick: (v) => App.updTask(t.id, 'state', v) })}</dd></div>
-        <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: t.epicId, placeholder: 'No epic', search: true, options: epics().filter(e => e.state !== 'done' || e.id === t.epicId).slice().sort((a, b) => d(a.start) - d(b.start)).map((e) => ({ v: e.id, l: e.title })), pick: (v) => App.updTask(t.id, 'epicId', v) })}</dd></div>
+        <div class="task-property"><dt>Status</dt><dd>${selectHtml('tpState', { label: 'Status', cls: 'prop', disabled: !canEdit, icon: stIcon(shownValue(t, 'state')), value: shownValue(t, 'state'), options: Object.entries(STATUS).map(([v, l]) => ({ v, l, icon: stIcon(v) })), pick: (v) => saveProperty(t.id, 'state', v), onOpen: noteOpened(t.id), onClose: showSaved })}</dd></div>
+        ${trackEpicHtml(t, canEdit)}
         <div class="task-property"><dt>Assignees</dt><dd>${msHtml('tpAssign', t.id, !canEdit)}</dd></div>
         <div class="task-property task-property-date prop-row${late ? ' late' : ''}"><dt>Deadline</dt><dd>${dateHtml('tpDl', { hideLabel: true, cls: 'prop', disabled: !canEdit, icon: I.clock, name: '_dl', value: t.deadline || '', clearable: true, autosave: true, pick: (v) => App.updTask(t.id, 'deadline', v) })}<span class="task-overdue" ${late ? '' : 'hidden'}>Overdue</span></dd></div>
         <div class="task-property"><dt>Created at</dt><dd>${Number.isFinite(t.created)?`<time class="task-created-at" datetime="${new Date(t.created).toISOString()}">${formatInstant(t.created)}</time>`:'<span class="task-created-at">Unavailable</span>'}</dd></div>
@@ -232,7 +310,8 @@ function msHtml(key, taskId, disabled) {
     icon: () => { const a = (taskById(taskId)?.assignees || []).filter(userById); return a.length ? `<span class="avs">${a.slice(0, 3).map((x) => avatarHtml(x, 16)).join('')}</span>` : I.person; },
     options: projectMembers().map((u) => ({ v: u.id, l: u.name, sub: userHandle(u) })),
     values: () => taskById(taskId)?.assignees || [],
-    toggle: (v) => { clearTaskSaved();if (!App.require('manage_board') || !recovery.ensureOnline()) return; const t = taskById(taskId); if(!t){App.toast('This task is no longer available','error');return;} if(!(t.assignees||[]).includes(v)&&!projectMembers().some(u=>u.id===v)){App.toast('This person is no longer a project member','error');return;} runtime().setAssignees(t.internalId,t.assignees.includes(v)?t.assignees.filter(id=>id!==v):[...t.assignees,v]).catch(report); },
+    toggle: (v) => { clearTaskSaved();if (!App.require('manage_board') || !recovery.ensureOnline()) return; const t = taskById(taskId); if(!t){App.toast('This task is no longer available','error');return;} if(!(t.assignees||[]).includes(v)&&!projectMembers().some(u=>u.id===v)){App.toast('This person is no longer a project member','error');return;} runtime().setAssignees(t.internalId,t.assignees.includes(v)?t.assignees.filter(id=>id!==v):[...t.assignees,v],openedRevision(t)).catch(report); },
+    onOpen: noteOpened(taskId),
     summary: () => { const a = taskById(taskId)?.assignees || []; return a.length ? a.map((x) => (userById(x) || { name: x }).name).join(', ') : 'Unassigned'; },
     onClose: () => App.refresh(),
   });
@@ -259,9 +338,10 @@ export function mountTaskPage() {
   sizeCommentBodies();
 }
 
-/** Clear a Saved status that belongs to another page or person. */
+/** Clear a Saved status, and an Epic cleared note, that belong to another page or person. */
 export function clearStaleTaskSave() {
   if(taskSaveFeedback&&(state.view!=='task'||state.taskId!==taskSaveFeedback.id||me()?.id!==taskSaveFeedback.owner))clearTaskSaved();
+  if(clearedEpic&&(state.view!=='task'||taskById(state.taskId)?.internalId!==clearedEpic.taskId))clearedEpic=null;
 }
 
 document.addEventListener('input', (e) => { if(e.target.closest('.task-page'))clearTaskSaved(); }, true);
@@ -332,8 +412,10 @@ Object.assign(App, {
     topbar?.querySelector('.task-status-chip')?.replaceWith(html(taskStatusHtml(t)));
     const heading = page.querySelector('.task-properties-heading');
     if (heading && !heading.contains(document.activeElement)) heading.replaceWith(html(taskPropertiesHeadingHtml(t, canBoard())));
-    page.querySelector('#select-tpState > svg')?.replaceWith(html(stIcon(t.state)));
-    setSelectValue('tpState', t.state);
+    const status = shownValue(t, 'state');
+    page.querySelector('#select-tpState > svg')?.replaceWith(html(stIcon(status)));
+    setSelectValue('tpState', status);
+    paintTrackEpic(t, page);
     const late = overdue(t);
     page.querySelector('.task-property-date')?.classList.toggle('late', late);
     page.querySelector('.task-overdue')?.toggleAttribute('hidden', !late);

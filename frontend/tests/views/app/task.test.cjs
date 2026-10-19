@@ -58,13 +58,134 @@ test('the deadline field saves on blur and rejects invalid text, and task action
 test('new tasks and Pool promotions send their deadline and assignees and validate both', () => {
  const t=taskPage(),existing=t.D.tasks.find(x=>x.id==='BIR-079'),created=existing.created;
  assert(!t.d.querySelector('[data-date-key="tpStart"]'));assert.match(t.d.querySelector('.task-created-at').firstChild.textContent,/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);assert.equal(t.A.updTask(existing.id,'created',created+1),false);assert.equal(existing.created,created);assert.equal(t.A.updTask(existing.id,'start','2026-01-01'),false);assert.equal(t.commands.length,0);
- const fill=(deadline,assignee)=>{const form=t.d.querySelector('.modal form');form.querySelector('[name="epicId"]').value='e4';const input=form.querySelector('.date-text');input.value=deadline;const button=form.querySelector('[data-filter-key="mTaskAssignees"]');t.A.popMulti({currentTarget:button,preventDefault(){}},'mTaskAssignees');t.d.querySelector(`[data-v="${assignee}"]`).click();t.d.dispatchEvent(new t.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return form;};
+ const fill=(deadline,assignee)=>{const form=t.d.querySelector('.modal form');form.querySelector('[name="trackId"]').value='t1';form.querySelector('[name="epicId"]').value='e4';const input=form.querySelector('.date-text');input.value=deadline;const button=form.querySelector('[data-filter-key="mTaskAssignees"]');t.A.popMulti({currentTarget:button,preventDefault(){}},'mTaskAssignees');t.d.querySelector(`[data-v="${assignee}"]`).click();t.d.dispatchEvent(new t.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return form;};
  t.A.openModal('task');let form=fill('2026-10-15','robin');form.querySelector('[name="title"]').value='Assigned at creation';t.A.saveTask(event(form));
- assert.deepEqual(sent(t),[['task.create',{projectId:'p1',epicId:'e4',title:'Assigned at creation',description:'',deadline:'2026-10-15',assigneeIds:['robin']}]]);t.A.closeOverlays();
+ assert.deepEqual(sent(t),[['task.create',{projectId:'p1',trackId:'t1',epicId:'e4',title:'Assigned at creation',description:'',deadline:'2026-10-15',assigneeIds:['robin']}]]);t.A.closeOverlays();
  t.A.openModal('task');form=fill('2026-99-99','robin');form.querySelector('[name="title"]').value='Invalid';t.A.saveTask(event(form));assert.equal(t.commands.length,1);assert(t.d.querySelector('.date-error'));form.querySelector('.date-text').value='';t.D.users.find(u=>u.id==='robin').active=false;t.A.saveTask(event(form));assert.equal(t.commands.length,1);assert(t.d.querySelector('.modal').textContent.includes('no longer available'));t.D.users.find(u=>u.id==='robin').active=true;t.A.closeOverlays();
  // The title and description the person left as the item had them follow the item.
  t.A.openModal('pool');t.A.promotePool('pl1');form=fill('2026-11-01','taylorwu');const item=t.D.pool.find(x=>x.id==='pl1');assert.equal(form.querySelector('[name="title"]').value,item.title);assert.equal(form.querySelector('[name="desc"]').value,item.desc);t.A.saveTask(event(form));
- assert.deepEqual(sent(t)[1],['pool.promote',{poolItemId:'pl1',epicId:'e4',deadline:'2026-11-01',assigneeIds:['taylorwu']}]);
+ assert.deepEqual(sent(t)[1],['pool.promote',{poolItemId:'pl1',trackId:'t1',epicId:'e4',deadline:'2026-11-01',assigneeIds:['taylorwu']}]);
+});
+
+/** The labels the select `key` offers, read by opening its list and closing it again. */
+function choices(t, key) {
+  t.A.popSelect({ currentTarget: t.d.getElementById(`select-${key}`), preventDefault() {} }, key);
+  const labels = [...t.d.querySelectorAll('.pop-opt')].map(option => option.textContent.trim());
+  t.d.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  return labels;
+}
+/** Choose `label` in the select `key`, as a click on its option does. */
+function pick(t, key, label) {
+  t.A.popSelect({ currentTarget: t.d.getElementById(`select-${key}`), preventDefault() {} }, key);
+  [...t.d.querySelectorAll('.pop-opt')].find(option => option.textContent.trim() === label).click();
+}
+const shown = (t, key) => t.d.querySelector(`#select-${key} .sel-label`).textContent;
+
+test('New task starts on its epic\'s track, else the only track, else the Board\'s one track, else the track of the last task created there', async () => {
+  const track = t => t.d.querySelector('.modal [name="trackId"]').value;
+  const filtered = bootApp({ route: 'board/p1?track=t2' });
+  filtered.A.openModal('task', undefined, 'e7');
+  assert.deepEqual([track(filtered), filtered.d.querySelector('.modal [name="epicId"]').value], ['t3', 'e7'], 'started from an epic');
+  filtered.A.closeOverlays(); filtered.A.openModal('task');
+  assert.equal(track(filtered), 't2', 'the Board shows one track');
+  const only = bootApp({ route: 'board/p1', prepare: D => { D.tracks = D.tracks.filter(item => item.projectId !== 'p1' || item.id === 't4'); } });
+  only.A.openModal('task');
+  assert.equal(track(only), 't4', 'the project has one track');
+  const t = bootApp({ route: 'board/p1', prepare: D => { D.tracks.push({ id: 'p2-web', projectId: 'p2', name: 'Web', order: 1, revision: 1 }, { id: 'p2-api', projectId: 'p2', name: 'API', order: 2, revision: 1 }); } });
+  const create = async (trackName, projectId, trackId) => {
+    t.A.openModal('task');
+    assert.equal(track(t), '', `nothing says where a task in ${projectId} goes`); assert.equal(shown(t, 'mTaskTrack'), 'Choose a track');
+    pick(t, 'mTaskTrack', trackName);
+    const form = t.d.querySelector('.modal form'); form.querySelector('[name="title"]').value = `On ${trackName}`;
+    t.A.saveTask(event(form));
+    await accept(t, [{ entityType: 'task', id: `new-${trackId}`, taskKey: `NEW-${trackId}`, projectId, trackId, epicId: null, title: `On ${trackName}`, status: 'planning', position: 0, revision: 1, assigneeIds: [] }]);
+  };
+  await create('Integrations', 'p1', 't4');
+  t.A.selectProject('p2');
+  await create('API', 'p2', 'p2-api');
+  t.A.selectProject('p1'); t.A.openModal('task');
+  assert.equal(track(t), 't4', 'the last task created in this project went there'); t.A.closeOverlays();
+  // The memory is this person's, in this tab: someone else signing in here starts with no track.
+  t.D.session.userId = 'robin'; t.A.openModal('task');
+  assert.equal(track(t), '', 'another person'); t.A.closeOverlays();
+  t.D.session.userId = 'taylorwu'; t.D.tracks = t.D.tracks.filter(item => item.id !== 't4'); t.A.openModal('task');
+  assert.equal(track(t), '', 'a track deleted meanwhile');
+});
+
+test('New task\'s Epic offers the open epics of its track, or every open epic with its track, and an epic puts the task on its track', () => {
+  const t = bootApp({ route: 'board/p1' }), trackButton = () => t.d.getElementById('select-mTaskTrack');
+  t.A.openModal('task');
+  const all = choices(t, 'mEpic');
+  assert.equal(all[0], 'No epic'); assert(all.includes('Reading list load test · Mobile experience'));
+  assert(!all.some(label => label.startsWith('Library catalog API')), 'a done epic takes no new tasks');
+  const form = t.d.querySelector('.modal form'); form.querySelector('[name="title"]').value = 'No epic yet';
+  form.dispatchEvent(new t.w.Event('submit', { bubbles: true, cancelable: true }));
+  assert.equal(trackButton().getAttribute('aria-invalid'), 'true', 'Track is required');
+  pick(t, 'mEpic', 'Reading list load test · Mobile experience');
+  assert.deepEqual([shown(t, 'mTaskTrack'), shown(t, 'mEpic')], ['Mobile experience', 'Reading list load test']);
+  assert.equal(trackButton().hasAttribute('aria-invalid'), false, 'the epic gave the task a track');
+  assert.deepEqual(choices(t, 'mEpic'), ['No epic', 'Reader app build', 'Reading list load test']);
+  // The epic is on another track, so it goes.
+  pick(t, 'mTaskTrack', 'Backend & API');
+  assert.deepEqual([shown(t, 'mEpic'), t.d.querySelector('.modal [name="epicId"]').value], ['No epic', '']);
+  t.A.saveTask(event(form));
+  assert.deepEqual(sent(t), [['task.create', { projectId: 'p1', trackId: 't1', title: 'No epic yet', description: '', deadline: null, assigneeIds: [] }]]);
+});
+
+test('with no tracks, New task says so and offers Create track to people who can change the Roadmap', () => {
+  const t = bootApp({ route: 'board/p1', actions: true, prepare: D => { D.tracks = D.tracks.filter(item => item.projectId !== 'p1'); } });
+  t.A.openModal('task');
+  assert.equal(t.d.querySelector('.modal .sub').textContent, 'Every task goes on a track. Create one first.');
+  [...t.d.querySelectorAll('.modal button')].find(button => button.textContent === 'Create track').click();
+  assert.equal(t.A.context().modal.type, 'track');
+  t.A.closeOverlays();
+  t.D.users.find(user => user.id === 'taylorwu').admin = false; t.D.projects[0].members.find(member => member.userId === 'taylorwu').permissions = ['manage_board'];
+  t.A.openModal('task');
+  assert.match(t.d.querySelector('.modal .sub').textContent, /Ask someone who can change the Roadmap/);
+  assert.deepEqual([...t.d.querySelectorAll('.modal button')].map(button => button.textContent), ['Cancel']);
+});
+
+test('another track takes the task out of its epic and says why under Epic, until it has an epic again, and No epic sends none', async () => {
+  const t = taskPage(), task = t.D.tasks.find(x => x.id === 'BIR-079'), note = () => t.d.getElementById('tpEpic-note');
+  assert.deepEqual([shown(t, 'tpTrack'), shown(t, 'tpEpic')], ['Backend & API', 'Reading summaries']);
+  assert.deepEqual(choices(t, 'tpEpic'), ['No epic', 'Reading summaries', 'Search relevance', 'Catalog sync recovery']);
+  pick(t, 'tpTrack', 'Mobile experience');
+  assert.deepEqual(sent(t).at(-1), ['task.update', { taskId: task.internalId, trackId: 't3' }]);
+  await accept(t, [{ entityType: 'task', id: task.internalId, trackId: 't3', epicId: null, revision: 2 }]);
+  assert.equal(note().textContent, 'Epic cleared: “Reading summaries” is on Backend & API, not Mobile experience.');
+  assert.equal(t.d.getElementById('select-tpEpic').getAttribute('aria-describedby'), note().id);
+  assert.deepEqual([shown(t, 'tpTrack'), shown(t, 'tpEpic')], ['Mobile experience', 'No epic']);
+  assert.deepEqual(choices(t, 'tpEpic'), ['No epic', 'Reader app build', 'Reading list load test']);
+  pick(t, 'tpEpic', 'Reading list load test');
+  assert.deepEqual(sent(t).at(-1), ['task.update', { taskId: task.internalId, epicId: 'e7' }]);
+  await accept(t, [{ entityType: 'task', id: task.internalId, epicId: 'e7', revision: 3 }]);
+  assert.equal(note(), null);
+  pick(t, 'tpEpic', 'No epic');
+  assert.deepEqual(sent(t).at(-1), ['task.update', { taskId: task.internalId, epicId: null }]);
+  await accept(t, [{ entityType: 'task', id: task.internalId, epicId: null, revision: 4 }]);
+  assert.equal(shown(t, 'tpEpic'), 'No epic'); assert.equal(note(), null, 'the note told of the track change only');
+});
+
+test('a status or track change that does not go through shows the saved status, track and epic again', async () => {
+  const t = taskPage();
+  pick(t, 'tpTrack', 'Mobile experience');
+  assert.equal(shown(t, 'tpTrack'), 'Mobile experience');
+  t.commands.at(-1).reject(new t.w.TestApiError('invalid trackId: track not found', { status: 422, code: 'validation_failed' })); await settle();
+  assert.deepEqual([shown(t, 'tpTrack'), shown(t, 'tpEpic')], ['Backend & API', 'Reading summaries']);
+  assert.equal(t.d.getElementById('tpEpic-note'), null);
+  pick(t, 'tpState', 'In Progress');
+  t.commands.at(-1).reject(new t.w.TestApiError('invalid status', { status: 422, code: 'validation_failed' })); await settle();
+  assert.equal(shown(t, 'tpState'), 'Planning');
+});
+
+test('a track change that lands after the person left the task leaves no note on it', async () => {
+  const t = taskPage(), task = t.D.tasks.find(x => x.id === 'BIR-079');
+  pick(t, 'tpTrack', 'Mobile experience');
+  t.A.nav('board');
+  await accept(t, [{ entityType: 'task', id: task.internalId, trackId: 't3', epicId: null, revision: 2 }]);
+  t.A.openTask('BIR-079');
+  assert.equal(shown(t, 'tpTrack'), 'Mobile experience');
+  assert.equal(t.d.getElementById('tpEpic-note'), null);
 });
 
 test('new epics require an explicit track', async () => {
@@ -335,6 +456,40 @@ test('a title conflict keeps newer typing elsewhere and shows the title as typed
   assert.match(t.d.querySelector('[data-recovery-conflict]').textContent, /Latest saved value: Their title/);
 });
 
+test('a track pick that meets a change made elsewhere stays in Track beside the latest track, and the note names the epic it left', async () => {
+  // Someone else put the task in another epic of its track meanwhile.
+  const t = conflictPage({ epicId: 'e3' });
+  pick(t, 'tpTrack', 'Mobile experience');
+  t.commands[0].reject(conflict(t));
+  await waitFor(() => promptButton(t, 'Keep my changes'), 'the conflict prompt appears');
+  assert.equal(shown(t, 'tpTrack'), 'Mobile experience', 'Track shows the pick');
+  assert.equal(shown(t, 'tpEpic'), 'Search relevance', 'Epic shows the latest saved epic');
+  assert.match(t.d.querySelector('[data-recovery-conflict]').textContent, /Latest saved value: Backend & API/);
+  promptButton(t, 'Keep my changes').click();
+  await waitFor(() => t.commands.length === 2, 'the pick is sent again');
+  t.commands[1].resolve({ entities: [{ entityType: 'task', id: t.task.internalId, trackId: 't3', epicId: null, revision: 3 }], events: [] }); await settle();
+  assert.equal(t.d.getElementById('tpEpic-note').textContent, 'Epic cleared: “Search relevance” is on Backend & API, not Mobile experience.');
+});
+
+test('a Status pick that meets a change made elsewhere names the latest status by its label', async () => {
+  const t = conflictPage({ state: 'progress' });
+  pick(t, 'tpState', 'In Review');
+  t.commands[0].reject(conflict(t));
+  await waitFor(() => promptButton(t, 'Use latest'), 'the conflict prompt appears');
+  assert.match(t.d.querySelector('[data-recovery-conflict]').textContent, /Latest saved value: In Progress/);
+});
+
+test('an Assignees pick that meets a change made elsewhere names the latest assignees, or Nobody', async () => {
+  for (const [assignees, named] of [[[], 'Nobody'], [['blairq', 'robin'], 'Blair Quinn, Robin Vale']]) {
+    const t = conflictPage({ assignees }), button = t.d.querySelector('[data-filter-key="tpAssign"]');
+    t.A.popMulti({ currentTarget: button, preventDefault() {} }, 'tpAssign');
+    t.d.querySelector('.pop [data-v="taylorwu"]').click();
+    t.commands[0].reject(conflict(t));
+    await waitFor(() => promptButton(t, 'Use latest'), 'the conflict prompt appears');
+    assert.equal(t.d.querySelector('[data-recovery-conflict] span').textContent, `Changed elsewhere. Latest saved value: ${named}`);
+  }
+});
+
 test('Use latest on a description shows the saved description, not the typed one', async () => {
   const t = conflictPage({ desc: 'Their description' }), description = t.d.getElementById('task-description');
   description.focus(); description.value = 'My description'; description.blur(); t.A.updTask(t.task.id, 'desc', description.value);
@@ -404,6 +559,70 @@ test('a status changed elsewhere shows at once in the header and Status, while t
     assert.equal(t.d.activeElement, description); assert.equal(description.value, 'Typed while a teammate works');
     t.A.popSelect({ currentTarget: status, preventDefault() {} }, 'tpState');
     assert.equal(t.d.querySelector('.pop-opt[aria-selected="true"]').textContent, 'In Progress', 'its list marks the new status');
+  }
+});
+
+test('a track changed elsewhere shows at once in Track and Epic, with the epics of the new track, while the description being typed in stays', async () => {
+  for (const hints of hintsOfAChange) {
+    const t = changedElsewhere(), description = t.d.getElementById('task-description');
+    description.focus(); description.value = 'Typed while an agent moves the task';
+    t.change(hints, { trackId: 't3', epicId: null });
+    await waitFor(() => shown(t, 'tpTrack') === 'Mobile experience', `Track shows the new track (hints: ${hints})`);
+    assert.equal(shown(t, 'tpEpic'), 'No epic'); assert.equal(t.d.getElementById('tpEpic-note'), null);
+    assert.equal(t.d.activeElement, description); assert.equal(description.value, 'Typed while an agent moves the task');
+    assert.deepEqual(choices(t, 'tpEpic'), ['No epic', 'Reader app build', 'Reading list load test']);
+  }
+});
+
+test('a change made elsewhere while the Status, Track or Epic list is open shows in that select once its list closes', async () => {
+  const before = { tpState: 'Planning', tpTrack: 'Backend & API', tpEpic: 'Reading summaries' };
+  for (const key of Object.keys(before)) {
+    const t = changedElsewhere(), select = t.d.getElementById(`select-${key}`);
+    select.focus(); t.A.popSelect({ currentTarget: select, preventDefault() {} }, key);
+    t.change(['task'], { status: 'in_progress', trackId: 't3', epicId: null });
+    await waitFor(() => t.d.querySelector('.task-status-chip').textContent === 'In Progress', `the change arrives (${key})`);
+    assert.equal(shown(t, key), before[key], `the open list stays as the person sees it (${key})`);
+    t.d.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert.deepEqual([shown(t, 'tpState'), shown(t, 'tpTrack'), shown(t, 'tpEpic')], ['In Progress', 'Mobile experience', 'No epic'], key);
+    assert.deepEqual(choices(t, 'tpEpic'), ['No epic', 'Reader app build', 'Reading list load test'], key);
+  }
+});
+
+test('a pick builds on the revision its list showed when it opened: a change made while it is open meets the question, one made before does not', async () => {
+  const picks = { tpState: 'In Review', tpTrack: 'Mobile experience', tpEpic: 'Search relevance', tpAssign: 'robin' };
+  for (const [key, choice] of Object.entries(picks)) for (const whileOpen of [true, false]) {
+    const t = changedElsewhere(), assignees = key === 'tpAssign', button = () => assignees ? t.d.querySelector('[data-filter-key="tpAssign"]') : t.d.getElementById(`select-${key}`);
+    const open = () => assignees ? t.A.popMulti({ currentTarget: button(), preventDefault() {} }, key) : t.A.popSelect({ currentTarget: button(), preventDefault() {} }, key);
+    // Focus on the page keeps it from being drawn again, so only the list decides what the person saw.
+    button().focus();
+    if (whileOpen) open();
+    t.change(['task'], { title: 'Renamed elsewhere' });
+    await waitFor(() => t.D.tasks.find(item => item.id === 'BIR-079').revision === 2, `the change arrives (${key})`);
+    if (!whileOpen) open();
+    (assignees ? t.d.querySelector(`.pop [data-v="${choice}"]`) : [...t.d.querySelectorAll('.pop-opt')].find(option => option.textContent.trim() === choice)).click();
+    assert.equal(t.commands.at(-1).expectedRevision, whileOpen ? 1 : 2, `${key}: changed ${whileOpen ? 'while its list was open' : 'before its list opened'}`);
+  }
+});
+
+test('a track or epic the page has not loaded yet reads Loading… in its select, and its name in place once loaded', async () => {
+  const places = [
+    ['tpEpic', { epicId: 'new-epic' }, D => D.epics.push({ id: 'new-epic', projectId: 'p1', trackId: 't1', title: 'Payments v2', start: '2026-10-01', state: 'planning', revision: 1 }), 'Payments v2'],
+    ['tpTrack', { trackId: 'new-track', epicId: null }, D => D.tracks.push({ id: 'new-track', projectId: 'p1', name: 'Android', order: 9, revision: 1 }), 'Android'],
+  ];
+  for (const [key, fields, load, name] of places) {
+    const t = changedElsewhere();
+    t.change(['task'], fields);
+    await waitFor(() => t.D.tasks.find(item => item.id === 'BIR-079').revision === 2, `the change arrives (${key})`);
+    // A full drawing of the page, as when focus leaves it.
+    t.A.refresh();
+    assert.equal(t.A.context().view, 'task', `the page stays while its ${key} loads`);
+    assert.equal(shown(t, key), 'Loading…', key);
+    const button = t.d.getElementById(`select-${key}`);
+    assert.match(button.getAttribute('aria-labelledby'), new RegExp(`select-${key}-value`), 'screen readers hear the same label');
+    // Focus on the select keeps the page from being drawn again, so the name fills in place.
+    button.focus(); load(t.D); t.A.refreshTask('BIR-079');
+    assert.equal(shown(t, key), name, key);
+    assert.equal(t.d.getElementById(`select-${key}`), button, `${key} keeps its element`);
   }
 });
 

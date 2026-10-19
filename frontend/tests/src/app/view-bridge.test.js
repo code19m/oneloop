@@ -87,14 +87,16 @@ test('a live refresh of Profile, Users and Settings reads passively, and a visit
   }
 });
 
-test('a save uses the editor focus revision even after live data advances',async()=>{
-  let options,finished='';
-  const gateway={execute:async(_operation,_payload,input)=>{options=input;return {entities:[],events:[]};}};
+test('typed text saves on the revision its editor was focused at, and an assignee pick on the revision its list opened at',async()=>{
+  const sent=[];let finished='';
+  const gateway={execute:async(_operation,payload,input)=>{sent.push([Object.keys(payload).find(key=>key!=='taskId'),input.expectedRevision]);return {entities:[],events:[]};}};
+  // The editor was focused at revision 1; live data has moved the task to revision 2 since.
   const recovery={revisionKey:()=> 'task:opaque-1',expectedRevision:()=>1,captureEditor:()=>null,finishRevision:(key)=>{finished=key;}};
   const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway,recovery});
-  state.data.tasks.push({id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:2,assignees:[]});
-  await state.bridge.setAssignees('ONE-1',['u2']);
-  assert.equal(options.expectedRevision,1);assert.equal(finished,'task:opaque-1');
+  state.data.tasks.push({id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:2,title:'Title',assignees:[]});
+  await state.bridge.setAssignees('ONE-1',['u2'],2);
+  state.app.updTask('ONE-1','title','Typed title');await settle();
+  assert.deepEqual(sent,[['assigneeIds',2],['title',1]]);assert.equal(finished,'task:opaque-1');
 });
 
 for(const [latest,fail] of [['Newest title',false],['Original title',false],['First title',false],['Unsaved title',true]])test(`task autosave coalesces pending titles through the acknowledged revision: ${latest}`,async()=>{
@@ -298,8 +300,8 @@ test('routine member actions never invoke password confirmation',async()=>{
 test('task creation stays one interaction across acceptance and a slow follow-up read',async()=>{
   const write=deferred(),read=deferred();let writes=0;
   const state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task'}},{gateway:{execute:()=>{writes++;return write.promise;}},reloadBootstrap:()=>read.promise});
-  state.data.epics.push({id:'e1',projectId:'p1',state:'planning'});
-  const element=form(inputs({epicId:'e1',title:'One task'})+'<button type="submit">Save</button>'),button=element.querySelector('button'),event=submit(element);
+  state.data.tracks.push({id:'t1',projectId:'p1'});
+  const element=form(inputs({trackId:'t1',title:'One task'})+'<button type="submit">Save</button>'),button=element.querySelector('button'),event=submit(element);
   state.app.saveTask(event);state.app.saveTask(event);
   assert.equal(writes,1);assert.equal(button.disabled,true);
   write.resolve({entities:[],events:[]});await settle();
@@ -309,11 +311,28 @@ test('task creation stays one interaction across acceptance and a slow follow-up
   assert.equal(state.closed,1);assert.equal(button.disabled,false);
 });
 
+test('a new task needs a track of its project, and an epic it names must be open and puts the task on its track',async()=>{
+  const errors=[],sent=[];
+  const state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task'}},{gateway:{execute:async(operation,payload)=>{sent.push([operation,payload]);return {entities:[],events:[]};}},app:{fieldError:(_form,name,message)=>errors.push([name,message])}});
+  state.data.tracks.push({id:'t1',projectId:'p1',name:'Backend'},{id:'t2',projectId:'p1',name:'iOS'},{id:'other',projectId:'p2',name:'Elsewhere'});
+  state.data.epics.push({id:'open',projectId:'p1',trackId:'t1',state:'planning'},{id:'closed',projectId:'p1',trackId:'t1',state:'done'});
+  const create=values=>state.app.saveTask(submit(form(inputs({title:'Placed task',...values}))));
+  for(const values of [{trackId:''},{trackId:'other'},{trackId:'t1',epicId:'gone'},{trackId:'t1',epicId:'closed'}])create(values);
+  assert.deepEqual(errors,[
+    ['trackId','Choose a track.'],['trackId','Choose a track.'],
+    ['epicId','This epic is no longer available. Choose another one, or No epic.'],
+    ['epicId','This epic is completed. Reopen it before adding tasks.'],
+  ]);
+  // The form still shows iOS, but the epic moved to Backend meanwhile: the task goes with the epic.
+  create({trackId:'t2',epicId:'open'});await settle();
+  assert.deepEqual(sent,[['task.create',{projectId:'p1',trackId:'t1',epicId:'open',title:'Placed task',description:'',deadline:null,assigneeIds:[]}]]);
+});
+
 test('an accepted create closes successfully even when refreshing the view fails',async()=>{
   const failure=new Error('Read unavailable'),refreshFailures=[];let writes=0;
   const state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task'}},{gateway:{execute:async()=>{writes++;return {entities:[],events:[]};}},reloadBootstrap:async()=>{throw failure;},recovery:{refreshFailed:error=>refreshFailures.push(error)}});
-  state.data.epics.push({id:'e1',projectId:'p1',state:'planning'});
-  state.app.saveTask(submit(form(inputs({epicId:'e1',title:'Saved task'}))));await settle();
+  state.data.tracks.push({id:'t1',projectId:'p1'});
+  state.app.saveTask(submit(form(inputs({trackId:'t1',title:'Saved task'}))));await settle();
   assert.equal(writes,1);assert.equal(state.closed,1);
   assert.deepEqual(state.toasts,[['Task created']]);assert.deepEqual(refreshFailures,[failure]);
 });
@@ -416,17 +435,18 @@ test('a Pool item that can\'t be added comes back once the field is free, and is
   assert.equal(capture.input.value,'');
 });
 
-test('a task in another project loads its parent context before opening and counts that project',async()=>{
+test('a task in another project opens once its read has its parent context, and counts that project',async()=>{
   location.hash='#/task/TWO-1';
-  const context={view:'notfound',taskId:'TWO-1',projectId:'p1',board:{}},roadmaps=[],counted=[];
-  const task={id:'TWO-1',internalId:'t2',projectId:'p2',epicId:'e2'};
-  let state;
+  const context={view:'notfound',taskId:'TWO-1',projectId:'p1',board:{}},counted=[];
+  const task={id:'TWO-1',internalId:'t2',projectId:'p2',trackId:'r2',epicId:'e2'};
+  let state,opened=false;
+  // The task read brings the project's tracks and epics when they aren't loaded (see the read controller's tests).
   state=fixture(context,{
-    reads:{task:async()=>({stale:false,task}),roadmap:async projectId=>{roadmaps.push(projectId);state.data.epics.push({id:'e2',trackId:'r2'});state.data.tracks.push({id:'r2',projectId:'p2'});return {stale:false};},counts:async projectId=>counted.push(projectId)},
-    app:{openTask(id){assert.equal(id,'TWO-1');assert.equal(state.data.tracks[0].id,'r2');context.view='task';context.projectId='p2';}},
+    reads:{task:async()=>{state.data.epics.push({id:'e2',trackId:'r2'});state.data.tracks.push({id:'r2',projectId:'p2'});return {stale:false,task};},counts:async projectId=>counted.push(projectId)},
+    app:{openTask(id){assert.equal(id,'TWO-1');opened=true;context.view='task';context.projectId='p2';}},
   });
   state.data.projects.push({id:'p2',members:[]});
-  await state.bridge.loadCurrentRoute();assert.deepEqual(roadmaps,['p2']);assert.deepEqual(counted,['p2']);
+  await state.bridge.loadCurrentRoute();assert.equal(opened,true);assert.deepEqual(counted,['p2']);
 });
 
 
@@ -551,6 +571,15 @@ test('an epic chosen on the task page from another track moves the task there wi
   assert.deepEqual(state.requests[2].command.payload,{taskId:'t1',epicId:'beside'});
 });
 
+test('the task page moves a task only to a track of its project',async()=>{
+  const state=taskPage();
+  state.data.tracks.push({id:'t2',projectId:'p1'},{id:'other',projectId:'p2'});
+  for(const trackId of ['gone','other'])assert.equal(state.app.updTask('ONE-1','trackId',trackId),false);
+  assert.deepEqual(state.toasts,[['This track is no longer available. Choose another one.','error'],['This track is no longer available. Choose another one.','error']]);
+  state.app.updTask('ONE-1','trackId','t2');
+  assert.deepEqual(state.requests.map(request=>request.command.payload),[{taskId:'t1',trackId:'t2'}]);
+});
+
 test('two task fields saved close together build on each other instead of conflicting',async()=>{
   const state=taskPage();
   state.app.updTask('ONE-1','title','New title');state.app.updTask('ONE-1','desc','New description');state.app.updTask('ONE-1','state','progress');
@@ -672,9 +701,9 @@ test('Keep my changes in Edit milestone saves only the fields the person changed
 
 test('a Pool promotion sends the item\'s title and description only when the person changed them',async()=>{
   const sent=[],state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task',poolId:'i1',title:'Idea',desc:'Notes'}},{recovery:keepMine(),gateway:conflictOnce(sent)});
-  state.data.pool.push({id:'i1',projectId:'p1',scope:'project',title:'Idea',desc:'Notes',revision:1});state.data.epics.push({id:'e1',projectId:'p1',state:'planning'});
-  state.app.saveTask(submit(dialogForm({epicId:'e1',title:'Idea',desc:'My own notes',deadline:'2026-12-01'})));await settle();await settle();
-  assert.deepEqual(sent.map(payload=>Object.keys(payload).sort()),[['assigneeIds','deadline','description','epicId','poolItemId'],['assigneeIds','deadline','description','epicId','poolItemId']]);
+  state.data.pool.push({id:'i1',projectId:'p1',scope:'project',title:'Idea',desc:'Notes',revision:1});state.data.tracks.push({id:'t1',projectId:'p1'});state.data.epics.push({id:'e1',projectId:'p1',trackId:'t1',state:'planning'});
+  state.app.saveTask(submit(dialogForm({trackId:'t1',epicId:'e1',title:'Idea',desc:'My own notes',deadline:'2026-12-01'})));await settle();await settle();
+  assert.deepEqual(sent.map(payload=>Object.keys(payload).sort()),[['assigneeIds','deadline','description','epicId','poolItemId','trackId'],['assigneeIds','deadline','description','epicId','poolItemId','trackId']]);
 });
 
 test('a conflict over a dialog\'s date draws the dialog again, since its picker can\'t show the saved date by itself',async()=>{
@@ -716,8 +745,8 @@ test('a Pool promotion whose conflict prompt closed without a choice saves again
   const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'pool:i1',expectedRevision:(key,latest)=>remembered.get(key)??latest,finishRevision:key=>remembered.delete(key),handleCommandFailure:async()=>{},
     resolveConflict:async()=>{state.data.pool[0].revision=2;return {handled:true,saved:false};}};
   const state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task',poolId:'i1'}},{recovery,gateway:{execute:async(_operation,_payload,options)=>{sent.push(options.expectedRevision);throw changedElsewhere();}}});
-  state.data.pool.push({id:'i1',projectId:'p1',scope:'project',title:'Idea',desc:'',revision:1});state.data.epics.push({id:'e1',projectId:'p1',state:'planning'});
-  const dialog=dialogForm({epicId:'e1',title:'Idea',desc:'My notes',deadline:''}),promote=()=>state.app.saveTask(submit(dialog));
+  state.data.pool.push({id:'i1',projectId:'p1',scope:'project',title:'Idea',desc:'',revision:1});state.data.tracks.push({id:'t1',projectId:'p1'});
+  const dialog=dialogForm({trackId:'t1',title:'Idea',desc:'My notes',deadline:''}),promote=()=>state.app.saveTask(submit(dialog));
   promote();await settle();await settle();promote();await settle();await settle();
   assert.deepEqual(sent,[1,1],'the dialog still shows the typed text, so it meets the change to the item again');
 });
