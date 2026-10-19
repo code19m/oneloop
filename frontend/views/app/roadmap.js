@@ -13,7 +13,7 @@ import {
 import { descriptionReadHtml } from './forms.js';
 import {
   App, D, ROADMAP_SCALES, canBoard, canReadProject, canRoadmap, epicById, epics, milestones, project,
-  report, runtime, state, taskById, tasks, trackById, tracks, userById,
+  recovery, report, runtime, state, taskById, tasks, trackById, tracks, userById,
 } from './model.js';
 import {
   EPIC_TIP, POP, hideEpicTip, mountRoadmapTip, openMenu, peekOpened, pendingConfirmation,
@@ -971,8 +971,8 @@ function windowScroll(sc, { from, to }, ppd, { reserve, ahead }, now) {
  * came, the days whose tasks couldn't load, whether one is loading, whether
  * the last one failed, and when. While one loads the view asks for nothing
  * more; after one failed, nothing until the next scroll, zoom or change made
- * elsewhere a little later, so a scroll on a failing network sends no stream
- * of reads.
+ * elsewhere a little later, or until the connection comes back, so a scroll
+ * on a failing network sends no stream of reads.
  */
 const askedReads = new WeakMap();
 /** How long a failed read waits before the view tries again, at the least. */
@@ -992,9 +992,10 @@ function readsOf(lanes) {
  * draw on their own, a stretch at a time. Every read keeps to what the
  * server says one read may ask for. The days the view shows are the ones
  * reads of the lanes ask for again. `retry` comes with a scroll, a zoom or a
- * change made elsewhere: it may try a read that failed again.
+ * change made elsewhere: it may try a read that failed again, a little
+ * later. `back` comes with the connection coming back: it tries at once.
  */
-function loadMore(view, { retry = false } = {}) {
+function loadMore(view, { retry = false, back = false } = {}) {
   const lanes = roadmapLanes();
   if (!lanes || !view.model.ready || !view.sc.isConnected) return;
   const { sc, model, ppd, drawn } = view, room = viewRoom(view) / ppd, cell = markCell(ppd), most = lanes.limits;
@@ -1008,7 +1009,7 @@ function loadMore(view, { retry = false } = {}) {
   // the days drawn on their own at this zoom.
   lanes.shown = { from: date(Math.max(from, middle - most.days / 2)), to: date(Math.min(to, middle + most.days / 2 - 1)), anchor, cell };
   const asked = readsOf(lanes);
-  if (asked.busy || asked.failedAt && (!retry || runtime().now() - asked.failedAt < RETRY_AFTER)) return;
+  if (asked.busy || asked.failedAt && !back && (!retry || runtime().now() - asked.failedAt < RETRY_AFTER)) return;
   asked.failedAt = 0;
   // A read of days gives their counts; one of a stretch's tasks, the tasks of the days drawn on their own there.
   const ask = (first, last, marks = null) => {
@@ -1055,6 +1056,9 @@ function loadMore(view, { retry = false } = {}) {
   const stretch = blankStretch(view, asked.marked, cell, most);
   if (stretch) ask(offset(stretch.from), offset(stretch.to), stretch.near);
 }
+
+// The connection came back: a read that failed is tried again at once.
+recovery.whenOnline(() => { if (mountedRoadmap?.sc.isConnected) loadMore(mountedRoadmap, { back: true }); });
 
 /**
  * The next days to read the tasks of: the drawn days with one task that the

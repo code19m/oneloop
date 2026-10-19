@@ -405,11 +405,11 @@ export function createRecoveryController({
     const previous=visibleConnection();
     if(apiReachable!==nextApi)connectivityGeneration++;
     apiReachable=nextApi;liveReachable=nextLive;
-    const restored=apiReachable&&previous==='offline';
     const next=visibleConnection();if(previous===next)return;
     updateNotice();
     if(next==='live'&&previous==='offline')getApp()?.toast('Connection restored','info');
-    if(restored)for(const listener of [...onlineListeners])queueMicrotask(listener);
+    // Saving works again, or live updates do.
+    if(previous==='offline'||next==='live')for(const listener of [...onlineListeners])queueMicrotask(listener);
   };
 
   function viewScope(){
@@ -731,7 +731,7 @@ export function createRecoveryController({
     ensureOnline(){if(connection()!=='offline')return true;getApp()?.toast('Reconnect before making this change.','error');return false;},
     connectionHtml,
     activateNotice,
-    /** Run `listener` each time saving works again after the connection was lost. */
+    /** Run `listener` each time the connection comes back: saving works again after it was lost, or live updates do. */
     whenOnline(listener){onlineListeners.add(listener);return ()=>onlineListeners.delete(listener);},
     hasUnsavedInput,
     /** A field that saves itself saved its value without losing focus, such as a date saved with Enter. @param {Element} element */

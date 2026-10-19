@@ -148,6 +148,24 @@ test('late read and reconnect success cannot override a newer browser offline ev
   assert.equal(state.controller.connection,'live');assert.equal(state.reloads,1);
 });
 
+test('a listener runs each time the connection comes back: saving works again, or live updates do',async()=>{
+  let online=true,runs=0;
+  const state=fixture({online:()=>online});
+  state.controller.start();
+  state.controller.whenOnline(()=>{runs++;});
+  const settled=()=>new Promise(resolve=>setImmediate(resolve));
+  state.controller.liveDisconnected();await settled();
+  assert.equal(runs,0,'live updates lost');
+  state.controller.liveConnected();await settled();
+  assert.equal(runs,1,'live updates came back');
+  online=false;state.window.dispatchEvent(new state.window.Event('offline'));await settled();
+  assert.equal(runs,1,'offline');
+  online=true;await state.controller.reconnect();await settled();
+  assert.equal(runs,2,'saving works again, and live updates with it, once');
+  state.controller.liveConnected();await settled();
+  assert.equal(runs,2,'nothing came back');
+});
+
 test('a success preceding a newer API failure cannot restore writes even while browser stays online',()=>{
   const state=fixture();const oldContext=state.controller.requestContext();
   state.controller.observeResponse({ok:false,path:'/api/bootstrap',requestContext:oldContext,error:new ApiError('Network',{code:'network_error'})});

@@ -724,6 +724,28 @@ test('while reads fail, every mark whose task hasn\'t come says it couldn\'t loa
   assert.equal(ring().getAttribute('aria-label'), '1 planned task, due Oct 20, loading');
 });
 
+test('a read that failed is tried again at once when the live updates or the network come back', async () => {
+  let failing = true;
+  const asked = [];
+  const t = boot('roadmap/p1?scale=months', { prepare: heldFromSep10, api: { me: async () => ({}) }, reads: {
+    roadmapDays: async (_projectId, days) => { asked.push(days); if (failing) throw new ApiError('Connection lost', { code: 'network_error' }); return { stale: false }; },
+  } });
+  await settle();
+  assert.equal(asked.length, 1);
+  // The clock stands still, so no scroll would ask again yet; the live updates coming back do.
+  failing = false;
+  t.w.Recovery.liveDisconnected(); t.w.Recovery.liveConnected(); await settle();
+  assert.equal(asked.length, 2);
+  assert.equal(t.d.querySelector('.connection-notice'), null);
+  // As does the network, after a read failed again.
+  failing = true; asked.length = 0;
+  await scrollBy(t, -2000); await settle();
+  assert.equal(asked.length, 1);
+  failing = false;
+  t.w.dispatchEvent(new t.w.Event('offline')); t.w.dispatchEvent(new t.w.Event('online')); await settle(); await settle();
+  assert.equal(asked.length, 2);
+});
+
 test('a view that reaches past the days the lanes hold reads the later days, with the plans due on them', async () => {
   const t = boot('roadmap/p1?scale=months', { prepare: D => { D.roadmap.window.to = '2026-10-01'; } });
   await scrollBy(t, 0, parseFloat(t.d.querySelector('.rm-canvas').style.width));
