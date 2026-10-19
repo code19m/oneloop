@@ -124,6 +124,8 @@ All notable changes to oneloop are recorded here. The format follows
 
 ### Fixed
 
+- The **Board** and the **Roadmap** read their cards faster in a project with
+  many deleted tasks.
 - On a task's page, a **Status** that couldn't be saved, such as while
   offline, now shows the saved status again. Before, it kept showing the
   status you chose until the page was drawn again.
