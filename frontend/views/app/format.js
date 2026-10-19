@@ -22,9 +22,22 @@ export const formatInstant = (value) => formatInstantIn(value, instanceTimeZone(
 export const instanceDateKey = (value=instanceNow()) => formatInstant(value).slice(0, 10);
 export const previousDate = value => { const date = d(value); date.setUTCDate(date.getUTCDate() - 1); return iso(date); };
 const calendarFormatter = new Intl.DateTimeFormat('en-US', {timeZone:'UTC',month:'short',day:'numeric'});
+const fullFormatter = new Intl.DateTimeFormat('en-US', {timeZone:'UTC',month:'short',day:'numeric',year:'numeric'});
 export const human = (dt) => calendarFormatter.format(dt);
-export const humanShort = dt => dt.getUTCFullYear() === today.getUTCFullYear() ? human(dt) : humanFull(iso(dt));
-export const humanFull = (ds) => d(ds).toLocaleDateString('en-US', { timeZone:'UTC', month: 'short', day: 'numeric', year: 'numeric' });
+/** Each day's short name, once for this year: the Roadmap names thousands of days as it draws. */
+const shortNames = new Map();
+export const humanShort = dt => {
+  // Today moves at midnight, and with a new year the names of last year's days gain their year.
+  const key = `${+dt}|${today.getUTCFullYear()}`;
+  let name = shortNames.get(key);
+  if (name === undefined) {
+    name = dt.getUTCFullYear() === today.getUTCFullYear() ? human(dt) : humanFull(iso(dt));
+    if (shortNames.size > 4000) shortNames.clear();
+    shortNames.set(key, name);
+  }
+  return name;
+};
+export const humanFull = (ds) => fullFormatter.format(d(ds));
 export const humanInstant = (value) => formatShortInstant(value, instanceTimeZone(), warnZone);
 export const instanceToday = () => d(instanceDateKey(instanceNow()));
 export const today = instanceToday();

@@ -340,6 +340,29 @@ test('work in progress shows as a bar from its start: late work has the error ic
   assert(parseFloat(open.style.width) >= 16);
 });
 
+test('a task in progress, its epic and its person changed in place, as a live change patches them, draw again changed', () => {
+  const { d, D, A } = boot();
+  const task = D.tasks.find(item => item.state === 'progress' && !item.block && item.epicId && item.assignees?.length && mark(d, item.id));
+  const epic = D.epics.find(item => item.id === task.epicId), person = D.users.find(user => user.id === task.assignees[0]);
+  assert(!mark(d, task.id).classList.contains('rt-blocked'));
+  task.title = 'Renamed in place'; task.block = { id: 'b1', reason: 'Waiting', by: 'robin', at: NOW, mentions: [] };
+  epic.title = 'Epic renamed in place'; person.name = 'Person Renamed';
+  A.refreshRoadmap();
+  const bar = mark(d, task.id);
+  assert.equal(bar.querySelector('.rt-title').textContent, 'Renamed in place');
+  assert(bar.classList.contains('rt-blocked'));
+  assert.match(bar.getAttribute('aria-label'), /^Renamed in place, In Progress, blocked, epic Epic renamed in place, .*Person Renamed$/);
+});
+
+test('a new instance time zone moves work in progress to its new days', () => {
+  const { d, D, A } = boot('roadmap/p1?scale=weeks', { prepare: D => { D.timeZone = 'UTC'; } });
+  const task = D.tasks.find(item => item.state === 'progress' && mark(d, item.id)), before = parseFloat(mark(d, task.id).style.left);
+  D.timeZone = 'Pacific/Kiritimati';
+  A.refreshRoadmap();
+  // Fourteen hours later in the day, at the Weeks scale.
+  assert(parseFloat(mark(d, task.id).style.left) > before, `${before} → ${mark(d, task.id).style.left}`);
+});
+
 test('a section shows three bars at most, the late and blocked first, then "+N in progress", or "+N in review", that opens the rest', () => {
   const more = (state, ids) => D => {
     for (const [index, id] of ids.entries()) {

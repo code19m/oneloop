@@ -6,7 +6,7 @@
 import { UIMotion } from '../../src/app/motion.js';
 import { sectionKey } from '../../src/data/projection-store.js';
 import {
-  DAY, I, STATUS, UIAction, d, esc, formatInstant, humanShort, setHTML, stIcon, today,
+  DAY, I, STATUS, UIAction, d, esc, formatInstant, humanShort, instanceTimeZone, setHTML, stIcon, today,
 } from './format.js';
 import { App, D, epicById, epics, instanceNow, runtime, state, taskById, trackById, tracks, userById } from './model.js';
 import { EPIC_TIP, hideEpicTip, mountRoadmapTip } from './overlays.js';
@@ -40,13 +40,14 @@ export const roadmapLanes = () => (D.roadmap?.projectId === state.projectId ? D.
 const instantDays = new Map();
 /** The date and the share of its day of an instant, in the instance time zone. */
 function instantDay(ms) {
-  let parts = instantDays.get(ms);
+  const key = `${instanceTimeZone()}|${ms}`;
+  let parts = instantDays.get(key);
   if (!parts) {
     const text = formatInstant(ms);
     const [h, m, s] = text.slice(11).split(':').map(Number);
     parts = { date: text.slice(0, 10), fraction: (h * 3600 + m * 60 + s) / 86400 };
     if (instantDays.size > 5000) instantDays.clear();
-    instantDays.set(ms, parts);
+    instantDays.set(key, parts);
   }
   return parts;
 }
@@ -55,8 +56,17 @@ function dayScale(start) {
   const base = +start;
   const ofDate = (date) => Math.round((d(date) - base) / DAY);
   const ofInstant = (ms) => { const { date, fraction } = instantDay(ms); return ofDate(date) + fraction; };
-  return { ofDate, ofInstant };
+  // What the items laid on it depend on: its first day and the time zone.
+  return { key: `${base}|${instanceTimeZone()}`, ofDate, ofInstant };
 }
+
+/**
+ * What of a task and an epic the timeline draws. A live change patches
+ * them in place, so kept items, layouts and markup compare these, not the
+ * objects.
+ */
+const drawnTask = (task) => task ? `${task.title}|${task.state}|${task.order}|${task.deadline}|${task.startedAt}|${task.updatedAt}|${task.completedAt}|${task.epicId}|${task.block ? 1 : 0}|${(task.assignees || []).join(',')}` : '';
+const drawnEpic = (epic) => epic ? `${epic.title}|${epic.state}|${epic.start}|${epic.end}|${epic.done}|${epic.total}` : '';
 
 const isLate = (task) => !!task.deadline && task.state !== 'done' && d(task.deadline) < today;
 const daysLate = (task) => Math.round((today - d(task.deadline)) / DAY);
@@ -69,6 +79,15 @@ const startOf = (task) => task.startedAt ?? task.updatedAt;
  * past it when late, or to now without one.
  */
 function flightItem(task, scale, now) {
+  const kept = flightItemsKept.get(task), drawn = drawnTask(task);
+  if (kept && kept.scale === scale.key && kept.now === now && kept.drawn === drawn) return kept.item;
+  const item = flightOf(task, scale, now);
+  flightItemsKept.set(task, { scale: scale.key, now, drawn, item });
+  return item;
+}
+/** The bar item of each task in progress, while what it draws of the task and the timeline stay the same. */
+const flightItemsKept = new WeakMap();
+function flightOf(task, scale, now) {
   const from = Math.min(scale.ofInstant(startOf(task)), now);
   const end = task.deadline ? scale.ofDate(task.deadline) + 1 : null, late = isLate(task);
   return {
@@ -112,11 +131,18 @@ const NO_TASKS = { planning: 0, progress: 0, review: 0, done: 0 };
  * of their day; done work never after now.
  */
 function dayItems(day, counts, scale, now, marks) {
+  // A day that hasn't changed keeps its items, so its section's layout can stay.
+  const done = counts.done === 1 ? marks.get(`${day}|done`) ?? null : null, planned = counts.plans === 1 ? marks.get(`${day}|planning`) ?? null : null;
+  const kept = dayItemsKept.get(counts), drawn = `${counts.done}/${counts.plans}/${counts.blocked}|${drawnTask(done)}|${drawnTask(planned)}`;
+  if (kept && kept.scale === scale.key && kept.now === now && kept.done === done && kept.planned === planned && kept.drawn === drawn) return kept.items;
   const at = scale.ofDate(day) + 0.5, items = [];
-  if (counts.done) items.push({ kind: 'done', day, count: counts.done, at: Math.min(at, now), task: counts.done === 1 ? marks.get(`${day}|done`) ?? null : null });
-  if (counts.plans) items.push({ kind: 'planned', day, count: counts.plans, at, late: d(day) < today, blocked: counts.blocked > 0, task: counts.plans === 1 ? marks.get(`${day}|planning`) ?? null : null });
+  if (counts.done) items.push({ kind: 'done', day, count: counts.done, at: Math.min(at, now), task: done });
+  if (counts.plans) items.push({ kind: 'planned', day, count: counts.plans, at, late: d(day) < today, blocked: counts.blocked > 0, task: planned });
+  dayItemsKept.set(counts, { scale: scale.key, now, done, planned, drawn, items });
   return items;
 }
+/** The items of each day the lanes count, by its counts, while the day, what it draws of its tasks and the timeline stay the same. */
+const dayItemsKept = new WeakMap();
 
 /**
  * Each track's lane: its own work (tasks without an epic), then its epics by
@@ -125,7 +151,8 @@ function dayItems(day, counts, scale, now, marks) {
  * its own counts, which hold the work in progress the lanes don't draw too.
  */
 export function laneModels(start) {
-  const scale = dayScale(start), now = scale.ofInstant(instanceNow()), lanes = roadmapLanes();
+  // Now to the minute, so a redraw within it keeps the layouts that depend on it.
+  const scale = dayScale(start), now = Math.floor(scale.ofInstant(instanceNow()) * 1440) / 1440, lanes = roadmapLanes();
   const flights = new Map(tracks().map((track) => [track.id, []]));
   for (const task of openTasks()) flights.get(task.trackId).push(flightItem(task, scale, now));
   // The tasks of days with one, by section, day and kind.
@@ -352,13 +379,30 @@ function layoutSection(section, ppd, now) {
   return { marks, rows, line, spine, span };
 }
 
+/**
+ * A section's layout, kept while its items, counts and epic, and the zoom,
+ * stay the same: a read that changes some days lays out again only the
+ * sections they are in.
+ */
+function sectionLayout(section, ppd, now) {
+  const kept = sectionsKept.get(section.key);
+  const counts = `${section.counts.planning}/${section.counts.progress}/${section.counts.review}/${section.counts.done}`, epic = drawnEpic(section.epic);
+  if (kept && kept.ppd === ppd && kept.now === now && kept.epic === epic && kept.from === section.from && kept.to === section.to
+    && kept.counts === counts && kept.items.length === section.items.length && kept.items.every((item, index) => item === section.items[index])) return kept.laid;
+  const laid = layoutSection(section, ppd, now);
+  sectionsKept.set(section.key, { ppd, now, epic, from: section.from, to: section.to, counts, items: section.items.slice(), laid });
+  return laid;
+}
+/** Each section's last layout, by its key. */
+const sectionsKept = new Map();
+
 /** Where everything in a lane goes at `ppd`, and how tall the lane is. */
 export function layoutLane(lane, ppd, now) {
   let top = PAD;
   const sections = [];
   for (const section of lane.sections) {
     if (!sectionShown(section)) continue;
-    const laid = layoutSection(section, ppd, now);
+    const laid = sectionLayout(section, ppd, now);
     const head = section.epic ? ROW : 0, height = head + Math.max(laid.rows, section.epic ? 0 : 1) * ROW + (section.epic ? BOX_FOOT : 0);
     if (sections.length) top += SECTION_GAP;
     sections.push({ section, top, head, height, ...laid });
@@ -530,6 +574,49 @@ export function laneEntry(layout, remembered) {
   return laneOrder(layout)[0] || null;
 }
 
+/** A number for each object a mark shows, so a mark's makeup can name it. */
+const objectIds = new WeakMap();
+let lastObjectId = 0;
+const idOf = (value) => {
+  if (value === null || value === undefined) return '';
+  let id = objectIds.get(value);
+  if (id === undefined) { id = ++lastObjectId; objectIds.set(value, id); }
+  return id;
+};
+
+/**
+ * What a mark's markup is made of: its own fields, its place in its lane,
+ * its items by identity, and the names of its task's epic and person. A
+ * day or task that changes what it draws gets new items (flightItem,
+ * dayItems), so this changes with them.
+ */
+function makeupOf(laid, mark, failed) {
+  let makeup = `${laid.top}|${laid.head}|${laid.section.epic ? 1 : 0}|${failed ? 1 : 0}`;
+  for (const [name, value] of Object.entries(mark)) {
+    if (name === 'group') makeup += `|${value.count}:${value.items.map(idOf).join(',')}`;
+    else if (Array.isArray(value)) makeup += `|${value.map((part) => typeof part === 'object' ? idOf(part) : part).join(',')}`;
+    else makeup += `|${typeof value === 'object' ? idOf(value) : value}`;
+  }
+  const task = mark.item?.task;
+  return task ? `${makeup}|${epicById(task.epicId)?.title ?? ''}|${personOf(task)?.name ?? ''}` : makeup;
+}
+
+/**
+ * A mark's markup, made once for its makeup: a redraw, even after a new
+ * layout, makes markup only for the marks that changed.
+ */
+function keptHtml(laid, mark, unloaded) {
+  const failed = !mark.item && mark.group?.count === 1 && unloaded(mark.group.items[0].day), makeup = makeupOf(laid, mark, failed);
+  let html = marksMade.get(makeup);
+  if (html === undefined) {
+    html = markHtml(laid, mark, unloaded);
+    if (marksMade.size > 20000) marksMade.clear();
+    marksMade.set(makeup, html);
+  }
+  return html;
+}
+const marksMade = new Map();
+
 /** The pixels a mark covers on its lane, with its title. */
 function markSpan(mark) {
   if (mark.type === 'bar') return [mark.left - mark.lead - 8, mark.left + mark.width];
@@ -561,7 +648,7 @@ export function lanePieces(lane, layout, ppd, now, focus, shown = { from: -Infin
       if (past > 0) pieces.push([`s:${key}`, `<span class="rt-spine" aria-hidden="true" style="left:${px(from)};width:${px(past)};top:${top}"></span>`]);
       if (ahead > 0) pieces.push([`a:${key}`, `<span class="rt-spine rt-spine-ahead" aria-hidden="true" style="left:${px(Math.max(from, nowX))};width:${px(ahead)};top:${top}"></span>`]);
     }
-    for (const mark of byPlace(laid.marks)) if (mark.key === focus || drawnIn(mark, shown)) pieces.push([mark.key, markHtml(laid, mark, unloaded)]);
+    for (const mark of byPlace(laid.marks)) if (mark.key === focus || drawnIn(mark, shown)) pieces.push([mark.key, keptHtml(laid, mark, unloaded)]);
   }
   return pieces;
 }
@@ -730,8 +817,8 @@ export function setStyle(el, property, value) {
  * moved instead. A bar's title moves onto its line at the left edge, and an
  * epic's header follows the left edge. Coordinates are the lanes'.
  */
-export function syncLaneEdges(sc, rail) {
-  const from = sc.scrollLeft + 2, to = sc.scrollLeft + sc.clientWidth - rail - 2;
+export function syncLaneEdges(sc, rail, width = sc.clientWidth) {
+  const from = sc.scrollLeft + 2, to = sc.scrollLeft + width - rail - 2;
   const pairs = (value) => value.split(',').map(Number);
 
   for (const tag of sc.querySelectorAll('.rt-body [data-tag]')) {

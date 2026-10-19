@@ -472,7 +472,13 @@ function bindRoadmap(sc, rendered) {
  * reaches what isn't drawn.
  */
 const drawnAround = (room, left) => ({ from: left - Math.max(room, 320) / 2, to: left + Math.max(room, 320) * 1.5 });
-const viewRoom = (view) => view.sc.clientWidth - RAIL;
+/**
+ * The scroller's width, read once at the start of a frame or redraw, before
+ * anything in it changes: reading it after a change makes the browser lay
+ * out the page then, and again when the frame ends.
+ */
+const measure = (view) => { view.width = view.sc.clientWidth; return view.width; };
+const viewRoom = (view) => (view.width ?? measure(view)) - RAIL;
 /** The pixels the lanes drew last, at a zoom and from a first day: the page drawn again draws the same. */
 let keptDrawn = null;
 function drawAt(view, drawn) {
@@ -588,6 +594,7 @@ const roadmapShape = (model) => JSON.stringify([model.ready, stackedLayout(), ca
 function patchLanes() {
   const view = mountedRoadmap;
   if (!view?.sc.isConnected) return false;
+  measure(view);
   const model = roadmapModel();
   if (+model.start !== +view.model.start || model.span !== view.model.span || roadmapShape(model) !== view.shape) return false;
   view.model = model;
@@ -735,7 +742,7 @@ function selectedDay(view) {
  * Returns the day and its distance from the scroller's left edge.
  */
 function scaleAnchor(view) {
-  const { sc, model } = view, width = sc.clientWidth, room = width - RAIL;
+  const { sc, model } = view, width = view.width ?? measure(view), room = width - RAIL;
   const x = (day) => RAIL + day * view.ppd - sc.scrollLeft;
   const margin = Math.min(80, room / 4), inside = (cx) => Math.min(Math.max(cx, RAIL + margin), width - margin);
   const selected = selectedDay(view);
@@ -759,7 +766,7 @@ const monthFormatter = new Intl.DateTimeFormat('en-US', { timeZone:'UTC', month:
  * months and weeks.
  */
 function mountRoadmapCalendar(view) {
-  const { sc, model, ppd } = view, start = model.start, width = sc.clientWidth || window.innerWidth;
+  const { sc, model, ppd } = view, start = model.start, width = (view.width ?? measure(view)) || window.innerWidth;
   const end = Math.max(model.span, (width - RAIL) / ppd);
   const day = (dt) => (dt - start) / DAY;
   const labeled = (from, to) => Math.round(to * ppd) - Math.round(from * ppd) > 46;
@@ -875,7 +882,7 @@ function placeCards(sc, from, to) {
  */
 function syncEdges(view) {
   const { sc } = view, ppd = state.pxPerDay;
-  const from = sc.scrollLeft + 2, to = sc.scrollLeft + sc.clientWidth - RAIL - 2;
+  const from = sc.scrollLeft + 2, to = sc.scrollLeft + viewRoom(view) - 2;
   const pin = sc.querySelector('.rt-axis-pin');
   let pinned = from;
   if (pin) {
@@ -894,7 +901,7 @@ function syncEdges(view) {
     label.classList.toggle('rt-cut', left < pinned || left + Number(label.dataset.w) > to);
   }
   placeCards(sc, from, to);
-  syncLaneEdges(sc, RAIL);
+  syncLaneEdges(sc, RAIL, view.width);
 }
 
 let roadmapGestureCleanup = () => {};
@@ -959,7 +966,7 @@ function readsOf(lanes) {
 function loadMore(view, { retry = false } = {}) {
   const lanes = roadmapLanes();
   if (!lanes || !view.model.ready || !view.sc.isConnected) return;
-  const { sc, model, ppd, drawn } = view, room = (sc.clientWidth - RAIL) / ppd, apart = markApart(ppd), most = lanes.limits;
+  const { sc, model, ppd, drawn } = view, room = viewRoom(view) / ppd, apart = markApart(ppd), most = lanes.limits;
   const left = sc.scrollLeft / ppd, right = left + room;
   const date = (day) => iso(new Date(+model.start + day * DAY)), offset = (key) => Math.round((d(key) - model.start) / DAY);
   // The days drawn, and the few after them that can merge their marks; days outside the timeline's span hold no work.
@@ -1055,6 +1062,7 @@ export function mountRoadmap() {
   if (!sc || !renderedRoadmap) return;
   const view = Object.assign(bindRoadmap(sc, renderedRoadmap), { zoomTo: (_ppd) => {} });
   mountedRoadmap = view;
+  measure(view);
   drawAt(view, view.drawn);
   // Each lane's Tab stop: the item last focused in it, or where its work is.
   view.lanes.forEach((entry, i) => { if (entry.body && view.model.ready) setTabStop(entry.body, laneEntry(view.layout.lanes[i], laneFocus.get(entry.data.track.id))); });
@@ -1087,6 +1095,7 @@ export function mountRoadmap() {
     if (!scrollFrame) scrollFrame = requestAnimationFrame(() => {
       scrollFrame = 0;
       if (!sc.isConnected) return;
+      measure(view);
       followView(view);
       mountRoadmapCalendar(view);
       loadMore(view, { retry: true });
@@ -1110,6 +1119,7 @@ export function mountRoadmap() {
     frame = 0;
     const current = gesture;
     if (!current || !sc.isConnected) return;
+    measure(view);
     const ppd = clampZoom(current.target ?? view.ppd * Math.exp(current.log));
     current.log = 0;
     zoomRoadmap(view, ppd, current.day, current.cx);
@@ -1189,6 +1199,7 @@ export function mountRoadmap() {
   const stepScale = (time) => {
     scaleFrame = 0;
     if (!scaled || !sc.isConnected) return;
+    measure(view);
     scaled.started ??= time - 1000 / 60;
     const progress = Math.min(1, (time - scaled.started) / UIMotion.normal), eased = 1 - (1 - progress) ** 3;
     zoomRoadmap(view, progress < 1 ? clampZoom(scaled.from * Math.exp(Math.log(scaled.ppd / scaled.from) * eased)) : scaled.ppd, scaled.day, scaled.cx);
@@ -1197,6 +1208,7 @@ export function mountRoadmap() {
   view.zoomTo = (ppd) => {
     if (gesture) end();
     stopScale();
+    measure(view);
     hideEpicTip(); closeTimelineList();
     const { day, cx } = scaleAnchor(view);
     if (UIMotion.reduced() || Math.abs(ppd - view.ppd) < 1e-3) { zoomRoadmap(view, ppd, day, cx); loadMore(view, { retry: true }); return; }

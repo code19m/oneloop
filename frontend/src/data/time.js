@@ -46,10 +46,19 @@ function formatters(zone, warn) {
 export function formatInstant(value, zone, warn) {
   const date = value instanceof Date ? value : new Date(value);
   if (!Number.isFinite(date.getTime())) return 'Unavailable';
-  const parts = Object.fromEntries(formatters(zone, warn).instantFormatter.formatToParts(date).filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
-  // The instance time zone applies everywhere, so the label would only add noise.
-  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+  const formatter = formatters(zone, warn).instantFormatter, key = `${zone}|${date.getTime()}`;
+  let text = formatted.get(key);
+  if (text === undefined) {
+    const parts = Object.fromEntries(formatter.formatToParts(date).filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
+    // The instance time zone applies everywhere, so the label would only add noise.
+    text = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+    if (formatted.size > 4000) formatted.clear();
+    formatted.set(key, text);
+  }
+  return text;
 }
+/** Instants formatted already, by zone and time: the Roadmap formats thousands as it draws. */
+const formatted = new Map();
 
 /**
  * `value`, a time, as a short day in `zone`, such as Jan 5.
