@@ -884,21 +884,23 @@ function syncEdges(view) {
   const { sc } = view, ppd = state.pxPerDay;
   const from = sc.scrollLeft + 2, to = sc.scrollLeft + viewRoom(view) - 2;
   const pin = sc.querySelector('.rt-axis-pin');
-  let pinned = from;
+  let pinned = from, named = null;
   if (pin) {
     const start = Number(sc.dataset.rangeStart), day = new Date(start + (sc.scrollLeft / ppd) * DAY);
     const name = (date) => date.toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', ...(date.getUTCFullYear() !== today.getUTCFullYear() ? { year: 'numeric' } : {}) });
-    // When the next month starts within the pin's width, the pin names it already, so no month loses its name.
+    // When the next month starts within the pin's width, the pin names it already, so no month loses its name;
+    // that month's own label then hides, wherever it is, so the month isn't named twice.
     const next = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth() + 1, 1));
-    const nextX = ((+next - start) / DAY) * ppd - sc.scrollLeft;
-    const month = nextX < textWidth(name(day), '500 12px') + 32 ? name(next) : name(day);
+    const nextX = ((+next - start) / DAY) * ppd - sc.scrollLeft, early = nextX < textWidth(name(day), '500 12px') + 32;
+    const month = early ? name(next) : name(day);
+    if (early) named = String(Math.round((+next - start) / DAY));
     if (pin.textContent !== month) pin.textContent = month;
     setStyle(pin, 'left', `${sc.scrollLeft}px`);
     pinned = sc.scrollLeft + textWidth(month, '500 12px') + 24;
   }
   for (const label of sc.querySelectorAll('.rt-axis-dates [data-at]')) {
     const left = Math.round(Number(label.dataset.at) * ppd) + 8;
-    label.classList.toggle('rt-cut', left < pinned || left + Number(label.dataset.w) > to);
+    label.classList.toggle('rt-cut', left < pinned || left + Number(label.dataset.w) > to || (label.classList.contains('rm-month') && label.dataset.at === named));
   }
   placeCards(sc, from, to);
   syncLaneEdges(sc, RAIL, view.width);

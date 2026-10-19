@@ -928,6 +928,16 @@ test('W, M and Q switch the scale on the Roadmap, but not while typing, in a dia
   assert.equal(press(r.w, 'w').defaultPrevented, false, 'only on the Roadmap');
 });
 
+test('the month pinned at the left edge is named once, also when the pin names the next month early', async () => {
+  // A milestone on Apr 12, 2025 starts the range on Apr 2: at Quarters the pin names May before it starts.
+  const t = boot('roadmap/p1?scale=quarters', { prepare: D => { D.milestones.push({ ...D.milestones[0], id: 'm-early', date: '2025-04-12' }); } });
+  await scrollBy(t, 0, 0);
+  const pin = t.d.querySelector('.rt-axis-pin').textContent, month = pin.split(' ')[0];
+  const shown = [...t.d.querySelectorAll('.rt-axis-dates .rm-month')].filter(el => !el.classList.contains('rt-cut')).map(el => el.textContent.split(' ')[0]);
+  assert.equal(pin, 'May 2025');
+  assert(!shown.includes(month), `${pin}: ${shown.join(' ')}`);
+});
+
 test('at the Weeks scale the axis names each Monday, and the first of a month with the month', () => {
   const r = boot();
   r.A.setRoadmapScale('weeks');
