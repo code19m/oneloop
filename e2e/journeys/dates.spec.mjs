@@ -1,5 +1,5 @@
 // Dates, deadlines and the instance time zone.
-import { test, expect, openApp, signIn, expectSignedIn, command } from '../support/test.mjs';
+import { test, expect, openApp, signIn, expectSignedIn, command, fulfillChanged } from '../support/test.mjs';
 
 const modal = page => page.locator('.modal');
 
@@ -7,8 +7,7 @@ const modal = page => page.locator('.modal');
 async function serverDateFromBrowserClock(page) {
   await page.route('**/api/**', async route => {
     if (new URL(route.request().url()).pathname === '/api/events') { await route.continue(); return; }
-    const response = await route.fetch();
-    await route.fulfill({ response, headers: { ...response.headers(), date: await page.evaluate(() => new Date().toUTCString()) } });
+    await fulfillChanged(route, async response => ({ response, headers: { ...response.headers(), date: await page.evaluate(() => new Date().toUTCString()) } }));
   });
 }
 
@@ -94,7 +93,8 @@ test('instance midnight keeps the sign-in form and active task input', async ({ 
 
 test.describe('with an instance time zone ahead of the browser', () => {
   test.use({ instanceTimeZone: 'Pacific/Kiritimati', timezoneId: 'America/Los_Angeles' });
-  test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: 'wait' }); });
+  // Reads still in flight when a test ends have no one left to answer (fulfillChanged).
+  test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: 'ignoreErrors' }); });
 
   test('instance midnight updates dates without submitting or replacing task input', async ({ page, instance }) => {
     const { task } = instance.projects[0];
@@ -142,9 +142,11 @@ test.describe('with an instance time zone ahead of the browser', () => {
     let reads = 0;
     await page.route('**/api/projects/*/roadmap/lanes*', async route => {
       reads++;
-      const response = await route.fetch(), body = await response.json();
-      for (const epic of body.epics) { epic.completedThisWeek = 17; epic.weeklyCompletions = [0, 0, 0, 0, 0, 0, 17]; }
-      await route.fulfill({ response, json: body, headers: { ...response.headers(), date: await page.evaluate(() => new Date().toUTCString()) } });
+      await fulfillChanged(route, async response => {
+        const body = await response.json();
+        for (const epic of body.epics) { epic.completedThisWeek = 17; epic.weeklyCompletions = [0, 0, 0, 0, 0, 0, 17]; }
+        return { response, json: body, headers: { ...response.headers(), date: await page.evaluate(() => new Date().toUTCString()) } };
+      });
     });
     await page.clock.fastForward(61_000);
     await expect(page.locator('[data-epic-throughput]')).toContainText('17 closed this week');
@@ -173,8 +175,7 @@ test.describe('with an instance time zone ahead of the browser', () => {
     await page.clock.pauseAt(new Date('2026-09-20T09:00:00Z'));
     await page.route('**/api/**', async route => {
       if (new URL(route.request().url()).pathname === '/api/events') { await route.continue(); return; }
-      const response = await route.fetch();
-      await route.fulfill({ response, headers: { ...response.headers(), date: 'Sun, 27 Sep 2026 09:00:00 GMT' } });
+      await fulfillChanged(route, response => ({ response, headers: { ...response.headers(), date: 'Sun, 27 Sep 2026 09:00:00 GMT' } }));
     });
     await openApp(page, instance, 'roadmap');
     await expect(page.locator('.rt-today')).toContainText('Sep 27');
