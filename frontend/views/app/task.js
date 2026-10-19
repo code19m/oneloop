@@ -247,8 +247,8 @@ const showSaved = () => App.refreshTaskHeader();
 function trackEpicHtml(t, canEdit) {
   notePlace(t);
   const note = epicNote(t);
-  return `<div class="task-property"><dt>Track</dt><dd>${selectHtml('tpTrack', { label: 'Track', cls: 'prop', disabled: !canEdit, icon: I.track, value: shownValue(t, 'trackId'), options: trackOptions(), pick: (v) => saveProperty(t.id, 'trackId', v), onOpen: noteOpened(t.id), onClose: showSaved })}</dd></div>
-        <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: shownValue(t, 'epicId'), search: true, describedBy: note ? 'tpEpic-note' : '', options: epicOptions(t.trackId, t.epicId), pick: (v) => saveProperty(t.id, 'epicId', v), onOpen: noteOpened(t.id), onClose: showSaved })}${note ? `<p class="task-property-note" id="tpEpic-note">${esc(note)}</p>` : ''}</dd></div>`;
+  return `<div class="task-property"><dt>Track</dt><dd>${selectHtml('tpTrack', { label: 'Track', cls: 'prop', disabled: !canEdit, icon: I.track, value: shownValue(t, 'trackId'), placeholder: 'Loading…', options: trackOptions(), pick: (v) => saveProperty(t.id, 'trackId', v), onOpen: noteOpened(t.id), onClose: showSaved })}</dd></div>
+        <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: shownValue(t, 'epicId'), placeholder: 'Loading…', search: true, describedBy: note ? 'tpEpic-note' : '', options: epicOptions(t.trackId, t.epicId), pick: (v) => saveProperty(t.id, 'epicId', v), onOpen: noteOpened(t.id), onClose: showSaved })}${note ? `<p class="task-property-note" id="tpEpic-note">${esc(note)}</p>` : ''}</dd></div>`;
 }
 /** Show the open task's track and epic in place: their choices, values and the Epic cleared note. */
 function paintTrackEpic(t, page) {

@@ -593,6 +593,28 @@ test('a pick builds on the revision its list showed when it opened: a change mad
   }
 });
 
+test('a track or epic the page has not loaded yet reads Loading… in its select, and its name in place once loaded', async () => {
+  const places = [
+    ['tpEpic', { epicId: 'new-epic' }, D => D.epics.push({ id: 'new-epic', projectId: 'p1', trackId: 't1', title: 'Payments v2', start: '2026-10-01', state: 'planning', revision: 1 }), 'Payments v2'],
+    ['tpTrack', { trackId: 'new-track', epicId: null }, D => D.tracks.push({ id: 'new-track', projectId: 'p1', name: 'Android', order: 9, revision: 1 }), 'Android'],
+  ];
+  for (const [key, fields, load, name] of places) {
+    const t = changedElsewhere();
+    t.change(['task'], fields);
+    await waitFor(() => t.D.tasks.find(item => item.id === 'BIR-079').revision === 2, `the change arrives (${key})`);
+    // A full drawing of the page, as when focus leaves it.
+    t.A.refresh();
+    assert.equal(t.A.context().view, 'task', `the page stays while its ${key} loads`);
+    assert.equal(shown(t, key), 'Loading…', key);
+    const button = t.d.getElementById(`select-${key}`);
+    assert.match(button.getAttribute('aria-labelledby'), new RegExp(`select-${key}-value`), 'screen readers hear the same label');
+    // Focus on the select keeps the page from being drawn again, so the name fills in place.
+    button.focus(); load(t.D); t.A.refreshTask('BIR-079');
+    assert.equal(shown(t, key), name, key);
+    assert.equal(t.d.getElementById(`select-${key}`), button, `${key} keeps its element`);
+  }
+});
+
 test('a description changed elsewhere shows at once while focus is elsewhere on the page, and once focus leaves its text', async () => {
   for (const hints of hintsOfAChange) {
     const t = changedElsewhere({ prepare: D => { D.tasks.find(item => item.id === 'BIR-079').desc = 'The first text'; } });

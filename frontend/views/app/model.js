@@ -81,7 +81,8 @@ const memberRecord = (userId, projectId) => {
   return (p.members || []).find((m) => m.userId === userId) || null;
 };
 export const canReadProject = id => !!(me()?.active && D.projects.some(p=>p.id===id) && (me().admin||memberRecord(me().id,id)));
-export const canReadTask = task => {const id=taskTrack(task)?.projectId;return !!id&&canReadProject(id);};
+// A task's own project counts while its track loads, as after a move to a new track.
+export const canReadTask = task => {const id=taskTrack(task)?.projectId??task?.projectId;return !!id&&canReadProject(id);};
 export const hasPermission = (permission, projectId) => {
   const u = me();
   if (!u || !u.active) return false;
