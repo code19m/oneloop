@@ -435,17 +435,18 @@ test('a Pool item that can\'t be added comes back once the field is free, and is
   assert.equal(capture.input.value,'');
 });
 
-test('a task in another project loads its parent context before opening and counts that project',async()=>{
+test('a task in another project opens once its read has its parent context, and counts that project',async()=>{
   location.hash='#/task/TWO-1';
-  const context={view:'notfound',taskId:'TWO-1',projectId:'p1',board:{}},roadmaps=[],counted=[];
-  const task={id:'TWO-1',internalId:'t2',projectId:'p2',epicId:'e2'};
-  let state;
+  const context={view:'notfound',taskId:'TWO-1',projectId:'p1',board:{}},counted=[];
+  const task={id:'TWO-1',internalId:'t2',projectId:'p2',trackId:'r2',epicId:'e2'};
+  let state,opened=false;
+  // The task read brings the project's tracks and epics when they aren't loaded (see the read controller's tests).
   state=fixture(context,{
-    reads:{task:async()=>({stale:false,task}),roadmap:async projectId=>{roadmaps.push(projectId);state.data.epics.push({id:'e2',trackId:'r2'});state.data.tracks.push({id:'r2',projectId:'p2'});return {stale:false};},counts:async projectId=>counted.push(projectId)},
-    app:{openTask(id){assert.equal(id,'TWO-1');assert.equal(state.data.tracks[0].id,'r2');context.view='task';context.projectId='p2';}},
+    reads:{task:async()=>{state.data.epics.push({id:'e2',trackId:'r2'});state.data.tracks.push({id:'r2',projectId:'p2'});return {stale:false,task};},counts:async projectId=>counted.push(projectId)},
+    app:{openTask(id){assert.equal(id,'TWO-1');opened=true;context.view='task';context.projectId='p2';}},
   });
   state.data.projects.push({id:'p2',members:[]});
-  await state.bridge.loadCurrentRoute();assert.deepEqual(roadmaps,['p2']);assert.deepEqual(counted,['p2']);
+  await state.bridge.loadCurrentRoute();assert.equal(opened,true);assert.deepEqual(counted,['p2']);
 });
 
 

@@ -248,11 +248,23 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
     return pool(projectId,scope,true,state.nextCursor).then((result)=>({ ...result,done:!result.page?.nextCursor }));
   }
 
+  /**
+   * Read one task. A task of one of the person's projects on a track or in an
+   * epic the projection doesn't have yet, such as a task of another project
+   * or one moved to a new epic, reads its project's Roadmap too, and shows
+   * again once it can name them.
+   */
   async function task(taskId){
-    return read(`task:${taskId}`,'',false,async token=>{
+    const loaded=await read(`task:${taskId}`,'',false,async token=>{
       try{const view=await api.task(taskId,{signal:token.signal});if(!current(token))return {stale:true};const mapped=replaceTaskDetail(data,view);onTask(mapped);return {stale:false,task:mapped};}
       catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
     });
+    const mapped=loaded?.task;
+    const placed=(item)=>data.tracks.some((track)=>track.id===item.trackId)&&(!item.epicId||data.epics.some((epic)=>epic.id===item.epicId));
+    if(loaded?.stale||!mapped||placed(mapped)||!data.projects.some((project)=>project.id===mapped.projectId))return loaded;
+    if((await roadmap(mapped.projectId))?.stale)return {stale:true};
+    onTask(mapped);
+    return loaded;
   }
 
   /**
