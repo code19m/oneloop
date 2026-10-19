@@ -21,7 +21,7 @@ function boardFilters(filters={}){
 /**
  * Reads behind the open views. Every read has a slot named after what it
  * loads: the Board, one task, the epic drawer, or a project's counts, Roadmap,
- * next page of Roadmap tasks or Pool scope.
+ * Roadmap structure, Roadmap days, list of a Roadmap mark, or Pool scope.
  * A newer read of a slot replaces an older one; when both asked for the same
  * thing, the older caller gets the newer result instead of nothing. Reads of
  * different slots never cancel each other. A background (live) read never
@@ -302,13 +302,13 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
    * read of the lanes drops it.
    * @param {string} projectId @param {{from:string,to:string,anchor?:string,marks?:number}} days
    */
-  async function roadmapDays(projectId,days){
+  async function roadmapDays(projectId,days,options={}){
     const lanes=data.roadmap;
     if(lanes?.projectId!==projectId)return {stale:true};
     const changes=changesOf.get(lanes);
     return read(`roadmap:${projectId}:days`,JSON.stringify(days),false,async token=>{
       try{
-        const read=await api.roadmapDays(projectId,days,{signal:token.signal});
+        const read=await api.roadmapDays(projectId,days,{signal:token.signal,background:options.background});
         if(!current(token)||data.roadmap!==lanes||changesOf.get(lanes)!==changes)return {stale:true};
         appendRoadmapDays(data,projectId,read);onRoadmap(lanes);return {stale:false,marked:read.marked??null};
       }catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}

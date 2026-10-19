@@ -59,10 +59,11 @@ export function installRoadmap(ctx) {
     /**
      * Read more days for the Roadmap's lanes, as its view comes to them. One
      * that fails says the view couldn't refresh, as other reads do, until one
-     * comes again. @param {{from:string,to:string,anchor?:string,marks?:number,cell?:number}} days
+     * comes again. One the view tries again goes in the background (`background`).
+     * @param {{from:string,to:string,anchor?:string,marks?:number,cell?:number}} days @param {{background?:boolean}} [options]
      */
-    roadmapDays(days){
-      return reads.roadmapDays(context().projectId,days).then((result)=>{
+    roadmapDays(days,options={}){
+      return reads.roadmapDays(context().projectId,days,options).then((result)=>{
         if(daysFailed&&!result.stale){daysFailed=false;recovery.refreshSucceeded();}
         return result;
       },(/** @type {any} */ error)=>{daysFailed=true;recovery.refreshFailed(error);throw error;});

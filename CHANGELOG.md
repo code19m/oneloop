@@ -77,7 +77,8 @@ All notable changes to oneloop are recorded here. The format follows
   any scale. Where they are too close to tell apart, the work of a few days
   becomes a number, whose list shows 50 tasks, so steady work reads as a row
   of numbers across time. A plan's title that couldn't load says so, and
-  loads again as you scroll or when the connection comes back. **Overdue**
+  loads again by itself a little later, or at once when the connection comes
+  back. **Overdue**
   steps through the 20 longest overdue. A change made elsewhere reads only
   what it changed, and a change to a track or milestone reads no tasks. Its
   header no longer counts tracks, epics and milestones.

@@ -148,22 +148,28 @@ test('late read and reconnect success cannot override a newer browser offline ev
   assert.equal(state.controller.connection,'live');assert.equal(state.reloads,1);
 });
 
-test('a listener runs each time the connection comes back: saving works again, or live updates do',async()=>{
-  let online=true,runs=0;
+test('a connection comes back only when the live updates reconnect or the browser is online again, not when one request works after another failed',async()=>{
+  let online=true,saving=0,back=0;
   const state=fixture({online:()=>online});
   state.controller.start();
-  state.controller.whenOnline(()=>{runs++;});
-  const settled=()=>new Promise(resolve=>setImmediate(resolve));
+  state.controller.whenOnline(()=>{saving++;});state.controller.whenReconnected(()=>{back++;});
+  const settled=()=>new Promise(resolve=>setImmediate(resolve)),context=()=>state.controller.requestContext();
+  // A server shedding load: a request answered 503, the next one answered.
+  state.controller.observeResponse({ok:false,error:new ApiError('Busy',{status:503}),requestContext:context()});
+  state.controller.observeResponse({ok:true,requestContext:context()});await settled();
+  assert.deepEqual([saving,back],[1,0],'saving works again, but the connection never went');
+  // A background read it sheds changes nothing.
+  state.controller.observeResponse({ok:false,background:true,error:new ApiError('Busy',{status:503}),requestContext:context()});
+  assert.equal(state.controller.connection,'live');
   state.controller.liveDisconnected();await settled();
-  assert.equal(runs,0,'live updates lost');
   state.controller.liveConnected();await settled();
-  assert.equal(runs,1,'live updates came back');
+  assert.deepEqual([saving,back],[1,1],'the live updates came back');
+  state.controller.liveConnected();await settled();
+  assert.equal(back,1,'nothing came back');
   online=false;state.window.dispatchEvent(new state.window.Event('offline'));await settled();
-  assert.equal(runs,1,'offline');
-  online=true;await state.controller.reconnect();await settled();
-  assert.equal(runs,2,'saving works again, and live updates with it, once');
-  state.controller.liveConnected();await settled();
-  assert.equal(runs,2,'nothing came back');
+  online=true;state.window.dispatchEvent(new state.window.Event('online'));await settled();await settled();
+  assert.deepEqual([saving,back],[2,2],'the browser is online and reaches oneloop');
+  state.controller.dispose();
 });
 
 test('a success preceding a newer API failure cannot restore writes even while browser stays online',()=>{

@@ -54,8 +54,9 @@ first page you see after you sign in.
   title where it fits. Rings too close to tell apart become a number, as done
   work does. While a ring's task loads, a short grey bar holds the place of
   its title. If it can't load, the ring says **Couldn't load**, and a press
-  still lists the task. It loads again as you scroll, or when the connection
-  comes back. Plans without a deadline stay on the **Board**.
+  still lists the task. It tries again by itself, after 5 seconds, then 15,
+  then every minute, and at once when the connection comes back. Plans
+  without a deadline stay on the **Board**.
 - A track's name says how many of its tasks are in progress and how many are
   planned, with a deadline or not. A lane without any of this says **No dated
   work**, or **No tasks yet** when its track has no tasks.

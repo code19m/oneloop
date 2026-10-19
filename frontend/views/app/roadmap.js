@@ -618,7 +618,7 @@ function patchLanes() {
   refreshStats();
   // A late task whose days just loaded.
   if (overdueWaiting && focusTask(view.sc, overdueWaiting, RAIL, lanesOf(view))) overdueWaiting = null;
-  loadMore(view, { retry: true });
+  loadMore(view);
   returnFocus(view);
   App.refreshCounts();
   return true;
@@ -968,19 +968,21 @@ function windowScroll(sc, { from, to }, ppd, { reserve, ahead }, now) {
 
 /**
  * The reads asked for these lanes: the days asked for, the days whose tasks
- * came, the days whose tasks couldn't load, whether one is loading, whether
- * the last one failed, and when. While one loads the view asks for nothing
- * more; after one failed, nothing until the next scroll, zoom or change made
- * elsewhere a little later, or until the connection comes back, so a scroll
- * on a failing network sends no stream of reads.
+ * came, the days whose tasks couldn't load, whether one is loading, and,
+ * after reads failed, how many in a row, when the next may go and its timer.
+ * While one loads the view asks for nothing more. After one failed it asks
+ * again, in the background, once the wait is over (RETRY_AFTER) and the tab
+ * shows, or at once when the connection really comes back; a scroll, a zoom
+ * or a change made elsewhere asks no sooner. So a failing or busy server
+ * gets no stream of reads.
  */
 const askedReads = new WeakMap();
-/** How long a failed read waits before the view tries again, at the least. */
-const RETRY_AFTER = 2000;
+/** How long the view waits to try a failed read again: longer each time one fails in a row. */
+const RETRY_AFTER = [5000, 15000, 60000];
 
 /** The reads asked for `lanes`, kept with them. */
 function readsOf(lanes) {
-  const asked = askedReads.get(lanes) ?? { busy: false, days: new Set(), marked: [], unloaded: [], failed: false, failedAt: 0 };
+  const asked = askedReads.get(lanes) ?? { busy: false, days: new Set(), marked: [], unloaded: [], failed: false, failures: 0, retryAt: 0, timer: 0, waiting: false };
   askedReads.set(lanes, asked);
   return asked;
 }
@@ -991,11 +993,10 @@ function readsOf(lanes) {
  * they hold, or in their place after a jump; then the tasks of the days they
  * draw on their own, a stretch at a time. Every read keeps to what the
  * server says one read may ask for. The days the view shows are the ones
- * reads of the lanes ask for again. `retry` comes with a scroll, a zoom or a
- * change made elsewhere: it may try a read that failed again, a little
- * later. `back` comes with the connection coming back: it tries at once.
+ * reads of the lanes ask for again. `due` says a failed read may go again
+ * now: its wait is over, or the connection came back.
  */
-function loadMore(view, { retry = false, back = false } = {}) {
+function loadMore(view, { due = false } = {}) {
   const lanes = roadmapLanes();
   if (!lanes || !view.model.ready || !view.sc.isConnected) return;
   const { sc, model, ppd, drawn } = view, room = viewRoom(view) / ppd, cell = markCell(ppd), most = lanes.limits;
@@ -1009,8 +1010,7 @@ function loadMore(view, { retry = false, back = false } = {}) {
   // the days drawn on their own at this zoom.
   lanes.shown = { from: date(Math.max(from, middle - most.days / 2)), to: date(Math.min(to, middle + most.days / 2 - 1)), anchor, cell };
   const asked = readsOf(lanes);
-  if (asked.busy || asked.failedAt && !back && (!retry || runtime().now() - asked.failedAt < RETRY_AFTER)) return;
-  asked.failedAt = 0;
+  if (asked.busy || asked.failed && !due && runtime().now() < asked.retryAt) return;
   // A read of days gives their counts; one of a stretch's tasks, the tasks of the days drawn on their own there.
   const ask = (first, last, marks = null) => {
     const days = { from: date(first), to: date(last), ...(marks ? { anchor: marks, marks: most.marks, cell } : {}) }, key = `${days.from}/${days.to}`;
@@ -1018,10 +1018,12 @@ function loadMore(view, { retry = false, back = false } = {}) {
     asked.busy = true;
     if (!marks) asked.days.add(key);
     // Once it lands, the view goes on with what it still lacks; days a change made elsewhere overtook come again.
-    runtime().roadmapDays(days).then((result) => {
+    // A read tried again goes in the background, so a server that sheds it isn't taken for a lost connection.
+    runtime().roadmapDays(days, { background: asked.failed }).then((result) => {
       // Marks that said their task couldn't load, as all do while reads fail, say what they say now.
       let redraw = asked.failed;
-      Object.assign(asked, { busy: false, failed: false });
+      clearTimeout(asked.timer);
+      Object.assign(asked, { busy: false, failed: false, failures: 0, retryAt: 0, timer: 0, waiting: false });
       if (result?.stale) { if (!marks) asked.days.delete(key); }
       else if (marks) {
         // The days whose tasks all came are read, at least the one asked about; the others are asked for again.
@@ -1034,8 +1036,10 @@ function loadMore(view, { retry = false, back = false } = {}) {
       if (redraw) drawLanes(view);
       loadMore(view); returnFocus(view);
     }, () => {
-      // The page says it couldn't refresh the view; the days come again with the next scroll or change.
-      Object.assign(asked, { busy: false, failed: true, failedAt: runtime().now() });
+      // The page says it couldn't refresh the view; the days come again once the wait is over.
+      const wait = RETRY_AFTER[Math.min(asked.failures, RETRY_AFTER.length - 1)];
+      clearTimeout(asked.timer);
+      Object.assign(asked, { busy: false, failed: true, failures: asked.failures + 1, retryAt: runtime().now() + wait, timer: setTimeout(() => retryDue(asked), wait) });
       if (marks) asked.unloaded.push({ from: days.from, to: days.to });
       else asked.days.delete(key);
       if (mountedRoadmap === view) { drawLanes(view); returnFocus(view); }
@@ -1057,8 +1061,19 @@ function loadMore(view, { retry = false, back = false } = {}) {
   if (stretch) ask(offset(stretch.from), offset(stretch.to), stretch.near);
 }
 
-// The connection came back: a read that failed is tried again at once.
-recovery.whenOnline(() => { if (mountedRoadmap?.sc.isConnected) loadMore(mountedRoadmap, { back: true }); });
+/** The wait after a failed read is over: try it again, once the tab shows. */
+function retryDue(asked) {
+  asked.timer = 0;
+  if (document.hidden) { asked.waiting = true; return; }
+  const lanes = roadmapLanes();
+  if (mountedRoadmap?.sc.isConnected && lanes && askedReads.get(lanes) === asked) loadMore(mountedRoadmap, { due: true });
+}
+document.addEventListener('visibilitychange', () => {
+  const lanes = roadmapLanes(), asked = lanes && askedReads.get(lanes);
+  if (!document.hidden && asked?.waiting) { asked.waiting = false; retryDue(asked); }
+});
+// The connection really came back: a read that failed is tried again at once.
+recovery.whenReconnected(() => { if (mountedRoadmap?.sc.isConnected) loadMore(mountedRoadmap, { due: true }); });
 
 /**
  * The next days to read the tasks of: the drawn days with one task that the
@@ -1121,7 +1136,7 @@ export function mountRoadmap() {
   sc.scrollTop = state.rmScrollTop;
   followView(view);
   mountRoadmapCalendar(view);
-  loadMore(view, { retry: true });
+  loadMore(view);
   /** The zoom gesture in progress. */
   let gesture = null;
   let scrollFrame = 0;
@@ -1136,7 +1151,7 @@ export function mountRoadmap() {
       measure(view);
       followView(view);
       mountRoadmapCalendar(view);
-      loadMore(view, { retry: true });
+      loadMore(view);
     });
   }, {passive:true});
   // Zoom: input events update one gesture, and one frame applies it. A
@@ -1169,7 +1184,7 @@ export function mountRoadmap() {
     if (frame) { cancelAnimationFrame(frame); step(); }
     gesture = null;
     sc.removeEventListener('touchmove', movePinch);
-    loadMore(view, { retry: true });
+    loadMore(view);
   }
   sc.addEventListener('wheel', e => {
     if (!e.ctrlKey && !e.metaKey) return;
@@ -1241,7 +1256,7 @@ export function mountRoadmap() {
     scaled.started ??= time - 1000 / 60;
     const progress = Math.min(1, (time - scaled.started) / UIMotion.normal), eased = 1 - (1 - progress) ** 3;
     zoomRoadmap(view, progress < 1 ? clampZoom(scaled.from * Math.exp(Math.log(scaled.ppd / scaled.from) * eased)) : scaled.ppd, scaled.day, scaled.cx);
-    if (progress < 1) scaleFrame = requestAnimationFrame(stepScale); else { scaled = null; loadMore(view, { retry: true }); }
+    if (progress < 1) scaleFrame = requestAnimationFrame(stepScale); else { scaled = null; loadMore(view); }
   };
   view.zoomTo = (ppd) => {
     if (gesture) end();
@@ -1249,7 +1264,7 @@ export function mountRoadmap() {
     measure(view);
     hideEpicTip(); closeTimelineList();
     const { day, cx } = scaleAnchor(view);
-    if (UIMotion.reduced() || Math.abs(ppd - view.ppd) < 1e-3) { zoomRoadmap(view, ppd, day, cx); loadMore(view, { retry: true }); return; }
+    if (UIMotion.reduced() || Math.abs(ppd - view.ppd) < 1e-3) { zoomRoadmap(view, ppd, day, cx); loadMore(view); return; }
     scaled = { ppd, day, cx, from: view.ppd, started: null };
     scaleFrame = requestAnimationFrame(stepScale);
   };

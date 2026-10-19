@@ -243,6 +243,10 @@ export function createRecoveryController({
   // Resumes the live updates a newer tab of the same person took over, while they are paused.
   /** @type {(()=>void)|null} */ let resumeLive=null;
   /** @type {Set<()=>void>} */ const onlineListeners=new Set();
+  /** @type {Set<()=>void>} */ const reconnectListeners=new Set();
+  /** Whether the live updates were lost: their next connection is a connection that came back. */
+  let liveLost=false;
+  const reconnected=()=>{for(const listener of [...reconnectListeners])queueMicrotask(listener);};
   // What each autosaved field last saved: when it lost focus, or when a key such as Enter saved it.
   /** @type {WeakMap<Element,string>} */ const committed=new WeakMap();
   // What tracked sources keep that isn't saved, by the check that says so, with how to forget it.
@@ -405,11 +409,11 @@ export function createRecoveryController({
     const previous=visibleConnection();
     if(apiReachable!==nextApi)connectivityGeneration++;
     apiReachable=nextApi;liveReachable=nextLive;
+    const restored=apiReachable&&previous==='offline';
     const next=visibleConnection();if(previous===next)return;
     updateNotice();
     if(next==='live'&&previous==='offline')getApp()?.toast('Connection restored','info');
-    // Saving works again, or live updates do.
-    if(previous==='offline'||next==='live')for(const listener of [...onlineListeners])queueMicrotask(listener);
+    if(restored)for(const listener of [...onlineListeners])queueMicrotask(listener);
   };
 
   function viewScope(){
@@ -627,6 +631,8 @@ export function createRecoveryController({
       }
       return;
     }
+    // A busy server that sheds a read made in the background is still there: the read tries again later.
+    if(event.background&&error instanceof ApiError&&error.status===503)return;
     if(error instanceof ApiError&&(['network_error','timeout'].includes(error.code)||[502,503,504].includes(error.status))){
       // Invalidate earlier results even if an earlier failure already blocked writes.
       connectivityGeneration++;
@@ -731,8 +737,15 @@ export function createRecoveryController({
     ensureOnline(){if(connection()!=='offline')return true;getApp()?.toast('Reconnect before making this change.','error');return false;},
     connectionHtml,
     activateNotice,
-    /** Run `listener` each time the connection comes back: saving works again after it was lost, or live updates do. */
+    /** Run `listener` each time saving works again after the connection was lost. */
     whenOnline(listener){onlineListeners.add(listener);return ()=>onlineListeners.delete(listener);},
+    /**
+     * Run `listener` each time the connection really comes back: the live
+     * updates reconnect after they were lost, or the browser is online again
+     * and reaches oneloop. A request that works after another failed is not
+     * one, as a server shedding load answers some and not others.
+     */
+    whenReconnected(listener){reconnectListeners.add(listener);return ()=>reconnectListeners.delete(listener);},
     hasUnsavedInput,
     /** A field that saves itself saved its value without losing focus, such as a date saved with Enter. @param {Element} element */
     markSaved(element){rememberCommitted(element);},
@@ -751,11 +764,11 @@ export function createRecoveryController({
     reloadClient(){windowObject.location.reload();},
     reconnect,
     // The SSE reconcile event owns the post-reconnect refresh.
-    liveConnected(){liveOpen=true;liveAttempt=0;clearTimer(liveTimer);livePaused(null);setConnectivity(apiReachable,true);},
+    liveConnected(){liveOpen=true;liveAttempt=0;clearTimer(liveTimer);livePaused(null);setConnectivity(apiReachable,true);if(liveLost){liveLost=false;reconnected();}},
     /** A newer tab took this tab's live updates; `resume` takes them back. */
     livePaused,
     liveDisconnected(reconnectLive){
-      liveOpen=false;setConnectivity(apiReachable,false);clearTimer(liveTimer);
+      liveOpen=false;liveLost=true;setConnectivity(apiReachable,false);clearTimer(liveTimer);
       if(typeof reconnectLive==='function'){
         const delay=Math.min(1000*(2**liveAttempt),30_000)*(0.9+random()*0.2);liveAttempt++;
         liveTimer=setTimer(()=>{if(!disposed&&data?.session)reconnectLive();},delay);
@@ -767,7 +780,7 @@ export function createRecoveryController({
     copyReference(){if(!pageReference)return;globalThis.navigator?.clipboard?.writeText(pageReference).then(()=>getApp()?.toast('Error reference copied'),()=>getApp()?.toast('Could not copy reference','error'));},
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast('Move was not saved. Try again.','error');return true;},
     /** Start following the page: focus, input, activity, visibility and the connection. */
-    start(){if(!bound){bound=true;scheduleAccessProbe();documentObject.addEventListener('focusin',rememberEditorRevision,true);documentObject.addEventListener('focusout',(event)=>rememberCommitted(event.target),true);windowObject.addEventListener('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject.addEventListener(type,noteActivity,{capture:true,passive:true});documentObject.addEventListener('visibilitychange',visibilityChanged);windowObject.addEventListener('pagehide',()=>{leaving=true;});windowObject.addEventListener('pageshow',(event)=>{if(event.persisted){leaving=false;departedAt=-Infinity;reloadWhenSafe();}});scheduleHiddenCheck();windowObject.addEventListener('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject.addEventListener('online',()=>reconnect(true));sayReloaded();}return controller;},
+    start(){if(!bound){bound=true;scheduleAccessProbe();documentObject.addEventListener('focusin',rememberEditorRevision,true);documentObject.addEventListener('focusout',(event)=>rememberCommitted(event.target),true);windowObject.addEventListener('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject.addEventListener(type,noteActivity,{capture:true,passive:true});documentObject.addEventListener('visibilitychange',visibilityChanged);windowObject.addEventListener('pagehide',()=>{leaving=true;});windowObject.addEventListener('pageshow',(event)=>{if(event.persisted){leaving=false;departedAt=-Infinity;reloadWhenSafe();}});scheduleHiddenCheck();windowObject.addEventListener('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject.addEventListener('online',()=>{reconnect(true).then(()=>{if(apiReachable)reconnected();});});sayReloaded();}return controller;},
     /**
      * Someone signed in, or the session ended. A person who signed out on
      * purpose (`signedOut`) isn't told that their session ended. The tab
