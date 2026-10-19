@@ -248,7 +248,7 @@ Some emoji count as two characters.
 | Tasks in progress drawn | Three in each lane's own work and in each epic; **+N in progress** counts the rest |
 | Done tasks and dated plans | All of them, counted on their days at any scale. The page draws and loads the days it shows with half a view to spare on each side, at most 400 days in one request, and more days as you scroll |
 | Titles of single tasks | The task of every day drawn on its own near the view loads with its days, at most 400 tasks and 400 days in one request; until it comes, a ring shows a short bar where its title goes |
-| A read that fails | The page says **Could not refresh this view** and tries again with the next scroll, zoom or change made elsewhere; a ring whose task couldn't load says so |
+| A read that fails | The page says **Could not refresh this view** and tries again by itself after 5 seconds, then 15, then every minute while the tab shows, and at once when the connection comes back; a ring whose task couldn't load says so |
 | Lists | A number's list, and the list of **+N in progress**, show 50 tasks and say how many more the Board has |
 | Overdue | Steps through the 20 longest overdue tasks; its number counts them all |
 

@@ -43,6 +43,8 @@ const RELOADED_NOW = 'oneloop.reloadedNow';
 const IDLE_BEFORE_RELOAD_MS = 5 * 60_000, AUTO_RELOAD_CHECK_MS = 30_000, HIDDEN_BUILD_CHECK_MS = 60_000;
 /** How long a connection that came back must stay up before the next lost one probes from a second again. */
 const STEADY_MS = 60_000;
+/** How long a read that failed waits to try again: longer each time it fails in a row, up to a minute. */
+const READ_RETRY_MS = [5000, 15_000, 60_000];
 /** What a reload would take away although nothing typed is lost: a dialog, the drawer, a menu or picker, a file preview, a confirmation, an Undo offer or a drag. */
 const IN_PROGRESS = '.modal,.peek,.menu,.pop,.file-overlay,.confirmation-layer,.toast-action,body.is-dragging';
 
@@ -209,11 +211,12 @@ function presentConflict(document,{target,locate,latestValue,myValue,isCurrent,u
  * Production recovery state. It observes transport outcomes but never retries a
  * write. Reconciliation is read-only and preserves the currently open editor.
  */
-/** @typedef {{data:any,api:any,gateway:any,getApp?:()=>import('../../data/contracts.js').LegacyApp|null,getAuth?:()=>any,reload?:(scope?:Record<string,unknown>)=>Promise<any>,checkBuild?:()=>unknown,setTimer?:Function,clearTimer?:Function,random?:()=>number,online?:()=>boolean,now?:()=>number,windowObject?:Window,documentObject?:Document}} RecoveryOptions */
+/** @typedef {{data:any,api:any,gateway:any,getApp?:()=>import('../../data/contracts.js').LegacyApp|null,getAuth?:()=>any,reload?:(scope?:Record<string,unknown>)=>Promise<any>,loadRoute?:()=>Promise<any>,checkBuild?:()=>unknown,setTimer?:Function,clearTimer?:Function,random?:()=>number,online?:()=>boolean,now?:()=>number,windowObject?:Window,documentObject?:Document}} RecoveryOptions */
 /** @param {RecoveryOptions} options */
 export function createRecoveryController({
   data, api, gateway, getApp = () => null, getAuth = () => null,
   reload = async (_scope={}) => ({}),
+  loadRoute = async () => ({}),
   checkBuild = () => {},
   setTimer = globalThis.setTimeout.bind(globalThis),
   clearTimer = globalThis.clearTimeout.bind(globalThis),
@@ -248,10 +251,20 @@ export function createRecoveryController({
   // Resumes the live updates a newer tab of the same person took over, while they are paused.
   /** @type {(()=>void)|null} */ let resumeLive=null;
   /** @type {Set<()=>void>} */ const onlineListeners=new Set();
-  /** @type {Set<()=>void>} */ const reconnectListeners=new Set();
   /** Whether the live updates were lost: their next connection is a connection that came back. */
   let liveLost=false;
-  const reconnected=()=>{for(const listener of [...reconnectListeners])queueMicrotask(listener);};
+  /**
+   * Reads that failed and try again by themselves, by what they read: how
+   * many failed in a row, when the next may go, its timer, what tries it, and
+   * whether it is due while the tab is hidden.
+   * @type {Map<string,{failures:number,retryAt:number,timer:any,retry:()=>void,due:boolean}>}
+   */
+  const failedReads=new Map();
+  const tryRead=(read)=>{clearTimer(read.timer);read.timer=null;read.due=false;read.retry();};
+  /** The reads whose wait is over try again, once the tab shows. */
+  const tryDueReads=()=>{if(documentObject.visibilityState==='hidden')return;for(const read of [...failedReads.values()])if(read.due)tryRead(read);};
+  /** The connection really came back: every failed read tries again at once. */
+  const reconnected=()=>{for(const read of [...failedReads.values()])queueMicrotask(()=>tryRead(read));};
   // What each autosaved field last saved: when it lost focus, or when a key such as Enter saved it.
   /** @type {WeakMap<Element,string>} */ const committed=new WeakMap();
   // What tracked sources keep that isn't saved, by the check that says so, with how to forget it.
@@ -359,7 +372,31 @@ export function createRecoveryController({
   /** A tab that shows again counts as activity, so a person who comes back is never reloaded at once. */
   function visibilityChanged(){
     if(documentObject.visibilityState!=='hidden')noteActivity();
-    scheduleHiddenCheck();reloadWhenSafe();
+    scheduleHiddenCheck();reloadWhenSafe();tryDueReads();
+  }
+
+  /**
+   * Read `key` failed: `retry` tries it again by itself after 5 s, then 15 s,
+   * then every minute, only while the tab shows, and at once when the
+   * connection really comes back, until readWorked(key).
+   */
+  function readFailed(key,retry){
+    const read=failedReads.get(key)??{failures:0,retryAt:0,timer:null,retry,due:false};
+    clearTimer(read.timer);
+    const wait=READ_RETRY_MS[Math.min(read.failures,READ_RETRY_MS.length-1)];
+    Object.assign(read,{failures:read.failures+1,retryAt:now()+wait,retry,due:false,timer:setTimer(()=>{read.timer=null;read.due=true;tryDueReads();},wait)});
+    failedReads.set(key,read);
+  }
+  function readWorked(key){const read=failedReads.get(key);if(!read)return;clearTimer(read.timer);failedReads.delete(key);}
+
+  /** The page's own read of its route, tried again after a busy server shed it: no bootstrap, one notice. */
+  function retryRoute(){
+    beginRouteLoad();
+    Promise.resolve(loadRoute()).then((result)=>{
+      cancelRouteLoading();
+      if(result?.stale)return;
+      readWorked('route');pageError=null;pageReference=null;renderPreservingEditor();
+    },(error)=>{cancelRouteLoading();if(!handleRouteError(error))readWorked('route');});
   }
 
   /**
@@ -674,7 +711,11 @@ export function createRecoveryController({
     cancelRouteLoading();
     if(error instanceof ApiError&&error.status===403)pageError='403';
     else if(error instanceof ApiError&&error.status===404)pageError='404';
-    else if(error instanceof ApiError&&[502,503,504].includes(error.status))pageError='503';
+    else if(error instanceof ApiError&&[502,503,504].includes(error.status)){
+      pageError='503';
+      // A busy server shed the page's read: it tries again by itself, as the Roadmap's do.
+      if(error.status===503&&!error.uncertain)readFailed('route',retryRoute);
+    }
     else pageError='500';
     pageReference=String(error?.message??'').match(/reference:\s*([a-zA-Z0-9-]+)/)?.[1]??null;
     renderPreservingEditor();return true;
@@ -747,13 +788,12 @@ export function createRecoveryController({
     activateNotice,
     /** Run `listener` each time saving works again after the connection was lost. */
     whenOnline(listener){onlineListeners.add(listener);return ()=>onlineListeners.delete(listener);},
-    /**
-     * Run `listener` each time the connection really comes back: the live
-     * updates reconnect after they were lost, or the browser is online again
-     * and reaches oneloop. A request that works after another failed is not
-     * one, as a server shedding load answers some and not others.
-     */
-    whenReconnected(listener){reconnectListeners.add(listener);return ()=>reconnectListeners.delete(listener);},
+    readFailed,
+    readWorked,
+    /** Whether read `key` failed and its wait isn't over yet: nothing else should try it sooner. */
+    readWaiting(key){const read=failedReads.get(key);return !!read&&now()<read.retryAt;},
+    /** Whether read `key` failed last. */
+    readFailing(key){return failedReads.has(key);},
     hasUnsavedInput,
     /** A field that saves itself saved its value without losing focus, such as a date saved with Enter. @param {Element} element */
     markSaved(element){rememberCommitted(element);},
@@ -783,7 +823,7 @@ export function createRecoveryController({
       }
     },
     beginRouteLoad,
-    clearPageError(){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;updateNotice();pageError=null;pageReference=null;},
+    clearPageError(){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;updateNotice();pageError=null;pageReference=null;readWorked('route');},
     retryLoad(){beginRouteLoad();reconcile({background:false}).then((result)=>{cancelRouteLoading();if(!result?.error){pageError=null;renderPreservingEditor();}});},
     copyReference(){if(!pageReference)return;globalThis.navigator?.clipboard?.writeText(pageReference).then(()=>getApp()?.toast('Error reference copied'),()=>getApp()?.toast('Could not copy reference','error'));},
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast('Move was not saved. Try again.','error');return true;},

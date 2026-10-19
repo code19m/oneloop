@@ -78,10 +78,9 @@ All notable changes to oneloop are recorded here. The format follows
   becomes a number, whose list shows 50 tasks, so steady work reads as a row
   of numbers across time. A plan's title that couldn't load says so, and
   loads again by itself a little later, or at once when the connection comes
-  back. **Overdue**
-  steps through the 20 longest overdue. A change made elsewhere reads only
-  what it changed, and a change to a track or milestone reads no tasks. Its
-  header no longer counts tracks, epics and milestones.
+  back. **Overdue** steps through the 20 longest overdue. A change made
+  elsewhere reads only what it changed, and a change to a track or milestone
+  reads no tasks. Its header no longer counts tracks, epics and milestones.
 - On a phone, each track's name on the **Roadmap** sits above its lane.
 - An epic's details no longer say **Ongoing**: an epic without an end date
   shows from when it runs.
@@ -129,8 +128,9 @@ All notable changes to oneloop are recorded here. The format follows
 - A busy server that turns some reads away no longer looks like a lost
   connection. Before, the page then checked the connection, loaded everything
   again and read once more, about every second, also in a hidden tab. Now the
-  view says it couldn't refresh. A connection that keeps coming back only to
-  go again is checked less and less often.
+  page says it couldn't load or refresh, and tries again by itself after 5
+  seconds, then 15, then every minute, while the tab shows. A connection that
+  keeps coming back only to go again is checked less and less often.
 - The **Board** and the **Roadmap** read their cards faster in a project with
   many deleted tasks.
 - On a task's page, a **Status** that couldn't be saved, such as while

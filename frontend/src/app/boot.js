@@ -92,7 +92,7 @@ const buildMonitor=createBuildMonitor({
   onInitial:value=>{globalThis.ONELOOP_BUILD=Object.freeze({version:value.version});},
   onUpdate:(value)=>recovery?.buildChanged(value),
 });
-recovery=createRecoveryController({data,api,gateway,getApp:()=>app,getAuth:()=>auth,reload:reloadProjection,checkBuild:()=>buildMonitor.check()});
+recovery=createRecoveryController({data,api,gateway,getApp:()=>app,getAuth:()=>auth,reload:reloadProjection,loadRoute:()=>bridge.loadCurrentRoute({background:true}),checkBuild:()=>buildMonitor.check()});
 globalThis.Recovery=recovery;
 installCollaborationController({transport:runtimeHooks,recovery});
 installKnowledgeController({runtime:runtimeHooks,getApp:()=>app});
