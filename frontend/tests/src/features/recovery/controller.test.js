@@ -23,8 +23,8 @@ function fixture(overrides={}){
   let expires=0,reloads=0;
   const controller=createRecoveryController({
     data,api:{me:async()=>({}),...overrides.api},gateway:{invalidate(){},hasPending:()=>false,...overrides.gateway},getApp:()=>app,getAuth:()=>({expire(){expires++;}}),
-    reload:async()=>{reloads++;return {};},
-    setTimer:overrides.setTimer??(()=>0),clearTimer:overrides.clearTimer??(()=>{}),online:overrides.online??(()=>true),random:()=>0,
+    reload:overrides.reload??(async()=>{reloads++;return {};}),
+    setTimer:overrides.setTimer??(()=>0),clearTimer:overrides.clearTimer??(()=>{}),online:overrides.online??(()=>true),random:()=>0,now:overrides.now,
   });
   return {controller,data,app,window,document,get expires(){return expires;},get reloads(){return reloads;}};
 }
@@ -154,13 +154,14 @@ test('a connection comes back only when the live updates reconnect or the browse
   state.controller.start();
   state.controller.whenOnline(()=>{saving++;});state.controller.whenReconnected(()=>{back++;});
   const settled=()=>new Promise(resolve=>setImmediate(resolve)),context=()=>state.controller.requestContext();
-  // A server shedding load: a request answered 503, the next one answered.
+  // A server shedding load: a read it answers 503 changes nothing.
   state.controller.observeResponse({ok:false,error:new ApiError('Busy',{status:503}),requestContext:context()});
+  assert.equal(state.controller.connection,'live');
+  // A write it sheds may or may not have happened: saving waits for the server, which then answers.
+  state.controller.observeResponse({ok:false,error:new ApiError('Busy',{status:503,uncertain:true}),requestContext:context()});
+  assert.equal(state.controller.connection,'offline');
   state.controller.observeResponse({ok:true,requestContext:context()});await settled();
   assert.deepEqual([saving,back],[1,0],'saving works again, but the connection never went');
-  // A background read it sheds changes nothing.
-  state.controller.observeResponse({ok:false,background:true,error:new ApiError('Busy',{status:503}),requestContext:context()});
-  assert.equal(state.controller.connection,'live');
   state.controller.liveDisconnected();await settled();
   state.controller.liveConnected();await settled();
   assert.deepEqual([saving,back],[1,1],'the live updates came back');
@@ -170,6 +171,25 @@ test('a connection comes back only when the live updates reconnect or the browse
   online=true;state.window.dispatchEvent(new state.window.Event('online'));await settled();await settled();
   assert.deepEqual([saving,back],[2,2],'the browser is online and reaches oneloop');
   state.controller.dispose();
+});
+
+test('a read that keeps failing while sign-in checks work gets no reconnect when the server sheds it, and backed-off ones when it can\'t reach it',async()=>{
+  // A minute of the page: each reload after a reconnect reads the view again, and that read fails.
+  const minute=async(error)=>{
+    let clock=0,reloads=0,state;const timers=[];
+    const fail=()=>state.controller.observeResponse({ok:false,error:error(),requestContext:state.controller.requestContext()});
+    state=fixture({now:()=>clock,api:{me:async()=>({user:{id:'u1'}})},reload:async()=>{reloads++;fail();return {};},
+      setTimer:(callback,delay)=>{timers.push({callback,at:clock+delay});return timers.length;},clearTimer:()=>{}});
+    fail();
+    for(let next;(next=timers.filter(timer=>!timer.done&&timer.at<=60_000).sort((a,b)=>a.at-b.at)[0]);){
+      next.done=true;clock=next.at;await next.callback();await new Promise(resolve=>setImmediate(resolve));
+    }
+    state.controller.dispose();
+    return reloads;
+  };
+  assert.equal(await minute(()=>new ApiError('Busy',{status:503})),0,'a shed read is no lost connection');
+  const unreachable=await minute(()=>new ApiError('Unable to reach oneloop',{code:'network_error'}));
+  assert(unreachable>0&&unreachable<=6,`${unreachable} reloads in a minute: the probes back off`);
 });
 
 test('a success preceding a newer API failure cannot restore writes even while browser stays online',()=>{

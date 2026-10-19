@@ -126,6 +126,11 @@ All notable changes to oneloop are recorded here. The format follows
 
 ### Fixed
 
+- A busy server that turns some reads away no longer looks like a lost
+  connection. Before, the page then checked the connection, loaded everything
+  again and read once more, about every second, also in a hidden tab. Now the
+  view says it couldn't refresh. A connection that keeps coming back only to
+  go again is checked less and less often.
 - The **Board** and the **Roadmap** read their cards faster in a project with
   many deleted tasks.
 - On a task's page, a **Status** that couldn't be saved, such as while

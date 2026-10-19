@@ -41,6 +41,8 @@ const RELOADED_FOR = 'oneloop.reloadedFor';
 /** Set as a tab reloads itself after an update, so the new page can say why. */
 const RELOADED_NOW = 'oneloop.reloadedNow';
 const IDLE_BEFORE_RELOAD_MS = 5 * 60_000, AUTO_RELOAD_CHECK_MS = 30_000, HIDDEN_BUILD_CHECK_MS = 60_000;
+/** How long a connection that came back must stay up before the next lost one probes from a second again. */
+const STEADY_MS = 60_000;
 /** What a reload would take away although nothing typed is lost: a dialog, the drawer, a menu or picker, a file preview, a confirmation, an Undo offer or a drag. */
 const IN_PROGRESS = '.modal,.peek,.menu,.pop,.file-overlay,.confirmation-layer,.toast-action,body.is-dragging';
 
@@ -233,6 +235,9 @@ export function createRecoveryController({
    * @param {NonNullable<typeof resume>} kept
    */
   const keptAway=(kept)=>{const editor=kept.editor?.rootClass.some((name)=>name==='modal'||name==='peek')?null:kept.editor;return editor||kept.comment?{...kept,editor,away:true}:null;};
+  // The probes after a lost connection back off, also across a connection that comes back only to go again
+  // within STEADY_MS; one that stays that long starts the next outage's probes afresh.
+  let restoredAt=-Infinity;
   let apiReachable=online(),liveReachable=true,liveOpen=false,reconnectAttempt=0,reconnectTimer=null,liveAttempt=0,liveTimer=null,reconcilePromise=null,accessTimer=null;
   let bound=false,disposed=false;
   let sessionGeneration=0,connectivityGeneration=0,reconnectGeneration=0;
@@ -410,6 +415,7 @@ export function createRecoveryController({
     if(apiReachable!==nextApi)connectivityGeneration++;
     apiReachable=nextApi;liveReachable=nextLive;
     const restored=apiReachable&&previous==='offline';
+    if(restored)restoredAt=now();
     const next=visibleConnection();if(previous===next)return;
     updateNotice();
     if(next==='live'&&previous==='offline')getApp()?.toast('Connection restored','info');
@@ -553,7 +559,7 @@ export function createRecoveryController({
       if(disposed||attempt!==reconnectGeneration||!currentSession(context)||!online())return;
       // The shared response observer may already have restored the connection.
       if(!currentConnection(context))return;
-      reconnectAttempt=0;setConnectivity(true);
+      setConnectivity(true);
       if(ownsAnswer(answer?.user?.id))await reconcile();
     }catch(error){
       if(disposed||attempt!==reconnectGeneration||!currentSession(context))return;
@@ -627,15 +633,17 @@ export function createRecoveryController({
     if(!currentConnection(event.requestContext))return;
     if(event.ok){
       if(online()&&!apiReachable){
-        reconnectAttempt=0;clearTimer(reconnectTimer);setConnectivity(true);reconcile();
+        clearTimer(reconnectTimer);setConnectivity(true);reconcile();
       }
       return;
     }
-    // A busy server that sheds a read made in the background is still there: the read tries again later.
-    if(event.background&&error instanceof ApiError&&error.status===503)return;
+    // A server shedding load that answers a read 503 is still there: the read says so and tries again later.
+    // A write it shed may or may not have happened (`uncertain`), so that still waits for the server.
+    if(error instanceof ApiError&&error.status===503&&!error.uncertain)return;
     if(error instanceof ApiError&&(['network_error','timeout'].includes(error.code)||[502,503,504].includes(error.status))){
       // Invalidate earlier results even if an earlier failure already blocked writes.
       connectivityGeneration++;
+      if(now()-restoredAt>=STEADY_MS)reconnectAttempt=0;
       setConnectivity(false);scheduleReconnect();
     }
   }
