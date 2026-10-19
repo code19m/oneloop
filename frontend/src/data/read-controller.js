@@ -229,6 +229,21 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
     });
   }
 
+  /**
+   * A project's tracks, epics and milestones alone, as for a task of another
+   * project, or a track or milestone that changed: they move no task.
+   * @param {string} projectId @param {{background?:boolean}} [options]
+   */
+  async function roadmapStructure(projectId,options={}){
+    return read(`roadmap-structure:${projectId}`,'',!!options.background,async token=>{
+      try{
+        const projection=await answerOf(token,()=>api.roadmap(projectId,{signal:token.signal,background:options.background}));
+        if(!current(token))return {stale:true};
+        replaceRoadmap(data,projection);onRoadmap(projection);return {stale:false};
+      }catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
+    });
+  }
+
   async function pool(projectId,scope,append=false,cursor,options={}){
     const key=`${projectId}:${scope}`,pageKey=`${projectId}:${toLegacyScope(scope)}`;
     const settle=()=>{if(data.poolPageInfo[pageKey]?.loading){data.poolPageInfo[pageKey]={...data.poolPageInfo[pageKey],loading:false};onPool(data.poolPageInfo[pageKey]);}};
@@ -262,7 +277,7 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
     const mapped=loaded?.task;
     const placed=(item)=>data.tracks.some((track)=>track.id===item.trackId)&&(!item.epicId||data.epics.some((epic)=>epic.id===item.epicId));
     if(loaded?.stale||!mapped||placed(mapped)||!data.projects.some((project)=>project.id===mapped.projectId))return loaded;
-    if((await roadmap(mapped.projectId))?.stale)return {stale:true};
+    if((await roadmapStructure(mapped.projectId))?.stale)return {stale:true};
     onTask(mapped);
     return loaded;
   }

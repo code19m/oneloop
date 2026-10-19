@@ -287,6 +287,19 @@ test('a task on a track or in an epic not loaded yet reads its project\'s Roadma
   assert.deepEqual(shown,[['known',null,false],['known','new-epic',false],['known','new-epic',true]]);
 });
 
+test('a task\'s track and epic come from the light Roadmap structure read, in a slot of its own, so the Roadmap\'s read goes on',async()=>{
+  const data=createLegacyData(),requests=held();
+  data.projects.push({id:'p1',members:[]});
+  const reads=createReadController({data,api:{task:requests.api('task'),roadmap:requests.api('roadmap')}});
+  const page=reads.roadmap('p1'),opening=reads.task('BIR-2');await settle();
+  requests.calls.find((call)=>call.name==='task').resolve({...task('bir-2','planning'),taskKey:'BIR-2',trackId:'new-track',epicId:null});await settle();
+  const [pageRead,structureRead]=requests.calls.filter((call)=>call.name==='roadmap');
+  assert.equal(pageRead.signal.aborted,false,'the Roadmap\'s read goes on');
+  assert.ok(structureRead,'the task reads the structure on its own');
+  for(const call of [pageRead,structureRead])call.resolve({projectId:'p1',tracks:[{id:'new-track',projectId:'p1',name:'Android',position:1,revision:1}],epics:[],milestones:[]});
+  assert.equal((await page).stale,false);assert.equal((await opening).stale,false);
+});
+
 test('a live Board read waits for the Board read someone started instead of replacing it',async()=>{
   const data=createLegacyData(),views=[];
   const reads=createReadController({data,api:{boardView:(_id,_filters,options)=>new Promise(resolve=>views.push({options,resolve}))}});
