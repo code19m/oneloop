@@ -314,8 +314,8 @@ test('a switch to a project its person can no longer open is forgotten, but only
 });
 
 /** Lanes of p1 that hold most of 2026, with a view of March to May. */
-const heldLanes=()=>({projectId:'p1',window:{from:'2026-01-01',to:'2026-12-31'},shown:{from:'2026-03-01',to:'2026-06-01',anchor:'2026-04-15'},sections:{},trackCounts:{},overdue:0,firstDay:null,lastDay:null,open:[],late:[],days:{},marks:{}});
-const lanesRead=(extra={})=>({sections:[],overdue:1,firstDay:null,lastDay:null,open:[],late:[],days:{from:'2026-03-01',to:'2026-06-01',sections:[]},...extra});
+const heldLanes=()=>({projectId:'p1',window:{from:'2026-01-01',to:'2026-12-31'},shown:{from:'2026-03-01',to:'2026-06-01',anchor:'2026-04-15'},sections:{},trackCounts:{},overdue:0,firstDay:null,lastDay:null,open:[],late:[],days:{},marks:{},limits:{days:400,marks:400,changeDays:3660}});
+const lanesRead=(extra={})=>({sections:[],overdue:1,firstDay:null,lastDay:null,open:[],late:[],days:{from:'2026-03-01',to:'2026-06-01',sections:[]},limits:{days:400,marks:400,changeDays:3660},...extra});
 
 test('a teammate\'s change to a task reads that task with the Roadmap\'s counts and the days the lanes hold of its section, in one read',async()=>{
   const t=page({view:'roadmap',projectId:'p1'});

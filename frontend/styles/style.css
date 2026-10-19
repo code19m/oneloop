@@ -492,6 +492,8 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 /* A plan's title still loading: a short bar in its place. */
 .rt-tag-pending::after { content: ''; position: absolute; top: 6px; left: 0; right: 0; height: 8px; border-radius: 4px; background: var(--fill-hover); animation: pulse 1.6s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .rt-tag-pending::after { animation: none; } }
+/* A plan's title that couldn't load says so, quietly. */
+.rt-tag-failed { color: var(--ink-faint); font-style: italic; }
 .rt-planned:hover .rt-tag, .rt-planned:focus-visible .rt-tag { color: var(--ink); }
 .rt-late .rt-tag { color: var(--err); }
 

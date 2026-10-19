@@ -51,11 +51,22 @@ export function installRoadmap(ctx) {
   app.saveMilestone=(event,id)=>{event.preventDefault();if(app.validateFormDates(event.target)===false)return false;const form=event.target,values=formValues(event),item=id?milestone(id):null,base={title:text(values.get('name'),60),description:text(values.get('desc'),500),milestoneDate:String(values.get('date')||'')};if(!base.title)return fieldError(form,'name','Give the milestone a name.');if(!validDate(base.milestoneDate))return fieldError(form,'date','Enter a valid date in YYYY-MM-DD format.');return fire(execute(item?'milestone.update':'milestone.create',item?{milestoneId:item.id,...changedFields('milestone',item.id,base)}:{projectId:context().projectId,...base},item,item?'Milestone updated':'Milestone created',{create:!item,form,closeForm:true}));};
   app.deleteMilestone=(id)=>{const item=milestone(id);if(!item)return;app.confirm({title:'Delete milestone?',text:`“${item.name}” will be removed.`,action:'Delete',confirm:()=>fire(execute('milestone.delete',{id:item.id},item,'Milestone deleted',{form:document.querySelector('.modal,.peek'),closeForm:true}))});};
 
+  // Whether the last read of the Roadmap's days failed, so the next one that comes clears the notice.
+  let daysFailed=false;
   return {
     /** Load the Roadmap again in the background after the instance's date changed. */
     async dateChanged(){return reads.roadmap(context().projectId,{background:true}).catch((/** @type {any} */ error)=>{recovery.refreshFailed(error);throw error;});},
-    /** Read more days for the Roadmap's lanes, as its view comes to them. @param {{from:string,to:string,anchor?:string,marks?:number}} days */
-    roadmapDays(days){return reads.roadmapDays(context().projectId,days);},
+    /**
+     * Read more days for the Roadmap's lanes, as its view comes to them. One
+     * that fails says the view couldn't refresh, as other reads do, until one
+     * comes again. @param {{from:string,to:string,anchor?:string,marks?:number,apart?:number}} days
+     */
+    roadmapDays(days){
+      return reads.roadmapDays(context().projectId,days).then((result)=>{
+        if(daysFailed&&!result.stale){daysFailed=false;recovery.refreshSucceeded();}
+        return result;
+      },(/** @type {any} */ error)=>{daysFailed=true;recovery.refreshFailed(error);throw error;});
+    },
     /** The tasks one of the Roadmap's marks counts. @param {{track:string,epic?:string|null,kind:'done'|'plans'|'open',from?:string,to?:string}} list */
     roadmapList(list){return reads.roadmapList(context().projectId,list);},
     /** Stop reading the list of the Roadmap's mark that closed. */

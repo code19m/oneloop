@@ -255,9 +255,9 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
    */
   async function patchRoadmap(projectId,ids,options={},left=[]){
     const lanes=data.roadmap,named=[...new Set(ids)];
-    // Lanes that hold more days than one read of a change covers, ten years, are read again too.
+    // Lanes that hold more days than one read of a change covers are read again too.
     const held=lanes?(Date.parse(lanes.window.to)-Date.parse(lanes.window.from))/86400000:0;
-    if(lanes?.projectId!==projectId||(!named.length&&!left.length)||named.length>NAMED_TASKS_LIMIT||held>=3660)return roadmap(projectId,options);
+    if(lanes?.projectId!==projectId||(!named.length&&!left.length)||named.length>NAMED_TASKS_LIMIT||held>=lanes.limits.changeDays)return roadmap(projectId,options);
     // A read of more days asked for before this change may miss it: it is dropped, and asked for again.
     changesOf.set(lanes,(changesOf.get(lanes)??0)+1);
     // Where the lanes last saw each named task.
@@ -310,7 +310,7 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
       try{
         const read=await api.roadmapDays(projectId,days,{signal:token.signal});
         if(!current(token)||data.roadmap!==lanes||changesOf.get(lanes)!==changes)return {stale:true};
-        appendRoadmapDays(data,projectId,read);onRoadmap(lanes);return {stale:false};
+        appendRoadmapDays(data,projectId,read);onRoadmap(lanes);return {stale:false,marked:read.marked??null};
       }catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
     });
   }

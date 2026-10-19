@@ -521,11 +521,13 @@ function drawLanes(view) {
   const focusedLane = active && view.sc.contains(active) && active.closest('.rt-body') ? active.closest('.lane') : null;
   // Focus in an open list goes back to its mark if that is drawn again, which shows the list again.
   const inList = !!document.getElementById('roadmap-list')?.contains(active), listed = listAnchor()?.dataset.nav;
+  // Days whose tasks couldn't load: their marks say so, and list their task when pressed.
+  const unloaded = askedReads.get(roadmapLanes())?.unloaded ?? [], failed = (day) => unloaded.some((range) => range.from <= day && day <= range.to);
   view.lanes.forEach((entry, i) => {
     const { lane, body, data } = entry;
     if (!body) return;
     const laid = view.layout.lanes[i], focus = laneEntry(laid, lane === focusedLane ? active.dataset.nav : laneFocus.get(data.track.id));
-    const pieces = lanePieces(data, laid, view.ppd, view.model.today, focus, view.drawn);
+    const pieces = lanePieces(data, laid, view.ppd, view.model.today, focus, view.drawn, failed);
     const removed = patchPieces(body, entry.pieces, pieces);
     entry.pieces = pieces;
     setTabStop(body, focus);
@@ -605,7 +607,7 @@ function patchLanes() {
   refreshStats();
   // A late task whose days just loaded.
   if (overdueWaiting && focusTask(view.sc, overdueWaiting, RAIL, lanesOf(view))) overdueWaiting = null;
-  loadMore(view);
+  loadMore(view, { retry: true });
   App.refreshCounts();
   return true;
 }
@@ -929,25 +931,35 @@ function windowScroll(sc, { from, to }, ppd, { reserve, ahead }, now) {
 
 /**
  * The reads asked for these lanes: the days asked for, the days whose tasks
- * were read, and whether one is loading or failed. While one loads or after
- * one failed, the view asks for nothing more until the next read of the
- * Roadmap, so a scroll on a failing network sends no stream of reads.
+ * came, the days whose tasks couldn't load, whether one is loading, and when
+ * one failed. While one loads the view asks for nothing more; after one
+ * failed, nothing until the next scroll, zoom or change made elsewhere a
+ * little later, so a scroll on a failing network sends no stream of reads.
  */
 const askedReads = new WeakMap();
-/** The most days one read covers, and the most tasks of days with one it gives. */
-const READ_DAYS = 400, READ_MARKS = 400;
+/** How long a failed read waits before the view tries again, at the least. */
+const RETRY_AFTER = 2000;
+
+/** The reads asked for `lanes`, kept with them. */
+function readsOf(lanes) {
+  const asked = askedReads.get(lanes) ?? { busy: false, days: new Set(), marked: [], unloaded: [], failedAt: 0 };
+  askedReads.set(lanes, asked);
+  return asked;
+}
 
 /**
  * Load what the lanes draw around the view and don't hold yet, in place and
  * one read at a time: first the days they lack, as counts, next to the days
  * they hold, or in their place after a jump; then the tasks of the days they
- * draw on their own, a stretch at a time. The days the view shows are the
- * ones reads of the lanes ask for again.
+ * draw on their own, a stretch at a time. Every read keeps to what the
+ * server says one read may ask for. The days the view shows are the ones
+ * reads of the lanes ask for again. `retry` comes with a scroll, a zoom or a
+ * change made elsewhere: it may try a read that failed again.
  */
-function loadMore(view) {
+function loadMore(view, { retry = false } = {}) {
   const lanes = roadmapLanes();
   if (!lanes || !view.model.ready || !view.sc.isConnected) return;
-  const { sc, model, ppd, drawn } = view, room = (sc.clientWidth - RAIL) / ppd, apart = markApart(ppd);
+  const { sc, model, ppd, drawn } = view, room = (sc.clientWidth - RAIL) / ppd, apart = markApart(ppd), most = lanes.limits;
   const left = sc.scrollLeft / ppd, right = left + room;
   const date = (day) => iso(new Date(+model.start + day * DAY)), offset = (key) => Math.round((d(key) - model.start) / DAY);
   // The days drawn, and the few after them that can merge their marks; days outside the timeline's span hold no work.
@@ -956,47 +968,61 @@ function loadMore(view) {
   const middle = Math.round((left + right) / 2), anchor = date(middle);
   // What a read of the lanes asks for again: these days, as many as one read covers, with the tasks of
   // the days drawn on their own at this zoom.
-  lanes.shown = { from: date(Math.max(from, middle - READ_DAYS / 2)), to: date(Math.min(to, middle + READ_DAYS / 2 - 1)), anchor, apart };
-  const asked = askedReads.get(lanes) ?? { busy: false, days: new Set(), marked: [] };
-  askedReads.set(lanes, asked);
-  if (asked.busy) return;
+  lanes.shown = { from: date(Math.max(from, middle - most.days / 2)), to: date(Math.min(to, middle + most.days / 2 - 1)), anchor, apart };
+  const asked = readsOf(lanes);
+  if (asked.busy || asked.failedAt && (!retry || runtime().now() - asked.failedAt < RETRY_AFTER)) return;
+  asked.failedAt = 0;
   // A read of days gives their counts; one of a stretch's tasks, the tasks of the days drawn on their own there.
   const ask = (first, last, marks = null) => {
-    const days = { from: date(first), to: date(last), ...(marks ? { anchor: marks, marks: READ_MARKS, apart } : {}) }, key = `${days.from}/${days.to}`;
+    const days = { from: date(first), to: date(last), ...(marks ? { anchor: marks, marks: most.marks, apart } : {}) }, key = `${days.from}/${days.to}`;
     if (!marks && asked.days.has(key)) return;
     asked.busy = true;
-    const range = { from: days.from, to: days.to, apart };
-    if (marks) asked.marked.push(range); else asked.days.add(key);
+    if (!marks) asked.days.add(key);
     // Once it lands, the view goes on with what it still lacks; days a change made elsewhere overtook come again.
     runtime().roadmapDays(days).then((result) => {
       asked.busy = false;
-      if (result?.stale) { if (marks) asked.marked = asked.marked.filter((item) => item !== range); else asked.days.delete(key); }
+      if (result?.stale) { if (!marks) asked.days.delete(key); }
+      else if (marks) {
+        // The days whose tasks all came are read, at least the one asked about; the others are asked for again.
+        const got = result.marked && result.marked.from <= result.marked.to ? result.marked : { from: days.anchor, to: days.anchor };
+        asked.marked.push({ ...got, apart });
+        const unloaded = asked.unloaded.filter((range) => range.to < got.from || range.from > got.to);
+        // Marks that said their task couldn't load say what they say now.
+        if (unloaded.length !== asked.unloaded.length) { asked.unloaded = unloaded; if (mountedRoadmap === view) drawLanes(view); }
+      }
       if (mountedRoadmap === view) loadMore(view);
-    }, (error) => report(error));
+    }, () => {
+      // The page says it couldn't refresh the view; the days come again with the next scroll or change.
+      Object.assign(asked, { busy: false, failedAt: runtime().now() });
+      if (marks) asked.unloaded.push({ from: days.from, to: days.to });
+      else asked.days.delete(key);
+      if (mountedRoadmap === view) drawLanes(view);
+    });
   };
   const held = { from: offset(lanes.window.from), to: offset(lanes.window.to) };
   if (to < held.from - 1 || from > held.to + 1) {
     // A jump: the days around the view in place of the ones held.
-    const first = Math.max(from, middle - READ_DAYS / 2);
-    ask(first, Math.min(to, first + READ_DAYS - 1));
+    const first = Math.max(from, middle - most.days / 2);
+    ask(first, Math.min(to, first + most.days - 1));
     return;
   }
   // The days next to the ones held, on the side the view reaches first.
-  const before = from < held.from ? [Math.max(from, held.from - READ_DAYS), held.from - 1] : null;
-  const after = to > held.to ? [held.to + 1, Math.min(to, held.to + READ_DAYS)] : null;
+  const before = from < held.from ? [Math.max(from, held.from - most.days), held.from - 1] : null;
+  const after = to > held.to ? [held.to + 1, Math.min(to, held.to + most.days)] : null;
   const next = before && after ? (held.from - left > right - held.to ? before : after) : before ?? after;
   if (next) { ask(...next); return; }
-  const stretch = blankStretch(view, asked.marked, apart);
+  const stretch = blankStretch(view, asked.marked, apart, most);
   if (stretch) ask(offset(stretch.from), offset(stretch.to), stretch.near);
 }
 
 /**
  * The next days to read the tasks of: the drawn days with one task that the
  * lanes don't hold yet, from the one nearest the view's middle outwards, as
- * long as the days drawn on their own there are no more than one read gives.
- * Days already read at this zoom or a closer one are done.
+ * long as the days drawn on their own there are no more than one read gives
+ * and the stretch spans no more days than one read may. Days already read
+ * at this zoom or a closer one are done.
  */
-function blankStretch(view, marked, apart) {
+function blankStretch(view, marked, apart, most) {
   const { drawn, sc } = view, middle = sc.scrollLeft + viewRoom(view) / 2;
   const singles = view.layout.lanes.flatMap((lane) => lane.sections).flatMap((laid) => laid.marks)
     .filter((mark) => (mark.type === 'done' || mark.type === 'planned' || mark.group?.count === 1) && drawnIn(mark, drawn))
@@ -1013,9 +1039,10 @@ function blankStretch(view, marked, apart) {
   // Outwards over the days not read yet, up to the read ones on either side; a tenth to spare, for the few
   // days the server counts as apart that the lanes draw merged.
   const open = (index) => index >= 0 && index < days.length && clear(days[Math.min(index, low)], days[Math.max(index, high)]);
+  const fits = (first, last) => (d(last) - d(first)) / DAY < most.days;
   for (;;) {
     const side = open(low - 1) && (!open(high + 1) || away(days[low - 1]) <= away(days[high + 1])) ? low - 1 : open(high + 1) ? high + 1 : -1;
-    if (side < 0 || total + perDay.get(days[side]) > READ_MARKS * 0.9) break;
+    if (side < 0 || total + perDay.get(days[side]) > most.marks * 0.9 || !fits(days[Math.min(side, low)], days[Math.max(side, high)])) break;
     total += perDay.get(days[side]);
     if (side < low) low = side; else high = side;
   }
@@ -1048,7 +1075,7 @@ export function mountRoadmap() {
   sc.scrollTop = state.rmScrollTop;
   followView(view);
   mountRoadmapCalendar(view);
-  loadMore(view);
+  loadMore(view, { retry: true });
   /** The zoom gesture in progress. */
   let gesture = null;
   let scrollFrame = 0;
@@ -1062,7 +1089,7 @@ export function mountRoadmap() {
       if (!sc.isConnected) return;
       followView(view);
       mountRoadmapCalendar(view);
-      loadMore(view);
+      loadMore(view, { retry: true });
     });
   }, {passive:true});
   // Zoom: input events update one gesture, and one frame applies it. A
@@ -1094,7 +1121,7 @@ export function mountRoadmap() {
     if (frame) { cancelAnimationFrame(frame); step(); }
     gesture = null;
     sc.removeEventListener('touchmove', movePinch);
-    loadMore(view);
+    loadMore(view, { retry: true });
   }
   sc.addEventListener('wheel', e => {
     if (!e.ctrlKey && !e.metaKey) return;
@@ -1165,14 +1192,14 @@ export function mountRoadmap() {
     scaled.started ??= time - 1000 / 60;
     const progress = Math.min(1, (time - scaled.started) / UIMotion.normal), eased = 1 - (1 - progress) ** 3;
     zoomRoadmap(view, progress < 1 ? clampZoom(scaled.from * Math.exp(Math.log(scaled.ppd / scaled.from) * eased)) : scaled.ppd, scaled.day, scaled.cx);
-    if (progress < 1) scaleFrame = requestAnimationFrame(stepScale); else { scaled = null; loadMore(view); }
+    if (progress < 1) scaleFrame = requestAnimationFrame(stepScale); else { scaled = null; loadMore(view, { retry: true }); }
   };
   view.zoomTo = (ppd) => {
     if (gesture) end();
     stopScale();
     hideEpicTip(); closeTimelineList();
     const { day, cx } = scaleAnchor(view);
-    if (UIMotion.reduced() || Math.abs(ppd - view.ppd) < 1e-3) { zoomRoadmap(view, ppd, day, cx); loadMore(view); return; }
+    if (UIMotion.reduced() || Math.abs(ppd - view.ppd) < 1e-3) { zoomRoadmap(view, ppd, day, cx); loadMore(view, { retry: true }); return; }
     scaled = { ppd, day, cx, from: view.ppd, started: null };
     scaleFrame = requestAnimationFrame(stepScale);
   };

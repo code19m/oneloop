@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { bootApp, withRuntime, settle, tick, waitFor } = require('../../support/dom.cjs');
+const { ApiError } = require('../../../src/data/api-client.js');
 
 /** Sep 28, 2026, 14:00 in the fixture's time zone, Asia/Tashkent: the fixture's today. */
 const NOW = Date.parse('2026-09-28T09:00:00Z');
@@ -578,17 +579,29 @@ test('a view within the days the lanes hold reads nothing, also as it scrolls in
   assert.deepEqual(t.reads.calls.filter(([name]) => name === 'roadmap'), []);
 });
 
-test('a view that reaches before the days the lanes hold reads only the days next to them, once, and one that failed is not asked again', async () => {
+test('a view that reaches before the days the lanes hold reads only the days next to them, once, and one that failed is asked again on a later scroll', async () => {
   const asked = [];
-  const t = boot('roadmap/p1?scale=months', { prepare: heldFromSep10, reads: { roadmapDays: async (projectId, days) => { asked.push({ projectId, ...days }); throw new Error('offline'); } } });
+  let clock = NOW, failing = true;
+  const t = boot('roadmap/p1?scale=months', { api: { serverNow: () => clock }, prepare: heldFromSep10, reads: { roadmapDays: async (projectId, days) => {
+    asked.push({ projectId, ...days });
+    if (failing) throw new ApiError('invalid query: must be within 400 days of from', { status: 400, code: 'validation_failed', details: { field: 'to', message: 'must be within 400 days of from' } });
+    return { stale: false };
+  } } });
   await settle();
   const [read, ...others] = asked;
   assert.deepEqual(others, []);
   assert.deepEqual([read.projectId, read.to, read.marks], ['p1', '2026-09-09', undefined], 'up to the day before the ones held, as counts alone');
   assert(read.from < read.to, 'the days the lanes draw');
+  // The page says what other reads say when they fail, and names no field of the request.
+  assert.equal(t.d.querySelector('.connection-notice span')?.textContent, 'Could not refresh this view.');
+  assert.doesNotMatch(t.d.getElementById('toast-region').textContent, /Check the/);
   await scrollBy(t, -50);
-  assert.equal(asked.length, 1, 'the read that failed waits for the next read of the Roadmap');
-  assert.match(t.d.getElementById('toast-region').textContent, /could not be completed|offline/i);
+  assert.equal(asked.length, 1, 'a scroll right after asks nothing');
+  // A scroll a little later asks again, and the notice goes once the days come.
+  clock += 3000; failing = false;
+  await scrollBy(t, -10);
+  assert.equal(asked.length, 2);
+  assert.deepEqual([asked[1].to, t.d.querySelector('.connection-notice')], ['2026-09-09', null]);
 });
 
 test('a view that reaches past the days the lanes hold reads the later days, with the plans due on them', async () => {
@@ -612,8 +625,40 @@ test('a read still loading is asked for once as the view scrolls, and says once 
   await settle();
   for (let step = 0; step < 3; step++) await scrollBy(t, -20);
   assert.equal(asked.length, 1);
-  fail(new Error('offline')); await settle();
-  assert.equal(t.d.querySelectorAll('#toast-region .toast').length, 1, t.d.getElementById('toast-region').innerHTML);
+  fail(new ApiError('Connection lost', { code: 'network_error' })); await settle();
+  assert.equal(t.d.querySelectorAll('.connection-notice').length, 1);
+  assert.equal(t.d.querySelectorAll('#toast-region .toast').length, 0, t.d.getElementById('toast-region').innerHTML);
+});
+
+test('a read of tasks keeps to the days one read may ask for, and reads the rest after', async () => {
+  // The server says a read may cover 20 days; the days with one task drawn on their own span Sep 10 to Oct 20.
+  const t = boot('roadmap/p1?scale=months', { prepare: D => {
+    D.roadmap.limits = { ...D.roadmap.limits, days: 20 };
+    for (const id of ['bir-055', 'bir-052', 'bir-077', 'bir-076']) delete D.roadmap.marks[id];
+  } });
+  await settle(); await settle();
+  const reads = dayReads(t).filter(read => read.marks), span = read => (Date.parse(read.to) - Date.parse(read.from)) / 86400000;
+  assert(reads.length >= 2 && reads.every(read => span(read) < 20), JSON.stringify(reads));
+  for (const day of ['2026-09-10', '2026-09-18', '2026-10-06', '2026-10-20']) assert(reads.some(read => read.from <= day && day <= read.to), day);
+});
+
+test('a mark whose task couldn\'t load says so and lists its task when pressed, and loads with a later scroll', async () => {
+  let clock = NOW, failing = true;
+  const asked = [];
+  const t = boot('roadmap/p1?scale=months', { actions: true, api: { serverNow: () => clock }, prepare: D => { delete D.roadmap.marks['bir-076']; }, reads: {
+    roadmapDays: async (_projectId, days) => { asked.push(days); if (failing) throw new ApiError('Connection lost', { code: 'network_error' }); return { stale: false, marked: { from: days.from, to: days.to } }; },
+    roadmapList: async () => ({ items: [t.D.tasks.find(task => task.id === 'BIR-076')], total: 1 }),
+  } });
+  await settle();
+  const ring = () => lane(t.d, 't4').querySelector('[data-list="plans"][data-from="2026-10-20"]');
+  assert.deepEqual([ring().getAttribute('aria-label'), ring().querySelector('.rt-tag-failed')?.textContent, ring().classList.contains('rt-pending')], ['1 planned task, due Oct 20, its task couldn’t load', 'Couldn’t load', false]);
+  ring().click(); await tick();
+  assert.deepEqual([...t.d.querySelectorAll('#roadmap-list .tid')].map(el => el.textContent), ['BIR-076'], 'a press lists its task');
+  t.A.closeOverlays?.();
+  clock += 3000; failing = false;
+  await scrollBy(t, 10);
+  assert(asked.length >= 2);
+  assert.equal(ring().getAttribute('aria-label'), '1 planned task, due Oct 20, loading', 'asked again, it loads');
 });
 
 test('a day with one task the lanes don\'t hold yet shows a mark that says so, with a bar for a plan\'s title, and the view reads the tasks of the days it draws', async () => {

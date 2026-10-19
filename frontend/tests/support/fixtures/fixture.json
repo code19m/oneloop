@@ -694,6 +694,11 @@
         "block": null,
         "day": "2026-09-10"
       }
+    },
+    "limits": {
+      "days": 400,
+      "marks": 400,
+      "changeDays": 3660
     }
   },
   "tasks": [

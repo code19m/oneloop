@@ -445,10 +445,12 @@ test('a live patch of a card that the tab is moving never puts the card back',as
 /** Work in progress of track t1's own work. */
 const open=(id)=>({...task(id,'in_progress'),trackId:'t1',epicId:null});
 /** A day of t1's own work with one done task. */
-const doneDay=(from,id)=>({from,to:from,sections:[{trackId:'t1',epicId:null,done:[1],marks:[{id,taskKey:`BIR-${id}`,title:id,status:'done',completedAt:1_790_000_000}]}]});
+const doneDay=(from,id)=>({from,to:from,sections:[{trackId:'t1',epicId:null,done:[1],marks:[{id,taskKey:`BIR-${id}`,title:id,status:'done',completedAt:1_790_000_000}]}],marked:{from,to:from}});
+/** What one read of the lanes may ask for, as the server says. */
+const limits={days:400,marks:400,changeDays:3660};
 /** A Roadmap read of `p1`: its lanes with one task in progress, its counts, and the days of `window`. */
 const roadmapRead=(window={from:'2026-06-01',to:'2027-03-01'})=>({projectId:'p1',tracks:[],epics:[],milestones:[],lanes:{sections:[{trackId:'t1',epicId:null,planning:0,inProgress:1,inReview:0,done:9}],overdue:0,firstDay:'2025-01-01',lastDay:null,
-  open:[open('open')],late:[],days:{...window,sections:[]}}});
+  open:[open('open')],late:[],days:{...window,sections:[]},limits}});
 
 test('a live Roadmap read reads the days the view shows, in one read, however many reads of days the lanes took',async()=>{
   const data=createLegacyData(),lanes=[],days=[];
@@ -459,7 +461,7 @@ test('a live Roadmap read reads the days the view shows, in one read, however ma
   const reads=createReadController({data,api});
   await reads.roadmap('p1');
   assert.deepEqual([lanes,data.roadmap.window],[[null],{from:'2026-06-01',to:'2027-03-01'}],'first, the days the Roadmap opens with');
-  for(const from of ['2026-05-31','2026-05-30'])assert.equal((await reads.roadmapDays('p1',{from,to:from,anchor:'2026-07-01',marks:400})).stale,false);
+  for(const from of ['2026-05-31','2026-05-30'])assert.deepEqual(await reads.roadmapDays('p1',{from,to:from,anchor:'2026-07-01',marks:400}),{stale:false,marked:{from,to:from}},'with the days whose tasks all came');
   assert.deepEqual([data.roadmap.window,Object.keys(data.roadmap.marks)],[{from:'2026-05-30',to:'2027-03-01'},['done-1','done-2']]);
   // The view now shows late May to July.
   data.roadmap.shown={from:'2026-05-30',to:'2026-07-31',anchor:'2026-07-01'};
@@ -503,7 +505,7 @@ test('a change made elsewhere reads only the tasks it named, with the lanes\' co
 test('a change that took a task the lanes didn\'t hold out of a section reads that section\'s days again, once',async()=>{
   const data=createLegacyData(),asked=[];
   const counts=(own,other)=>[{trackId:'t1',epicId:null,planning:0,inProgress:1,inReview:0,done:own},{trackId:'t2',epicId:null,planning:0,inProgress:0,inReview:0,done:other}];
-  const lanesOf=(sections,extra)=>({projectId:'p1',tracks:[],epics:[],milestones:[],lanes:{sections,overdue:0,firstDay:null,lastDay:null,open:[],late:[],days:{from:'2026-06-01',to:'2027-03-01',sections:[]},...extra}});
+  const lanesOf=(sections,extra)=>({projectId:'p1',tracks:[],epics:[],milestones:[],lanes:{sections,overdue:0,firstDay:null,lastDay:null,open:[],late:[],days:{from:'2026-06-01',to:'2027-03-01',sections:[]},limits,...extra}});
   const answers=[lanesOf(counts(9,3),{open:[open('open')]}),lanesOf(counts(10,2),{tasks:[{...task('x','done'),trackId:'t1',epicId:null}]}),lanesOf(counts(10,1),{tasks:[]})];
   const reads=createReadController({data,api:{roadmapLanes:async(_project,lanes)=>{asked.push(lanes);return answers[asked.length-1];}}});
   await reads.roadmap('p1');

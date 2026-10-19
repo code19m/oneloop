@@ -266,13 +266,14 @@ export const NAMED_TASKS_LIMIT = 50;
  * @typedef {{done:number,plans:number,blocked:number}} DayCounts
  * @typedef {{internalId:string,id:string,projectId:string,trackId:string,epicId:string|null,title:string,state:string,deadline:string|null,startedAt:number|null,completedAt:number|null,assignees:string[],block:{}|null,day:string|null}} RoadmapMark
  * @typedef {{from:string,to:string,anchor?:string,apart?:number}} RoadmapDaysWanted
- * @typedef {{projectId:string,window:{from:string,to:string},shown:RoadmapDaysWanted|null,sections:Record<string,StatusCounts>,trackCounts:Record<string,StatusCounts>,overdue:number,firstDay:string|null,lastDay:string|null,open:string[],late:RoadmapMark[],days:Record<string,Record<string,DayCounts>>,marks:Record<string,RoadmapMark>}} RoadmapLanes
+ * @typedef {{projectId:string,window:{from:string,to:string},shown:RoadmapDaysWanted|null,sections:Record<string,StatusCounts>,trackCounts:Record<string,StatusCounts>,overdue:number,firstDay:string|null,lastDay:string|null,open:string[],late:RoadmapMark[],days:Record<string,Record<string,DayCounts>>,marks:Record<string,RoadmapMark>,limits:{days:number,marks:number,changeDays:number}}} RoadmapLanes
  * What the Roadmap's lanes draw and count. `open` is the work in progress
  * they draw, which `data.tasks` holds. `days` counts each section's done
  * tasks and dated plans by day for the days of `window`, and `marks` holds,
  * by ID, the task of a day that has one, as far as the reads gave them.
  * `shown` is the days the view shows, with some to spare, which a read of
- * the lanes asks for again. `sections` counts each track's own work, keyed
+ * the lanes asks for again, and `limits` what one read may ask for, as the
+ * server says. `sections` counts each track's own work, keyed
  * `trackId/`, and each epic, keyed `trackId/epicId`.
  */
 
@@ -314,7 +315,7 @@ function replaceRoadmapLanes(data, projectId, timeline) {
   /** @type {RoadmapLanes} */
   const lanes={
     projectId,window:{from:timeline.days.from,to:timeline.days.to},shown:previous?.shown??null,
-    open:timeline.open.map((/** @type {{id:string}} */ view)=>view.id),late:[],days:{},marks:{},
+    open:timeline.open.map((/** @type {{id:string}} */ view)=>view.id),late:[],days:{},marks:{},limits:timeline.limits,
     ...laneCounts(timeline),
   };
   data.roadmap=lanes;

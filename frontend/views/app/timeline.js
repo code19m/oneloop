@@ -23,7 +23,9 @@ const PAD = 8, SECTION_GAP = 8;
 const BOX_PAD = 12, BOX_FOOT = 4;
 const DOT = 6, RING = 12, HIT = 20, BAR_HIT = 20;
 /** Titles stop at this width; a title shortened below LABEL_MIN is left out (its card has it). */
-const TITLE_MAX = 240, LABEL_MIN = 100, PENDING_TITLE = 64;
+const TITLE_MAX = 240, LABEL_MIN = 100;
+/** What a plan's ring says in place of a title that couldn't load. */
+const UNLOADED = 'Couldn’t load';
 /** Bars a section shows before "+N in progress". */
 const MAX_BARS = 3;
 /** A bar is never shorter than this; without a deadline it fades out over OPEN_FADE; a late end is at least LATE_MIN. */
@@ -312,7 +314,7 @@ function layoutSection(section, ppd, now) {
     const pending = mark.type === 'plannedCount' && mark.group.count === 1;
     if (mark.type !== 'planned' && !pending) return;
     const room = (onLine[index + 1]?.box[0] ?? Infinity) - 8 - (mark.box[1] + 8);
-    const width = pending ? PENDING_TITLE : titleWidth(mark.item.task);
+    const width = pending ? textWidth(UNLOADED, TITLE_FONT) : titleWidth(mark.item.task);
     if (room >= Math.min(width, LABEL_MIN)) mark.title = Math.min(width, room);
   });
   // Work in progress: a row each.
@@ -404,7 +406,7 @@ export function setTabStop(body, key) {
   if (stop && stop.tabIndex !== 0) stop.tabIndex = 0;
 }
 
-function markHtml(laid, mark) {
+function markHtml(laid, mark, unloaded) {
   const y = rowMid(laid, mark.row), boxed = laid.section.epic ? ' rt-in-box' : '';
   if (mark.type === 'done' || mark.type === 'planned') {
     const item = mark.group ? mark.group.items[0] : mark.item, task = item.task, x = mark.x, done = mark.type === 'done';
@@ -423,12 +425,13 @@ function markHtml(laid, mark) {
     const spoken = count === 1 ? (done ? `1 done task, ${span}` : `1 planned task, due ${span}`) : `${count} ${done ? 'done' : 'planned'} tasks, ${span}`;
     const name = `${count} ${done ? 'done' : 'due'} · ${span}`, opens = (label) => `data-span="${esc(name)}" data-nav="${esc(key)}" ${TAB} aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(label)}"`;
     // One task the lanes don't hold yet: its dot or ring, with a bar where a plan's title goes, until it
-    // loads; meanwhile it lists its task.
+    // loads, or words that say it couldn't; meanwhile it lists its task.
     if (count === 1) {
-      const cls = ['rt-mark', 'rt-pending', done ? 'rt-done' : 'rt-planned', blocked ? 'rt-blocked' : '', late ? 'rt-late' : ''].filter(Boolean).join(' ') + boxed;
+      const failed = unloaded(items[0].day);
+      const cls = ['rt-mark', failed ? 'rt-unloaded' : 'rt-pending', done ? 'rt-done' : 'rt-planned', blocked ? 'rt-blocked' : '', late ? 'rt-late' : ''].filter(Boolean).join(' ') + boxed;
       const face = done ? '<span class="rt-dot" aria-hidden="true"></span>' : late ? lateIcon(RING) : blocked ? BLOCKED_SVG : RING_SVG;
-      const title = mark.title ? `<span class="rt-tag rt-tag-pending" data-tag="${esc(numbers(extent[1] + 8, extent[1] + 8 + mark.title, mark.x))}" data-least="${esc(numbers(mark.title))}" style="left:${px(extent[1] + 8 - (mark.x - HIT / 2))};width:${px(mark.title)}" aria-hidden="true"></span>` : '';
-      return `<button type="button" class="${cls}" ${list} ${opens(`${spoken}, loading`)} style="left:${px(mark.x - HIT / 2)};top:${px(y - HIT / 2)}">${face}${title}</button>`;
+      const title = mark.title ? `<span class="rt-tag ${failed ? 'rt-tag-failed' : 'rt-tag-pending'}" data-tag="${esc(numbers(extent[1] + 8, extent[1] + 8 + mark.title, mark.x))}" data-least="${esc(numbers(mark.title))}" style="left:${px(extent[1] + 8 - (mark.x - HIT / 2))};width:${px(mark.title)}" aria-hidden="true">${failed ? UNLOADED : ''}</span>` : '';
+      return `<button type="button" class="${cls}" ${list} ${opens(`${spoken}, ${failed ? 'its task couldn’t load' : 'loading'}`)} style="left:${px(mark.x - HIT / 2)};top:${px(y - HIT / 2)}">${face}${title}</button>`;
     }
     const tone = late ? ' rt-late' : blocked ? ' rt-blocked' : '';
     return `<button type="button" class="rt-count ${done ? 'rt-count-done' : 'rt-count-planned'}${tone}${boxed}" ${list} ${opens(spoken)} style="left:${px(extent[0])};top:${px(y - 9)};width:${px(extent[1] - extent[0])}">${count}</button>`;
@@ -544,7 +547,7 @@ export const drawnIn = (mark, shown) => { const [from, to] = markSpan(mark); ret
  * piece that stays the same stays in the page.
  * @returns {[string, string][]}
  */
-export function lanePieces(lane, layout, ppd, now, focus, shown = { from: -Infinity, to: Infinity }) {
+export function lanePieces(lane, layout, ppd, now, focus, shown = { from: -Infinity, to: Infinity }, unloaded = () => false) {
   if (layout.blank) return [['empty', `<div class="rt-empty-lane">${lane.total ? 'No dated work' : 'No tasks yet'}</div>`]];
   const nowX = now * ppd, near = (from, to) => to >= shown.from && from <= shown.to;
   const pieces = [];
@@ -558,7 +561,7 @@ export function lanePieces(lane, layout, ppd, now, focus, shown = { from: -Infin
       if (past > 0) pieces.push([`s:${key}`, `<span class="rt-spine" aria-hidden="true" style="left:${px(from)};width:${px(past)};top:${top}"></span>`]);
       if (ahead > 0) pieces.push([`a:${key}`, `<span class="rt-spine rt-spine-ahead" aria-hidden="true" style="left:${px(Math.max(from, nowX))};width:${px(ahead)};top:${top}"></span>`]);
     }
-    for (const mark of byPlace(laid.marks)) if (mark.key === focus || drawnIn(mark, shown)) pieces.push([mark.key, markHtml(laid, mark)]);
+    for (const mark of byPlace(laid.marks)) if (mark.key === focus || drawnIn(mark, shown)) pieces.push([mark.key, markHtml(laid, mark, unloaded)]);
   }
   return pieces;
 }

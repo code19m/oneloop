@@ -342,7 +342,7 @@ const markView = (id, extra) => ({ id, taskKey:id.toUpperCase(), title:id, ...ex
  * counts by day and the task of a day with one.
  */
 const lanes = (task) => ({
-  overdue:1, firstDay:'2025-01-01', lastDay:'2027-05-01',
+  overdue:1, firstDay:'2025-01-01', lastDay:'2027-05-01', limits:{ days:400, marks:400, changeDays:3660 },
   sections:[{ trackId:'tr1', epicId:null, planning:3, inProgress:1, inReview:0, done:2 }, { trackId:'tr1', epicId:'e1', planning:1, inProgress:0, inReview:0, done:5 }],
   open:[task], late:[markView('late', { trackId:'tr1', epicId:'e1', status:'planning', deadline:'2026-09-01', blocked:true })],
   days:{ from:'2026-09-01', to:'2026-09-10', sections:[{ trackId:'tr1', epicId:'e1', done:[0, 2, 0, 1], plans:[1], blocked:[1],
@@ -357,7 +357,7 @@ test('a Roadmap bootstrap gives the lanes their work in progress, the counts of 
   hydrateLegacyData(data, value);
   const late = mark('late', { state:'planning', deadline:'2026-09-01', block:{}, day:'2026-09-01' });
   assert.deepEqual(data.roadmap, {
-    projectId:'p1', window:{ from:'2026-09-01', to:'2026-09-10' }, shown:null, open:['opaque-task'], late:[late],
+    projectId:'p1', window:{ from:'2026-09-01', to:'2026-09-10' }, shown:null, open:['opaque-task'], late:[late], limits:{ days:400, marks:400, changeDays:3660 },
     sections:{ 'tr1/':{ planning:3, progress:1, review:0, done:2 }, 'tr1/e1':{ planning:1, progress:0, review:0, done:5 } },
     trackCounts:{ tr1:{ planning:4, progress:1, review:0, done:7 } }, overdue:1, firstDay:'2025-01-01', lastDay:'2027-05-01',
     days:{ 'tr1/e1':{ '2026-09-01':day(0, 1, 1), '2026-09-02':day(2), '2026-09-04':day(1) } },

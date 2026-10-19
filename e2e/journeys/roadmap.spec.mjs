@@ -229,6 +229,27 @@ test('a done dot, a plan\'s ring and Overdue\'s late plan open their task with a
   await expect(page.locator('.tp-title')).toHaveValue('Missed plan');
 });
 
+test('at Quarters, the titles of plans spread over more than a year load, in reads the server allows', async ({ page, instance }) => {
+  const { project, track } = instance.projects[0];
+  const plans = [];
+  for (const offset of [-150, -40, 60, 160, 260, 350]) {
+    plans.push((await command(instance.api, 'task.create', { projectId: project.id, trackId: track.id, title: `Plan ${offset}`, deadline: day(offset) })).entities[0]);
+  }
+  const spans = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.endsWith('/roadmap/days')) spans.push((Date.parse(url.searchParams.get('to')) - Date.parse(url.searchParams.get('from'))) / 86_400_000);
+  });
+  await openApp(page, instance, `roadmap/${project.id}?scale=quarters`);
+  const lane = laneOf(page, track.name);
+  for (const plan of plans) await expect(lane.locator(`.rt-planned[data-task="${plan.taskKey}"]`)).toHaveCount(1);
+  await expect(lane.locator('.rt-pending, .rt-unloaded')).toHaveCount(0);
+  expect(spans.length).toBeGreaterThan(0);
+  expect(spans.every(span => span < 400)).toBe(true);
+  await expect(page.locator('.connection-notice')).toHaveCount(0);
+  await expect(page.locator('#toast-region .toast')).toHaveCount(0);
+});
+
 test('a track\'s name keeps clear of its grip and ⋮ on one line, and shows in full in its tip', async ({ page, instance }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const { project } = instance.projects[0], long = 'Platform and infrastructure for every region and partner';
