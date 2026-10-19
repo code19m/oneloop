@@ -528,8 +528,8 @@ function drawLanes(view) {
   // Focus in an open list goes back to its mark if that is drawn again, which shows the list again.
   const inList = !!document.getElementById('roadmap-list')?.contains(active), listed = listAnchor()?.dataset.nav;
   // Days whose tasks couldn't load, or all of them while reads fail: their marks say so, and list their task when pressed.
-  const asked = askedReads.get(roadmapLanes()), unloaded = asked?.unloaded ?? [];
-  const failed = (day) => !!asked?.failed || unloaded.some((range) => range.from <= day && day <= range.to);
+  const lanes = roadmapLanes(), unloaded = (lanes && askedReads.get(lanes)?.unloaded) ?? [], failing = !!lanes && retriesOf(lanes.projectId).failed;
+  const failed = (day) => failing || unloaded.some((range) => range.from <= day && day <= range.to);
   view.lanes.forEach((entry, i) => {
     const { lane, body, data } = entry;
     if (!body) return;
@@ -968,23 +968,33 @@ function windowScroll(sc, { from, to }, ppd, { reserve, ahead }, now) {
 
 /**
  * The reads asked for these lanes: the days asked for, the days whose tasks
- * came, the days whose tasks couldn't load, whether one is loading, and,
- * after reads failed, how many in a row, when the next may go and its timer.
- * While one loads the view asks for nothing more. After one failed it asks
- * again, in the background, once the wait is over (RETRY_AFTER) and the tab
- * shows, or at once when the connection really comes back; a scroll, a zoom
- * or a change made elsewhere asks no sooner. So a failing or busy server
- * gets no stream of reads.
+ * came, the days whose tasks couldn't load, and whether one is loading.
+ * While one loads the view asks for nothing more.
  */
 const askedReads = new WeakMap();
 /** How long the view waits to try a failed read again: longer each time one fails in a row. */
 const RETRY_AFTER = [5000, 15000, 60000];
+/**
+ * Each project's failed reads of days: whether the last failed, how many
+ * failed in a row, when the next may go, and its timer. A project keeps them
+ * when a reload replaces its lanes. After a read failed the view asks again
+ * once the wait is over (RETRY_AFTER) and the tab shows, or at once when the
+ * connection really comes back; a scroll, a zoom, a change made elsewhere or
+ * a reload asks no sooner. So a failing or busy server gets no stream of reads.
+ */
+const retries = new Map();
 
 /** The reads asked for `lanes`, kept with them. */
 function readsOf(lanes) {
-  const asked = askedReads.get(lanes) ?? { busy: false, days: new Set(), marked: [], unloaded: [], failed: false, failures: 0, retryAt: 0, timer: 0, waiting: false };
+  const asked = askedReads.get(lanes) ?? { busy: false, days: new Set(), marked: [], unloaded: [] };
   askedReads.set(lanes, asked);
   return asked;
+}
+
+/** Project `projectId`'s failed reads of days. */
+function retriesOf(projectId) {
+  if (!retries.has(projectId)) retries.set(projectId, { projectId, failed: false, failures: 0, retryAt: 0, timer: 0, waiting: false });
+  return retries.get(projectId);
 }
 
 /**
@@ -1009,8 +1019,8 @@ function loadMore(view, { due = false } = {}) {
   // What a read of the lanes asks for again: these days, as many as one read covers, with the tasks of
   // the days drawn on their own at this zoom.
   lanes.shown = { from: date(Math.max(from, middle - most.days / 2)), to: date(Math.min(to, middle + most.days / 2 - 1)), anchor, cell };
-  const asked = readsOf(lanes);
-  if (asked.busy || asked.failed && !due && runtime().now() < asked.retryAt) return;
+  const asked = readsOf(lanes), retry = retriesOf(lanes.projectId);
+  if (asked.busy || retry.failed && !due && runtime().now() < retry.retryAt) return;
   // A read of days gives their counts; one of a stretch's tasks, the tasks of the days drawn on their own there.
   const ask = (first, last, marks = null) => {
     const days = { from: date(first), to: date(last), ...(marks ? { anchor: marks, marks: most.marks, cell } : {}) }, key = `${days.from}/${days.to}`;
@@ -1018,12 +1028,12 @@ function loadMore(view, { due = false } = {}) {
     asked.busy = true;
     if (!marks) asked.days.add(key);
     // Once it lands, the view goes on with what it still lacks; days a change made elsewhere overtook come again.
-    // A read tried again goes in the background, so a server that sheds it isn't taken for a lost connection.
-    runtime().roadmapDays(days, { background: asked.failed }).then((result) => {
+    runtime().roadmapDays(days).then((result) => {
       // Marks that said their task couldn't load, as all do while reads fail, say what they say now.
-      let redraw = asked.failed;
-      clearTimeout(asked.timer);
-      Object.assign(asked, { busy: false, failed: false, failures: 0, retryAt: 0, timer: 0, waiting: false });
+      let redraw = retry.failed;
+      clearTimeout(retry.timer);
+      asked.busy = false;
+      Object.assign(retry, { failed: false, failures: 0, retryAt: 0, timer: 0, waiting: false });
       if (result?.stale) { if (!marks) asked.days.delete(key); }
       else if (marks) {
         // The days whose tasks all came are read, at least the one asked about; the others are asked for again.
@@ -1037,9 +1047,10 @@ function loadMore(view, { due = false } = {}) {
       loadMore(view); returnFocus(view);
     }, () => {
       // The page says it couldn't refresh the view; the days come again once the wait is over.
-      const wait = RETRY_AFTER[Math.min(asked.failures, RETRY_AFTER.length - 1)];
-      clearTimeout(asked.timer);
-      Object.assign(asked, { busy: false, failed: true, failures: asked.failures + 1, retryAt: runtime().now() + wait, timer: setTimeout(() => retryDue(asked), wait) });
+      const wait = RETRY_AFTER[Math.min(retry.failures, RETRY_AFTER.length - 1)];
+      clearTimeout(retry.timer);
+      asked.busy = false;
+      Object.assign(retry, { failed: true, failures: retry.failures + 1, retryAt: runtime().now() + wait, timer: setTimeout(() => retryDue(retry), wait) });
       if (marks) asked.unloaded.push({ from: days.from, to: days.to });
       else asked.days.delete(key);
       if (mountedRoadmap === view) { drawLanes(view); returnFocus(view); }
@@ -1062,15 +1073,14 @@ function loadMore(view, { due = false } = {}) {
 }
 
 /** The wait after a failed read is over: try it again, once the tab shows. */
-function retryDue(asked) {
-  asked.timer = 0;
-  if (document.hidden) { asked.waiting = true; return; }
-  const lanes = roadmapLanes();
-  if (mountedRoadmap?.sc.isConnected && lanes && askedReads.get(lanes) === asked) loadMore(mountedRoadmap, { due: true });
+function retryDue(retry) {
+  retry.timer = 0;
+  if (document.hidden) { retry.waiting = true; return; }
+  if (mountedRoadmap?.sc.isConnected && roadmapLanes()?.projectId === retry.projectId) loadMore(mountedRoadmap, { due: true });
 }
 document.addEventListener('visibilitychange', () => {
-  const lanes = roadmapLanes(), asked = lanes && askedReads.get(lanes);
-  if (!document.hidden && asked?.waiting) { asked.waiting = false; retryDue(asked); }
+  const projectId = roadmapLanes()?.projectId, retry = projectId && retries.get(projectId);
+  if (!document.hidden && retry?.waiting) { retry.waiting = false; retryDue(retry); }
 });
 // The connection really came back: a read that failed is tried again at once.
 recovery.whenReconnected(() => { if (mountedRoadmap?.sc.isConnected) loadMore(mountedRoadmap, { due: true }); });

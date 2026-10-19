@@ -454,6 +454,16 @@ const limits={days:400,marks:400,changeDays:3660};
 const roadmapRead=(window={from:'2026-06-01',to:'2027-03-01'})=>({projectId:'p1',tracks:[],epics:[],milestones:[],lanes:{sections:[{trackId:'t1',epicId:null,planning:0,inProgress:1,inReview:0,done:9}],overdue:0,firstDay:'2025-01-01',lastDay:null,
   open:[open('open')],late:[],days:{...window,sections:[]},limits}});
 
+test('the Roadmap reads its lanes and their days in the background, as the page makes them itself',async()=>{
+  const data=createLegacyData(),sent=[];
+  const reads=createReadController({data,api:{
+    roadmapLanes:async(_project,_window,options)=>{sent.push(['lanes',options.background]);return roadmapRead();},
+    roadmapDays:async(_project,days,options)=>{sent.push(['days',options.background]);return {...days,sections:[]};},
+  }});
+  await reads.roadmap('p1');await reads.patchRoadmap('p1',['one']);await reads.roadmapDays('p1',{from:'2026-05-01',to:'2026-05-31'});
+  assert.deepEqual(sent,[['lanes',true],['lanes',true],['days',true]]);
+});
+
 test('a live Roadmap read reads the days the view shows, in one read, however many reads of days the lanes took',async()=>{
   const data=createLegacyData(),lanes=[],days=[];
   const api={

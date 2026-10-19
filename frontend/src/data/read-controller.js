@@ -233,7 +233,8 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
     return read(`roadmap:${projectId}`,'',!!options.background,async token=>{
       try{
         const lanes=data.roadmap?.projectId===projectId?data.roadmap:null,window=options.window??lanes?.shown??null;
-        const projection=await answerOf(token,()=>api.roadmapLanes(projectId,window,{signal:token.signal,background:options.background}));
+        // The page reads the lanes, their days and titles itself, as it draws them: never at a person's request.
+        const projection=await answerOf(token,()=>api.roadmapLanes(projectId,window,{signal:token.signal,background:true}));
         if(!current(token))return {stale:true};
         replaceRoadmap(data,projection);onRoadmap(projection);return {stale:false};
       }catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
@@ -268,7 +269,7 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
         const before=lanes.sections;
         // The longest overdue come again when a named task is among them: it may have left them.
         const late=named.some((id)=>lanes.late.some((task)=>task.internalId===id))?{late:true}:{};
-        const projection=await answerOf(token,()=>api.roadmapLanes(projectId,{...lanes.window,marks:0,tasks:named,sections,...late},{signal:token.signal,background:options.background}));
+        const projection=await answerOf(token,()=>api.roadmapLanes(projectId,{...lanes.window,marks:0,tasks:named,sections,...late},{signal:token.signal,background:true}));
         // A newer read of the lanes, such as a bootstrap's, has these changes already.
         if(!current(token)||data.roadmap!==lanes)return {stale:true};
         replaceRoadmap(data,projection,named,sections);onRoadmap(projection);
@@ -302,13 +303,13 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
    * read of the lanes drops it.
    * @param {string} projectId @param {{from:string,to:string,anchor?:string,marks?:number}} days
    */
-  async function roadmapDays(projectId,days,options={}){
+  async function roadmapDays(projectId,days){
     const lanes=data.roadmap;
     if(lanes?.projectId!==projectId)return {stale:true};
     const changes=changesOf.get(lanes);
     return read(`roadmap:${projectId}:days`,JSON.stringify(days),false,async token=>{
       try{
-        const read=await api.roadmapDays(projectId,days,{signal:token.signal,background:options.background});
+        const read=await api.roadmapDays(projectId,days,{signal:token.signal,background:true});
         if(!current(token)||data.roadmap!==lanes||changesOf.get(lanes)!==changes)return {stale:true};
         appendRoadmapDays(data,projectId,read);onRoadmap(lanes);return {stale:false,marked:read.marked??null};
       }catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}

@@ -699,11 +699,11 @@ test('a view within the days the lanes hold reads nothing, also as it scrolls in
   assert.deepEqual(t.reads.calls.filter(([name]) => name === 'roadmap'), []);
 });
 
-test('a view that reaches before the days the lanes hold reads only the days next to them, once, and one that failed is asked again, in the background, once its wait is over', async () => {
+test('a view that reaches before the days the lanes hold reads only the days next to them, once, and one that failed is asked again once its wait is over', async () => {
   const asked = [];
   let clock = NOW, failing = true;
-  const t = boot('roadmap/p1?scale=months', { api: { serverNow: () => clock }, prepare: heldFromSep10, reads: { roadmapDays: async (projectId, days, options) => {
-    asked.push({ projectId, ...days, background: !!options?.background });
+  const t = boot('roadmap/p1?scale=months', { api: { serverNow: () => clock }, prepare: heldFromSep10, reads: { roadmapDays: async (projectId, days) => {
+    asked.push({ projectId, ...days });
     if (failing) throw new ApiError('invalid query: must be within 400 days of from', { status: 400, code: 'validation_failed', details: { field: 'to', message: 'must be within 400 days of from' } });
     return { stale: false };
   } } });
@@ -719,11 +719,11 @@ test('a view that reaches before the days the lanes hold reads only the days nex
   assert.equal(asked.length, 1, 'a scroll right after asks nothing');
   clock += 3000; await scrollBy(t, -10);
   assert.equal(asked.length, 1, 'nor one before the wait of five seconds is over');
-  // A scroll after it asks again, in the background, and the notice goes once the days come.
+  // A scroll after it asks again, and the notice goes once the days come.
   clock += 3000; failing = false;
   await scrollBy(t, -10);
   assert.equal(asked.length, 2);
-  assert.deepEqual([asked[1].to, asked[1].background, t.d.querySelector('.connection-notice')], ['2026-09-09', true, null]);
+  assert.deepEqual([asked[1].to, t.d.querySelector('.connection-notice')], ['2026-09-09', null]);
 });
 
 test('while reads fail, every mark whose task hasn\'t come says it couldn\'t load, and loads once a read comes again', async () => {
@@ -767,9 +767,9 @@ test('a read that failed is tried again at once when the live updates or the net
 
 /**
  * Boot the Roadmap with a days read that fails with `error()` while
- * `failing()` says so. It returns the reads (whether each went in the
- * background), the waits for a failed read to go again, held until `due()`
- * runs the next, and how many "Connection restored" toasts showed.
+ * `failing()` says so. It returns the reads, the waits for a failed read to
+ * go again, held until `due()` runs the next, and how many "Connection
+ * restored" toasts showed.
  */
 function failingDays(failing, error, { setup, ...options } = {}) {
   const asked = [], waits = [];
@@ -779,17 +779,17 @@ function failingDays(failing, error, { setup, ...options } = {}) {
       w.setTimeout = (fn, ms, ...rest) => [5000, 15_000, 60_000].includes(ms) ? (waits.push({ fn, ms }), {}) : timer(fn, ms, ...rest);
       setup?.(w);
     },
-    reads: { roadmapDays: async (_projectId, days, read) => { asked.push(!!read?.background); if (failing()) throw error(); return { stale: false }; } },
+    reads: { roadmapDays: async (_projectId, days) => { asked.push(days); if (failing()) throw error(); return { stale: false }; } },
   });
   const due = async () => { const wait = waits.shift(); wait.fn(); await settle(); await settle(); return wait.ms; };
   const toasts = () => [...t.d.querySelectorAll('#toast-region .toast')].filter(el => el.textContent.includes('Connection restored')).length;
   return { t, asked, waits, due, toasts };
 }
 
-test('a server shedding load gets the failed read again after 5, 15 and 60 seconds, in the background, and no toast for each request that works', async () => {
+test('a server shedding load gets the failed read again after 5, 15 and 60 seconds, also across a reload of the lanes, and no toast for each request that works', async () => {
   const { t, asked, waits, due, toasts } = failingDays(() => true, () => new ApiError('The server is busy', { status: 503 }));
   await settle();
-  assert.deepEqual(asked, [false]);
+  assert.equal(asked.length, 1);
   // Other requests still work: none of them is a connection that came back.
   for (let step = 0; step < 5; step++) {
     t.w.Recovery.observeResponse({ ok: false, error: new ApiError('The server is busy', { status: 503 }), background: false, requestContext: t.w.Recovery.requestContext() });
@@ -797,11 +797,14 @@ test('a server shedding load gets the failed read again after 5, 15 and 60 secon
     await settle(); await settle();
   }
   t.A.refreshRoadmap(); await settle();
-  assert.deepEqual(asked, [false], 'no read goes again before its wait is over, nor with a change made elsewhere');
-  const waited = [];
-  for (let attempt = 0; attempt < 4; attempt++) waited.push(await due());
+  assert.equal(asked.length, 1, 'no read goes again before its wait is over, nor with a change made elsewhere');
+  const waited = [await due()];
+  // A reload brings new lanes, as after a reconnect: the wait goes on where it was.
+  t.D.roadmap = { ...t.D.roadmap }; t.A.refreshRoadmap(); await settle();
+  assert.equal(asked.length, 2, 'the reload reads nothing again');
+  for (let attempt = 0; attempt < 3; attempt++) waited.push(await due());
   assert.deepEqual(waited, [5000, 15_000, 60_000, 60_000]);
-  assert.deepEqual(asked, [false, true, true, true, true], 'each read tried again goes in the background');
+  assert.equal(asked.length, 5);
   assert.equal(waits.length, 1, 'one wait at a time');
   assert(toasts() <= 1, `${toasts()} toasts`);
 });
