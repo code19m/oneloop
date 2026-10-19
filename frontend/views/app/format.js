@@ -5,6 +5,7 @@
 import { UIAction, escapeHtml } from '../../src/app/markup.js';
 import { setTrustedHTML } from '../../src/app/trusted-types.js';
 import { formatInstant as formatInstantIn, formatShortInstant } from '../../src/data/time.js';
+import { statusLabel } from '../../src/data/wire.js';
 import { App, D, instanceNow, userById } from './model.js';
 
 export { UIAction };
@@ -42,7 +43,7 @@ export const avatarHtml = (uid, size) => {
   const initial=(u?.name||u?.username||uid||'?').trim()[0]||'?';
   return `<span class="avatar" style="width:${sz}px;height:${sz}px;font-size:${Math.round(sz * 0.55)}px">${esc(initial.toUpperCase())}</span>`;
 };
-export const STATUS = { planning: 'Planning', progress: 'In Progress', review: 'In Review', done: 'Done' };
+export const STATUS = Object.fromEntries(['planning', 'progress', 'review', 'done'].map((status) => [status, statusLabel(status)]));
 export const stIcon = (state) => I['st_' + state] || '';
 
 // ---------- icons ----------
