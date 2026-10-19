@@ -554,7 +554,7 @@ function holderOf(layout, place) {
  * The key of the element that shows `key` at this zoom: the same task or
  * epic, or the count a task merged into, or what holds a count's first day.
  */
-function resolveKey(layout, key) {
+export function resolveKey(layout, key) {
   if (!key) return null;
   if (laneOrder(layout).includes(key)) return key;
   if (key.startsWith('t:')) { const task = laneTask(key.slice(2)), place = task && placeOf(task); return place ? holderOf(layout, place) : null; }
@@ -702,7 +702,7 @@ function listRows(list, kind) {
   return list.map((task) => {
     const when = kind === 'done' ? (days.size === 1 ? formatInstant(task.completedAt).slice(11, 16) : dayText(task.completedAt))
       : task.deadline ? (isLate(task) ? `${daysLate(task)}d late` : humanShort(d(task.deadline))) : task.state === 'planning' ? '' : `since ${dayText(startOf(task))}`;
-    return `<li><button type="button" class="rt-pop-row" ${UIAction('openTask', task.id)}>${statusIcon(task)}<span class="tid">${esc(task.id)}</span><span class="rt-pop-title">${esc(task.title)}</span><span class="rt-pop-when${isLate(task) && kind !== 'done' ? ' rt-late-text' : ''}">${esc(when)}</span><span class="rt-pop-who">${esc(firstName(task))}</span></button></li>`;
+    return `<li><button type="button" class="rt-pop-row" data-open="${esc(task.id)}">${statusIcon(task)}<span class="tid">${esc(task.id)}</span><span class="rt-pop-title">${esc(task.title)}</span><span class="rt-pop-when${isLate(task) && kind !== 'done' ? ' rt-late-text' : ''}">${esc(when)}</span><span class="rt-pop-who">${esc(firstName(task))}</span></button></li>`;
   }).join('');
 }
 
@@ -749,6 +749,8 @@ function openList(anchor, { pinned, focusFirst = false }) {
   };
   place();
   UIMotion.enter(el);
+  // A row opens its task; Back then comes to the mark that opened the list.
+  el.addEventListener('click', (event) => { const row = event.target.closest?.('.rt-pop-row[data-open]'); if (row) openFrom(anchor, row.dataset.open); });
   el.addEventListener('pointerenter', () => clearTimeout(LIST.hideTimer));
   el.addEventListener('pointerleave', () => { if (!LIST.pinned) leaveList(); });
   el.addEventListener('keydown', (event) => {
@@ -914,6 +916,49 @@ export function focusTask(sc, task, rail, lanes) {
 }
 
 /**
+ * Open task `id` from the lanes' item `el`. The Roadmap's history entry
+ * keeps the item, so that Back to it can focus it again (focusOpener).
+ */
+function openFrom(el, id) {
+  const track = el.closest('.lane')?.dataset.track;
+  // A browser may refuse many changes in a short time; the task still opens.
+  if (track) try { history.replaceState({ ...history.state, roadmapOpener: { track, key: el.dataset.nav } }, ''); } catch {}
+  App.openTask(id);
+}
+
+/**
+ * Back on the Roadmap's history entry a task opened from: focus the item it
+ * opened from, quietly, drawing it first if it isn't drawn. Once the lanes
+ * hold their work and nothing loads, an item that is gone leaves focus on
+ * its lane's timeline. Focus the person moved elsewhere stays.
+ */
+export function focusOpener(sc, rail, lanes, loading) {
+  const opener = history.state?.roadmapOpener;
+  if (!opener) return;
+  const forget = () => { const rest = { ...history.state }; delete rest.roadmapOpener; try { history.replaceState(rest, ''); } catch {} };
+  const active = document.activeElement;
+  if (active && active !== document.body && !active.matches('.topbar h1')) { forget(); return; }
+  const layout = lanes.layout(opener.track), key = layout && resolveKey(layout, opener.key), el = key && lanes.reveal(opener.track, key);
+  if (el) {
+    forget();
+    quietFocus = true;
+    try { moveFocus(sc, el, rail); } finally { quietFocus = false; }
+    return;
+  }
+  if (loading) return;
+  forget();
+  const body = [...sc.querySelectorAll('.lane[data-track]')].find((lane) => lane.dataset.track === opener.track)?.querySelector('.rt-body');
+  if (body) focusTimeline(body);
+}
+
+/** Put focus on a lane's timeline, as when its focused item is gone. It takes focus only then, so a press on it never does. */
+export function focusTimeline(body) {
+  body.tabIndex = -1;
+  body.addEventListener('blur', () => body.removeAttribute('tabindex'), { once: true });
+  body.focus({ preventScroll: true });
+}
+
+/**
  * Hover, focus, click and keys for the lanes in `sc`. Returns a function
  * that removes them. Arrows move between a lane's items (Left, Right, Home,
  * End), drawing one not drawn yet through `lanes`, and between lanes (Up,
@@ -974,7 +1019,7 @@ export function mountLanes(sc, rail, lanes) {
     if (!target) return;
     clearTimeout(hoverTimer);
     hideEpicTip();
-    if (target.dataset.task) { App.openTask(target.dataset.task); return; }
+    if (target.dataset.task) { openFrom(target, target.dataset.task); return; }
     if (target.matches(CARD)) return;
     if (LIST.anchor === target && LIST.pinned) { closeTimelineList(); return; }
     openList(target, { pinned: true, focusFirst: event.detail === 0 });

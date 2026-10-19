@@ -68,7 +68,8 @@ All notable changes to oneloop are recorded here. The format follows
   says how many tasks it has in progress and planned. **Overdue** with a
   number shows when tasks are late, and steps through them. Every task, epic
   and milestone has the same details on hover and keyboard focus, and the
-  arrow keys move through a lane. Plans without a deadline stay on the Board.
+  arrow keys move through a lane. Back from a task opened there puts focus
+  back where it was opened. Plans without a deadline stay on the Board.
 - The **Roadmap** opens at the scale that fits the recent work, unless you
   chose a scale, and another project opens at its own fit. It loads the days
   around what it shows, and more days as you scroll to them, and draws only

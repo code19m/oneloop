@@ -457,6 +457,8 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 
 /* ---------- a lane's timeline ---------- */
 .rt-body { position: relative; flex: 1; --rt-bg: var(--surface-canvas); }
+/* A lane's timeline has focus only after Back from a task whose mark is gone: its ring stays inside it. */
+.rt-body:focus-visible { outline-offset: -2px; }
 .rt-mark, .rt-count, .rt-bar, .rt-epic-label, .rt-more { margin: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
 .rt-empty-lane { position: sticky; left: calc(var(--rm-rail) + 16px); display: inline-flex; align-items: center; height: 32px; margin: 8px 0 0 16px; font-size: var(--text-sm); color: var(--ink-faint); white-space: nowrap; }
 .rt-loading { position: sticky; left: calc(var(--rm-rail) + 16px); display: flex; flex-direction: column; gap: 8px; width: min(400px, 60vw); margin: 16px 0 0 16px; }

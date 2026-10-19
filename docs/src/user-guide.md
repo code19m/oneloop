@@ -89,7 +89,8 @@ first page you see after you sign in.
 - With the keyboard, Tab reaches each track's grip, its **⋮** menu and its
   timeline. In a timeline, the arrow keys, Home and End move between the
   lane's epics and tasks, Up and Down move to the next lane, and Esc closes a
-  list.
+  list. Back from a task you opened there puts focus back where you opened
+  it, or on its lane's timeline when the task is no longer there.
 - On a phone, each track's name sits above its lane, and the Roadmap opens at
   **Weeks**.
 - Add work with **+ Epic**, **Milestone** and **+ Add track** under the lanes.

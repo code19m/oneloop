@@ -21,8 +21,8 @@ import {
 } from './overlays.js';
 import { announce } from './toasts.js';
 import {
-  closeTimelineList, drawnIn, epicDated, epicStatus, focusTask, headFigure, lanePieces, laneDates, laneEntry, laneFocus, laneModels, refocus,
-  layoutLane, listAnchor, markApart, mountLanes, numbers, placeOfKey, roadmapLanes, roomAfterNow, setStyle, setTabStop, syncLaneEdges, textWidth,
+  closeTimelineList, drawnIn, epicDated, epicStatus, focusOpener, focusTask, focusTimeline, headFigure, lanePieces, laneDates, laneEntry, laneFocus, laneModels, refocus,
+  layoutLane, listAnchor, markApart, mountLanes, numbers, placeOfKey, resolveKey, roadmapLanes, roomAfterNow, setStyle, setTabStop, syncLaneEdges, textWidth,
 } from './timeline.js';
 
 // ---------- roadmap geometry ----------
@@ -544,8 +544,11 @@ function drawLanes(view) {
     if (list) closeTimelineList();
     body.style.minHeight = `${laid.height}px`;
     const find = (key) => [...body.querySelectorAll('[data-nav]')].find((el) => el.dataset.nav === key);
-    if (lane === focusedLane && focus && gone(active)) refocus(find(focus), card || list);
-    else if (list && inList) refocus(find(listed), true);
+    if (lane === focusedLane && gone(active)) {
+      // Focus stays with its task, on its mark or the count it merged into; with neither, on the lane's timeline.
+      const holder = resolveKey(laid, active.dataset.nav);
+      if (holder) refocus(find(holder), card || list); else focusTimeline(body);
+    } else if (list && inList) refocus(find(listed), true);
   });
 }
 
@@ -615,8 +618,32 @@ function patchLanes() {
   // A late task whose days just loaded.
   if (overdueWaiting && focusTask(view.sc, overdueWaiting, RAIL, lanesOf(view))) overdueWaiting = null;
   loadMore(view, { retry: true });
+  returnFocus(view);
   App.refreshCounts();
   return true;
+}
+
+/**
+ * After the Roadmap is drawn again in full, focus goes back to the item
+ * `key` of lane `track`: its mark, or the count it merged into; with
+ * neither, to the lane's timeline. Its card or list shows again if one
+ * showed (`shown`).
+ */
+function keepFocus(track, key, shown) {
+  const view = mountedRoadmap, lanes = view && lanesOf(view), body = view?.lanes.find((entry) => entry.data.track.id === track)?.body;
+  if (!body) return;
+  const layout = lanes.layout(track), holder = layout && resolveKey(layout, key), stop = body.querySelector('[data-nav][tabindex="0"]');
+  const el = holder && (stop?.dataset.nav === holder ? stop : lanes.reveal(track, holder));
+  if (el) refocus(el, shown); else focusTimeline(body);
+}
+
+/**
+ * After Back from a task opened on the Roadmap: focus on the item it opened
+ * from, once the lanes can tell where that is (focusOpener).
+ */
+function returnFocus(view) {
+  const lanes = roadmapLanes();
+  focusOpener(view.sc, RAIL, lanesOf(view), !view.model.ready || !lanes || readsOf(lanes).busy);
 }
 
 /** The header's figures, as the lanes now count them. */
@@ -999,13 +1026,13 @@ function loadMore(view, { retry = false } = {}) {
         // Marks that said their task couldn't load say what they say now.
         if (unloaded.length !== asked.unloaded.length) { asked.unloaded = unloaded; if (mountedRoadmap === view) drawLanes(view); }
       }
-      if (mountedRoadmap === view) loadMore(view);
+      if (mountedRoadmap === view) { loadMore(view); returnFocus(view); }
     }, () => {
       // The page says it couldn't refresh the view; the days come again with the next scroll or change.
       Object.assign(asked, { busy: false, failedAt: runtime().now() });
       if (marks) asked.unloaded.push({ from: days.from, to: days.to });
       else asked.days.delete(key);
-      if (mountedRoadmap === view) drawLanes(view);
+      if (mountedRoadmap === view) { drawLanes(view); returnFocus(view); }
     });
   };
   const held = { from: offset(lanes.window.from), to: offset(lanes.window.to) };
@@ -1225,6 +1252,7 @@ export function mountRoadmap() {
     stopScale();
     if (mountedRoadmap === view) mountedRoadmap = null;
   };
+  returnFocus(view);
 }
 
 document.addEventListener('scroll', (e) => { if (!EPIC_TIP.el?.contains(e.target)) hideEpicTip(); }, true);
@@ -1294,14 +1322,14 @@ Object.assign(App, {
     // More done work can move day 0 earlier: the same date stays at the left edge, not the same pixels.
     const leftDay=scroll.scrollLeft/state.pxPerDay+Number(scroll.dataset.rangeStart)/DAY;
     const focus=content.contains(document.activeElement)?rememberOpener(document.activeElement):null;
-    const nav=document.activeElement?.closest?.('.rt-body [data-nav]')?.dataset.nav;
+    const item=document.activeElement?.closest?.('.rt-body [data-nav]'),nav=item?.dataset.nav,navTrack=item?.closest('.lane')?.dataset.track;
     setHTML(content,renderRoadmap());
     const next=document.getElementById('rmScroll');
     if(next){state.rmScrollLeft=Math.max(0,Math.round((leftDay-Number(next.dataset.rangeStart)/DAY)*state.pxPerDay));state.rmScrollTop=top;}
     mountRoadmap();
     refreshStats();
     if(moved)focusMovedTrack(moved);
-    else if(nav)refocus([...content.querySelectorAll('.rt-body [data-nav][tabindex="0"]')].find((el)=>el.dataset.nav===nav)||[...content.querySelectorAll('.rt-body [data-nav]')].find((el)=>el.dataset.nav===nav),shown);
+    else if(nav)keepFocus(navTrack,nav,shown);
     else if(focus)restoreOpener(focus);
     App.updateDocumentTitle();
     // Lanes slide up or down to their new places. Every lane shares its left edge, which a new scroll

@@ -442,6 +442,62 @@ test('a done dot, a plan ring, a list row and Overdue\'s late plan open their ta
   assert.deepEqual(await opened(t => mark(t.d, 'BIR-064').click()), ['#/task/BIR-064', 'task']);
 });
 
+test('Back from a task opened from its mark, or from a row of a count\'s list, focuses that mark again, without its card', async () => {
+  const t = boot('roadmap/p1?scale=months', { actions: true, reads: { roadmapList: async () => ({ items: [t.D.tasks.find(task => task.id === 'BIR-061')], total: 2 }) } });
+  await go(t, () => { mark(t.d, 'BIR-064').focus(); mark(t.d, 'BIR-064').click(); });
+  assert.equal(t.A.context().view, 'task');
+  await go(t, () => t.w.history.back());
+  assert.equal(t.d.activeElement, mark(t.d, 'BIR-064'));
+  assert.equal(t.d.activeElement.tabIndex, 0, 'it is its lane\'s Tab stop');
+  await nextFrame(t.w);
+  assert.equal(t.d.getElementById('task-tooltip'), null);
+  // A row of a count's list: Back comes to the count.
+  const count = lane(t.d, 't2').querySelector('.rt-count-done'), key = count.dataset.nav;
+  count.click(); await settle();
+  await go(t, () => t.d.querySelector('#roadmap-list .rt-pop-row').click());
+  assert.equal(t.A.context().view, 'task');
+  await go(t, () => t.w.history.back());
+  assert.equal(t.d.activeElement.dataset.nav, key);
+  // The Roadmap reached another way, here from the sidebar, focuses its heading.
+  await go(t, () => mark(t.d, 'BIR-064').click());
+  await go(t, () => t.A.nav('roadmap'));
+  assert(t.d.activeElement.matches('.topbar h1'));
+});
+
+test('Back from a task whose mark is gone focuses its lane\'s timeline, once the lanes hold their work', async () => {
+  const t = boot('roadmap/p1?scale=months', { actions: true });
+  await go(t, () => mark(t.d, 'BIR-064').click());
+  // The task is deleted, and the Roadmap reads its lanes again.
+  t.D.tasks.splice(t.D.tasks.findIndex(task => task.id === 'BIR-064'), 1);
+  t.D.roadmap.late = t.D.roadmap.late.filter(task => task.id !== 'BIR-064');
+  t.D.roadmapLoaded = t.D.roadmap; t.D.roadmap = null;
+  await go(t, () => t.w.history.back());
+  assert(t.d.activeElement.matches('.topbar h1'), 'the heading, while the lanes load');
+  t.D.roadmap = t.D.roadmapLoaded; t.A.refreshRoadmap();
+  const timeline = lane(t.d, 't2').querySelector('.rt-body');
+  assert.equal(t.d.activeElement, timeline);
+  // It takes focus only then: once focus leaves, a press on it doesn't.
+  mark(t.d, 'BIR-075').focus();
+  assert(!timeline.hasAttribute('tabindex'));
+});
+
+test('a focused task that a change made elsewhere removes leaves focus on its lane\'s timeline, also when the lanes are drawn again in full', () => {
+  const t = boot();
+  const remove = id => { t.D.tasks.splice(t.D.tasks.findIndex(task => task.id === id), 1); t.D.roadmap.late = t.D.roadmap.late.filter(task => task.id !== id); };
+  const trackOf = id => mark(t.d, id).closest('.lane').dataset.track;
+  const first = trackOf('BIR-064');
+  mark(t.d, 'BIR-064').focus(); remove('BIR-064');
+  t.A.refreshRoadmap();
+  assert.equal(t.d.activeElement, lane(t.d, first).querySelector('.rt-body'));
+  // A new track draws the lanes again in full.
+  const second = trackOf('BIR-075');
+  mark(t.d, 'BIR-075').focus(); remove('BIR-075');
+  t.D.tracks.push({ id: 't6', projectId: 'p1', name: 'Docs', order: 6, revision: 1 });
+  t.A.refreshRoadmap();
+  assert(lane(t.d, 't6'), 'drawn again with the new track');
+  assert.equal(t.d.activeElement, lane(t.d, second).querySelector('.rt-body'));
+});
+
 test('every task on the timeline is a button that speaks its card', () => {
   const { d, D } = boot();
   const task = D.tasks.find(item => item.id === 'BIR-064'), epic = D.epics.find(item => item.id === task.epicId);

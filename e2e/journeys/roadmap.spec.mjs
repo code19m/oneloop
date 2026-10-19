@@ -206,7 +206,7 @@ test('done work of one day is a count whose list the server gives, and a teammat
   expect(page.url()).toContain(`#/task/${shipped[1].taskKey}`);
 });
 
-test('a done dot, a plan\'s ring and Overdue\'s late plan open their task with a click or Enter', async ({ page, instance }) => {
+test('a done dot, a plan\'s ring and Overdue\'s late plan open their task with a click or Enter, and Back focuses them again', async ({ page, instance }) => {
   const { project, track } = instance.projects[0];
   const [made] = (await command(instance.api, 'task.create', { projectId: project.id, trackId: track.id, title: 'Shipped alone' })).entities;
   const [shipped] = (await command(instance.api, 'task.move', { taskId: made.id, status: 'done' }, made.revision)).entities;
@@ -217,16 +217,24 @@ test('a done dot, a plan\'s ring and Overdue\'s late plan open their task with a
   const dot = lane.locator(`.rt-done[data-task="${shipped.taskKey}"]`), ring = lane.locator(`.rt-planned[data-task="${plan.taskKey}"]`);
   await dot.click();
   await expect(page.locator('.tp-title')).toHaveValue('Shipped alone');
+  // Back focuses the mark the task opened from.
   await page.goBack();
+  await expect(dot).toBeFocused();
   await ring.focus();
   await page.keyboard.press('Enter');
   await expect(page.locator('.tp-title')).toHaveValue('Missed plan');
   await page.goBack();
+  await expect(ring).toBeFocused();
   // "Overdue 1" focuses the late plan, and Enter opens it.
   await page.getByRole('button', { name: /^Overdue: 1 task/ }).click();
   await expect(ring).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(page.locator('.tp-title')).toHaveValue('Missed plan');
+  // While its page shows, the plan loses its date, and with it its ring: Back focuses the lane's timeline.
+  await command(instance.api, 'task.update', { taskId: plan.id, deadline: null }, plan.revision);
+  await page.goBack();
+  await expect(ring).toHaveCount(0);
+  await expect(lane.locator('.rt-body')).toBeFocused();
 });
 
 test('at Quarters, the titles of plans spread over more than a year load, in reads the server allows', async ({ page, instance }) => {
