@@ -36,10 +36,13 @@ The Roadmap shows what each track has finished, is working on and has
 planned with a date, on a timeline with one lane for each track. It is the
 first page you see after you sign in.
 
-- **Done work** shows as dots on the day it was finished. Dots too close to
-  tell apart become a number; click it to list them. A list shows up to 50
-  tasks and says how many more the **Board** has. Where a plan falls on a day
-  with done work, the two sit side by side.
+- **Done work** shows as dots on the day it was finished. Where dots would be
+  too close to tell apart, the work of a few days becomes a number: one a
+  day at **Weeks**, every four days at **Months** and every ten days at
+  **Quarters**, so steady work reads as a row of numbers across time. Click a
+  number to list its tasks. A list shows up to 50 tasks and says how many
+  more the **Board** has. Where a plan falls on a day with done work, the two
+  sit side by side.
 - **Work in progress**, in progress or in review, shows as one row per task: a
   thin bar from when work started to its deadline, or to today, fading out,
   without one. Each lane, and each epic, shows three at most: late work

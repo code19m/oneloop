@@ -32,9 +32,9 @@ pub(super) const SECTIONS_WINDOW_DAYS_MAX: i64 = 3660;
 /// The most tasks of days with one task a read may ask for; it gives none
 /// unless it asks.
 pub(super) const MARKS_MAX: usize = 400;
-/// The most days apart a read's marks may ask for: farther than the page
-/// ever draws marks merged.
-pub(super) const APART_MAX: f64 = 60.0;
+/// The most days one of the page's marks may stand for: more than it ever
+/// puts in one.
+pub(super) const CELL_MAX: i64 = 60;
 /// The days the Roadmap opens with: what its first view draws at Months on
 /// a wide screen (about seven weeks back to three months ahead, with half a
 /// view to spare on each side).
@@ -310,24 +310,31 @@ pub(super) fn days(
     };
     let (from, to, anchor) = window_days(window, today, required, most)?;
     let marks = window.marks.unwrap_or(0).min(MARKS_MAX);
-    let apart = window
-        .apart
-        .map(|apart| {
-            if apart.is_finite() && apart > 0.0 && apart <= APART_MAX {
-                Ok(apart)
+    let cell = window
+        .cell
+        .map(|cell| {
+            if (1..=CELL_MAX).contains(&cell) {
+                Ok(cell)
             } else {
                 Err(AppError::validation(
-                    "apart",
-                    format!("must be more than 0 and at most {APART_MAX} days"),
+                    "cell",
+                    format!("must be from 1 to {CELL_MAX} days"),
                 ))
             }
         })
         .transpose()?;
-    // A day stands apart from neighbours just out of the window too: those
-    // days are counted, and left out of what the read gives.
-    let pad = apart.map_or(0, |apart| apart.ceil() as usize);
+    // The cells at the window's edges reach past it: their days are counted,
+    // and left out of what the read gives.
+    let pad = cell.unwrap_or(0) as usize;
     let count = (to - from).get_days() as usize + 1;
     let first = from - (pad as i64).days();
+    // Each cell starts on a whole multiple of its days since 1970.
+    let cells = cell.map(|cell| {
+        (
+            cell,
+            (first - jiff::civil::date(1970, 1, 1)).get_days() as i64,
+        )
+    });
     let days = count + 2 * pad;
     // Where each day starts, and where the last one ends.
     let mut starts = Vec::with_capacity(days + 1);
@@ -383,8 +390,8 @@ pub(super) fn days(
         .flat_map(|section| {
             section
                 .done
-                .singles(apart)
-                .chain(section.plans.singles(apart))
+                .singles(cells)
+                .chain(section.plans.singles(cells))
         })
         .filter(|(index, _)| core.contains(index))
         .map(|(index, id)| ((index as i64 - anchor).abs(), id))
@@ -476,16 +483,16 @@ impl Counts {
         self.first[day].get_or_insert(id);
     }
 
-    /// The days with one task each, and that task; with `apart`, only those
-    /// that many days or more from the other days with tasks. The page draws
-    /// a day closer than that to another merged with it, so a day a little
-    /// closer still counts as apart, to give at least the ones it draws.
-    fn singles(&self, apart: Option<f64>) -> impl Iterator<Item = (usize, &String)> {
-        let near = apart.map_or(0, |apart| (apart * 0.95).ceil() as usize - 1);
+    /// The days with one task each, and that task; with `cells` (the days in
+    /// a cell, and the day since 1970 of the first day counted), only those
+    /// alone in their cell: the ones the page draws on their own.
+    fn singles(&self, cells: Option<(i64, i64)>) -> impl Iterator<Item = (usize, &String)> {
         let alone = move |day: usize| {
-            let busy = |other: usize| self.counts.get(other).is_some_and(|count| *count > 0);
-            (1..=near).all(|gap| {
-                !busy(day + gap) && day.checked_sub(gap).is_none_or(|before| !busy(before))
+            cells.is_none_or(|(size, epoch)| {
+                let start = (epoch + day as i64).div_euclid(size) * size - epoch;
+                (start.max(0) as usize..(start + size).max(0) as usize).all(|other| {
+                    other == day || self.counts.get(other).is_none_or(|count| *count == 0)
+                })
             })
         };
         self.counts

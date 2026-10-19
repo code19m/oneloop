@@ -246,7 +246,7 @@ export function createApiClient({
     serverNow,
     request,
     command: (command, { signal } = /** @type {SignalOptions} */ ({})) => request('/api/commands', { method: 'POST', body: command, signal }),
-    bootstrap: ({ projectId, taskId, view, lastSwitch, filters = {}, roadmap, signal, background } = /** @type {{projectId?:string,taskId?:string,view?:string,lastSwitch?:{userId:string,projectId:string},filters?:Record<string,unknown>,roadmap?:{from:string,to:string,anchor?:string,apart?:number},signal?:AbortSignal,background?:boolean}} */ ({})) => {
+    bootstrap: ({ projectId, taskId, view, lastSwitch, filters = {}, roadmap, signal, background } = /** @type {{projectId?:string,taskId?:string,view?:string,lastSwitch?:{userId:string,projectId:string},filters?:Record<string,unknown>,roadmap?:{from:string,to:string,anchor?:string,cell?:number},signal?:AbortSignal,background?:boolean}} */ ({})) => {
       const query = new URLSearchParams();
       if (projectId) query.set('projectId', projectId);
       if (taskId) query.set('taskId', taskId);
@@ -261,7 +261,7 @@ export function createApiClient({
       if (view === 'roadmap' && roadmap) {
         query.set('roadmapFrom', roadmap.from); query.set('roadmapTo', roadmap.to);
         if (roadmap.anchor) query.set('roadmapAnchor', roadmap.anchor);
-        if (roadmap.apart) query.set('roadmapApart', String(roadmap.apart));
+        if (roadmap.cell) query.set('roadmapCell', String(roadmap.cell));
       }
       return request('/api/bootstrap' + (query.size ? '?' + query.toString() : ''), { signal, background });
     },
@@ -281,7 +281,7 @@ export function createApiClient({
       for (const [key, value] of Object.entries(lanes ?? {})) if (value !== undefined && value !== null) query.set(key, Array.isArray(value) ? value.join(',') : String(value));
       return request(`/api/projects/${encodeURIComponent(projectId)}/roadmap/lanes${query.size ? `?${query}` : ''}`, { signal,background });
     },
-    /** More days of the Roadmap's lanes. @param {string} projectId @param {{from:string,to:string,anchor?:string,marks?:number,apart?:number}} days */
+    /** More days of the Roadmap's lanes. @param {string} projectId @param {{from:string,to:string,anchor?:string,marks?:number,cell?:number}} days */
     roadmapDays: (projectId, days, { signal,background } = /** @type {SignalOptions} */ ({})) => {
       const query = new URLSearchParams();
       for (const [key, value] of Object.entries(days)) if (value !== undefined) query.set(key, String(value));

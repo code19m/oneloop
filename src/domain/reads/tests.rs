@@ -479,7 +479,7 @@ fn the_roadmap_read_runs_the_same_statements_for_any_number_of_tracks_and_tasks(
         window: RoadmapWindow {
             from: Some("2026-01-01".into()),
             marks: Some(400),
-            apart: Some(2.5),
+            cell: Some(3),
             ..RoadmapWindow::default()
         },
         ..LanesQuery::default()

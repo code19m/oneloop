@@ -22,7 +22,7 @@ import {
 import { announce } from './toasts.js';
 import {
   closeTimelineList, drawnIn, epicDated, epicStatus, focusOpener, focusTask, focusTimeline, headFigure, lanePieces, laneDates, laneEntry, laneFocus, laneModels, refocus,
-  layoutLane, listAnchor, markApart, mountLanes, numbers, placeOfKey, resolveKey, roadmapLanes, roomAfterNow, setStyle, setTabStop, syncLaneEdges, textWidth,
+  layoutLane, listAnchor, markCell, mountLanes, numbers, placeOfKey, resolveKey, roadmapLanes, roomAfterNow, setStyle, setTabStop, syncLaneEdges, textWidth,
 } from './timeline.js';
 
 // ---------- roadmap geometry ----------
@@ -995,22 +995,22 @@ function readsOf(lanes) {
 function loadMore(view, { retry = false } = {}) {
   const lanes = roadmapLanes();
   if (!lanes || !view.model.ready || !view.sc.isConnected) return;
-  const { sc, model, ppd, drawn } = view, room = viewRoom(view) / ppd, apart = markApart(ppd), most = lanes.limits;
+  const { sc, model, ppd, drawn } = view, room = viewRoom(view) / ppd, cell = markCell(ppd), most = lanes.limits;
   const left = sc.scrollLeft / ppd, right = left + room;
   const date = (day) => iso(new Date(+model.start + day * DAY)), offset = (key) => Math.round((d(key) - model.start) / DAY);
-  // The days drawn, and the few after them that can merge their marks; days outside the timeline's span hold no work.
-  const near = Math.ceil(apart) + 1;
-  const from = Math.max(0, Math.floor(drawn.from / ppd) - near), to = Math.max(from, Math.min(model.span, Math.ceil(drawn.to / ppd) + near));
+  // The days drawn, and a cell more on each side, so the cells at the edges are whole; days outside the
+  // timeline's span hold no work.
+  const from = Math.max(0, Math.floor(drawn.from / ppd) - cell), to = Math.max(from, Math.min(model.span, Math.ceil(drawn.to / ppd) + cell));
   const middle = Math.round((left + right) / 2), anchor = date(middle);
   // What a read of the lanes asks for again: these days, as many as one read covers, with the tasks of
   // the days drawn on their own at this zoom.
-  lanes.shown = { from: date(Math.max(from, middle - most.days / 2)), to: date(Math.min(to, middle + most.days / 2 - 1)), anchor, apart };
+  lanes.shown = { from: date(Math.max(from, middle - most.days / 2)), to: date(Math.min(to, middle + most.days / 2 - 1)), anchor, cell };
   const asked = readsOf(lanes);
   if (asked.busy || asked.failedAt && (!retry || runtime().now() - asked.failedAt < RETRY_AFTER)) return;
   asked.failedAt = 0;
   // A read of days gives their counts; one of a stretch's tasks, the tasks of the days drawn on their own there.
   const ask = (first, last, marks = null) => {
-    const days = { from: date(first), to: date(last), ...(marks ? { anchor: marks, marks: most.marks, apart } : {}) }, key = `${days.from}/${days.to}`;
+    const days = { from: date(first), to: date(last), ...(marks ? { anchor: marks, marks: most.marks, cell } : {}) }, key = `${days.from}/${days.to}`;
     if (!marks && asked.days.has(key)) return;
     asked.busy = true;
     if (!marks) asked.days.add(key);
@@ -1021,7 +1021,7 @@ function loadMore(view, { retry = false } = {}) {
       else if (marks) {
         // The days whose tasks all came are read, at least the one asked about; the others are asked for again.
         const got = result.marked && result.marked.from <= result.marked.to ? result.marked : { from: days.anchor, to: days.anchor };
-        asked.marked.push({ ...got, apart });
+        asked.marked.push({ ...got, cell });
         const unloaded = asked.unloaded.filter((range) => range.to < got.from || range.from > got.to);
         // Marks that said their task couldn't load say what they say now.
         if (unloaded.length !== asked.unloaded.length) { asked.unloaded = unloaded; if (mountedRoadmap === view) drawLanes(view); }
@@ -1047,7 +1047,7 @@ function loadMore(view, { retry = false } = {}) {
   const after = to > held.to ? [held.to + 1, Math.min(to, held.to + most.days)] : null;
   const next = before && after ? (held.from - left > right - held.to ? before : after) : before ?? after;
   if (next) { ask(...next); return; }
-  const stretch = blankStretch(view, asked.marked, apart, most);
+  const stretch = blankStretch(view, asked.marked, cell, most);
   if (stretch) ask(offset(stretch.from), offset(stretch.to), stretch.near);
 }
 
@@ -1056,15 +1056,15 @@ function loadMore(view, { retry = false } = {}) {
  * lanes don't hold yet, from the one nearest the view's middle outwards, as
  * long as the days drawn on their own there are no more than one read gives
  * and the stretch spans no more days than one read may. Days already read
- * at this zoom or a closer one are done.
+ * for cells of this many days are done.
  */
-function blankStretch(view, marked, apart, most) {
+function blankStretch(view, marked, cell, most) {
   const { drawn, sc } = view, middle = sc.scrollLeft + viewRoom(view) / 2;
   const singles = view.layout.lanes.flatMap((lane) => lane.sections).flatMap((laid) => laid.marks)
     .filter((mark) => (mark.type === 'done' || mark.type === 'planned' || mark.group?.count === 1) && drawnIn(mark, drawn))
     .map((mark) => ({ day: (mark.item ?? mark.group.items[0]).day, x: mark.x, blank: !mark.item?.task && !mark.group.items[0].task }));
-  // Days read at this zoom, or a closer one, which draws more days on their own.
-  const clear = (from, to) => !marked.some((range) => range.apart <= apart * 1.001 && range.from <= to && range.to >= from);
+  // Days read for cells of these days: other cells draw other days on their own.
+  const clear = (from, to) => !marked.some((range) => range.cell === cell && range.from <= to && range.to >= from);
   const read = (day) => !clear(day, day);
   const wanted = singles.filter((single) => single.blank && !read(single.day)).sort((a, b) => Math.abs(a.x - middle) - Math.abs(b.x - middle))[0];
   if (!wanted) return null;
@@ -1072,8 +1072,8 @@ function blankStretch(view, marked, apart, most) {
   for (const { day } of singles) if (!read(day)) perDay.set(day, (perDay.get(day) ?? 0) + 1);
   const days = [...perDay.keys()].sort(), away = (day) => Math.abs(d(day) - d(wanted.day));
   let low = days.indexOf(wanted.day), high = low, total = perDay.get(wanted.day);
-  // Outwards over the days not read yet, up to the read ones on either side; a tenth to spare, for the few
-  // days the server counts as apart that the lanes draw merged.
+  // Outwards over the days not read yet, up to the read ones on either side; a tenth to spare, for days a
+  // change made elsewhere left with one task that the lanes don't know of yet.
   const open = (index) => index >= 0 && index < days.length && clear(days[Math.min(index, low)], days[Math.max(index, high)]);
   const fits = (first, last) => (d(last) - d(first)) / DAY < most.days;
   for (;;) {

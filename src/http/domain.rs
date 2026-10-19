@@ -104,7 +104,7 @@ with_board_filter! {
         roadmap_from: Option<String>,
         roadmap_to: Option<String>,
         roadmap_anchor: Option<String>,
-        roadmap_apart: Option<f64>,
+        roadmap_cell: Option<i64>,
     }
 }
 
@@ -159,7 +159,7 @@ async fn bootstrap(
             to: query.roadmap_to,
             anchor: query.roadmap_anchor,
             marks: None,
-            apart: query.roadmap_apart,
+            cell: query.roadmap_cell,
         },
     };
     state.domain.bootstrap(&actor, query).await.map(Json)
@@ -208,7 +208,7 @@ struct RoadmapLanesParams {
     to: Option<String>,
     anchor: Option<String>,
     marks: Option<usize>,
-    apart: Option<f64>,
+    cell: Option<i64>,
     tasks: Option<String>,
     sections: Option<String>,
     late: Option<bool>,
@@ -234,7 +234,7 @@ async fn roadmap_lanes(
             to: query.to,
             anchor: query.anchor,
             marks: query.marks,
-            apart: query.apart,
+            cell: query.cell,
         },
         tasks: query.tasks.map(|tasks| id_list(Some(&tasks))),
         sections: id_list(query.sections.as_deref()),
@@ -255,7 +255,7 @@ struct RoadmapDaysParams {
     to: String,
     anchor: Option<String>,
     marks: Option<usize>,
-    apart: Option<f64>,
+    cell: Option<i64>,
 }
 
 async fn roadmap_days(
@@ -269,7 +269,7 @@ async fn roadmap_days(
         to: Some(query.to),
         anchor: query.anchor,
         marks: query.marks,
-        apart: query.apart,
+        cell: query.cell,
     };
     state
         .domain

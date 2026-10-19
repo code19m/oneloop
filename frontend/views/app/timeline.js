@@ -135,9 +135,10 @@ function dayItems(day, counts, scale, now, marks) {
   const done = counts.done === 1 ? marks.get(`${day}|done`) ?? null : null, planned = counts.plans === 1 ? marks.get(`${day}|planning`) ?? null : null;
   const kept = dayItemsKept.get(counts), drawn = `${counts.done}/${counts.plans}/${counts.blocked}|${drawnTask(done)}|${drawnTask(planned)}`;
   if (kept && kept.scale === scale.key && kept.now === now && kept.done === done && kept.planned === planned && kept.drawn === drawn) return kept.items;
-  const at = scale.ofDate(day) + 0.5, items = [];
-  if (counts.done) items.push({ kind: 'done', day, count: counts.done, at: Math.min(at, now), task: done });
-  if (counts.plans) items.push({ kind: 'planned', day, count: counts.plans, at, late: d(day) < today, blocked: counts.blocked > 0, task: planned });
+  // A day's number since 1970 places it in its cell (markCell).
+  const at = scale.ofDate(day) + 0.5, number = Math.round(+d(day) / DAY), items = [];
+  if (counts.done) items.push({ kind: 'done', day, number, count: counts.done, at: Math.min(at, now), task: done });
+  if (counts.plans) items.push({ kind: 'planned', day, number, count: counts.plans, at, late: d(day) < today, blocked: counts.blocked > 0, task: planned });
   dayItemsKept.set(counts, { scale: scale.key, now, done, planned, drawn, items });
   return items;
 }
@@ -222,21 +223,33 @@ function countSpan(items) {
   return first === last ? humanShort(d(first)) : `${humanShort(d(first))} – ${humanShort(d(last))}`;
 }
 
-/** How close, in pixels, two marks of `size` may be before they merge. */
-const mergeGap = (size) => Math.max(size, 18) + 4;
-/** How many days apart two days' marks must be at `ppd` to be drawn on their own, done or planned. */
-export const markApart = (ppd) => Math.max(mergeGap(DOT), mergeGap(RING)) / ppd;
+/** Half the width of a count: as wide as its digits. */
+const countHalf = (count) => Math.max(9, String(count).length * 3.5 + 5);
+/** The narrowest a cell is: a two-digit count and the room between marks (spread). */
+const CELL_WIDTH = 2 * countHalf(99) + 2;
+/**
+ * The days one mark stands for at `ppd`, done or planned: the fewest that
+ * are CELL_WIDTH wide. Cells start on whole multiples of their days since
+ * 1970, as the server's do, so a day keeps its cell as the view scrolls and
+ * loads more days, and steady work reads as a row of counts across time.
+ */
+export const markCell = (ppd) => Math.max(1, Math.ceil(CELL_WIDTH / ppd - 1e-9));
 
-/** Marks closer than they can be drawn merge into a count: one small number, as wide as its digits, in the middle of what it holds. */
+/**
+ * A section's marks of one kind, a mark for each cell with work: a day's
+ * own mark, or a count, one small number in the middle of the days it
+ * holds. Marks of cells next to each other that come too close stand apart
+ * (spread).
+ */
 function cluster(items, ppd, size) {
-  const groups = [];
+  const days = markCell(ppd), groups = [];
   for (const item of items.slice().sort((a, b) => a.at - b.at)) {
-    const x = item.at * ppd, group = groups[groups.length - 1];
-    if (group && x - group.last < mergeGap(size)) { group.items.push(item); group.count += item.count; group.last = x; continue; }
-    groups.push({ items: [item], count: item.count, first: x, last: x });
+    const x = item.at * ppd, cell = Math.floor(item.number / days), group = groups[groups.length - 1];
+    if (group?.cell === cell) { group.items.push(item); group.count += item.count; group.last = x; continue; }
+    groups.push({ items: [item], count: item.count, first: x, last: x, cell });
   }
   for (const group of groups) {
-    const mid = (group.first + group.last) / 2, half = group.count > 1 ? Math.max(9, String(group.count).length * 3.5 + 5) : size / 2;
+    const mid = (group.first + group.last) / 2, half = group.count > 1 ? countHalf(group.count) : size / 2;
     Object.assign(group, { x: mid, extent: [mid - half, mid + half] });
   }
   return groups;

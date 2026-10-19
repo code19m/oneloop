@@ -59,7 +59,7 @@ export function installRoadmap(ctx) {
     /**
      * Read more days for the Roadmap's lanes, as its view comes to them. One
      * that fails says the view couldn't refresh, as other reads do, until one
-     * comes again. @param {{from:string,to:string,anchor?:string,marks?:number,apart?:number}} days
+     * comes again. @param {{from:string,to:string,anchor?:string,marks?:number,cell?:number}} days
      */
     roadmapDays(days){
       return reads.roadmapDays(context().projectId,days).then((result)=>{

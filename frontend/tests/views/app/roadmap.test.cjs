@@ -218,26 +218,27 @@ test('a track with tasks but nothing dated says No dated work, and one without t
   assert.equal(lane(d, 't5').querySelector('.rt-empty-lane').textContent, 'No tasks yet');
 });
 
-test('done work shows as dots at the day it finished; close ones merge into a count whose list loads its days and Escape closes', async () => {
+test('done work shows as dots at the day it finished; the work of one cell of days merges into a count whose list loads its days and Escape closes', async () => {
   let answer;
   const asked = [];
   const { w, d, D } = boot('roadmap/p1?scale=months', { actions: true, reads: { roadmapList: (projectId, query) => { asked.push([projectId, { ...query }]); return new Promise(resolve => { answer = resolve; }); } } });
   const web = lane(d, 't2');
-  // Sep 22 (twice), 24 and 25 lie within 22 px of each other at 8.5 px a day; Sep 10 and 18 don't.
+  // At Months a mark stands for four days, from a multiple of four since 1970: Sep 20–23 holds Sep 22's two
+  // tasks, Sep 24–27 holds Sep 24 and 25, and Sep 10 and 18 are alone in theirs.
   assert.deepEqual([...web.querySelectorAll('.rt-done')].map(el => el.dataset.task).sort(), ['BIR-052', 'BIR-055']);
+  assert.deepEqual([...web.querySelectorAll('.rt-count-done')].map(el => [el.textContent, el.getAttribute('aria-label')]),
+    [['2', '2 done tasks, Sep 22'], ['2', '2 done tasks, Sep 24 – Sep 25']]);
   const count = web.querySelector('.rt-count-done');
-  assert.equal(count.textContent, '4');
-  assert.equal(count.getAttribute('aria-label'), '4 done tasks, Sep 22 – Sep 25');
-  // The lanes count Sep 22's two tasks without holding them, so the list reads its days.
+  // The lanes count Sep 22's two tasks without holding them, so the list reads its day.
   count.focus(); count.click();
   const list = d.getElementById('roadmap-list');
   assert.equal(count.getAttribute('aria-expanded'), 'true');
   assert.equal(list.querySelector('.rt-pop-list').getAttribute('aria-busy'), 'true');
   assert.equal(list.querySelector('.rt-pop-note').textContent, 'Loading…');
-  assert.deepEqual(asked, [['p1', { track: 't2', epic: 'e5', kind: 'done', from: '2026-09-22', to: '2026-09-25' }]]);
-  answer({ items: ['BIR-061', 'BIR-058', 'BIR-057', 'BIR-056'].map(id => D.tasks.find(task => task.id === id)), total: 4 });
+  assert.deepEqual(asked, [['p1', { track: 't2', epic: 'e5', kind: 'done', from: '2026-09-22', to: '2026-09-22' }]]);
+  answer({ items: ['BIR-057', 'BIR-056'].map(id => D.tasks.find(task => task.id === id)), total: 2 });
   await tick();
-  assert.deepEqual([...list.querySelectorAll('.tid')].map(el => el.textContent), ['BIR-061', 'BIR-058', 'BIR-057', 'BIR-056'], 'newest first, as read');
+  assert.deepEqual([...list.querySelectorAll('.tid')].map(el => el.textContent), ['BIR-057', 'BIR-056'], 'as read');
   assert.equal(list.querySelector('.rt-pop-list').getAttribute('aria-busy'), 'false');
   list.querySelector('.rt-pop-row').dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
   assert.equal(d.getElementById('roadmap-list'), null);
@@ -245,6 +246,28 @@ test('done work shows as dots at the day it finished; close ones merge into a co
   // At Weeks they are far enough apart to show apart, except the two of Sep 22.
   w.App.setRoadmapScale('weeks'); await nextFrame(w);
   assert.equal(lane(d, 't2').querySelector('.rt-count-done').textContent, '2');
+});
+
+test('steady done work reads as a row of counts across time, each holding the days of its own cell', () => {
+  // A task done every day for the four months before now, on a timeline wide enough to draw them all at Months.
+  const daily = D => {
+    const days = {};
+    for (let at = Date.parse('2026-05-30'); at <= Date.parse('2026-09-27'); at += 86400000) days[new Date(at).toISOString().slice(0, 10)] = { done: 1, plans: 0, blocked: 0 };
+    D.roadmap.days['t2/e5'] = days;
+  };
+  const t = boot('roadmap/p1?scale=months', { width: 2400, prepare: daily });
+  const counts = [...lane(t.d, 't2').querySelectorAll('.rt-count-done')], span = el => (Date.parse(el.dataset.to) - Date.parse(el.dataset.from)) / 86400000 + 1;
+  assert(counts.length >= 29, `${counts.length} counts`);
+  assert(counts[0].dataset.from <= '2026-06-02' && counts.at(-1).dataset.to >= '2026-09-24', `${counts[0].dataset.from} – ${counts.at(-1).dataset.to}`);
+  // Four days a mark at Months: each count holds the days of its cell, and says so.
+  for (const el of counts) {
+    assert(span(el) <= 4 && Number(el.textContent) === span(el), `${el.textContent}: ${el.dataset.from} – ${el.dataset.to}`);
+    assert.equal(el.getAttribute('aria-label'), `${el.textContent} done tasks, ${el.dataset.span.split(' · ')[1]}`);
+  }
+  // A count every 34 px, four days at 8.5 px a day, never much wider than the 22 px marks merge within.
+  const lefts = counts.map(el => parseFloat(el.style.left));
+  for (let index = 1; index < counts.length - 1; index++) assert(Math.abs(lefts[index] - lefts[index - 1] - 34) <= 1, `${lefts[index - 1]} → ${lefts[index]}`);
+  assert(counts.every(el => parseFloat(el.style.width) <= 24));
 });
 
 test('a lane drawn again keeps focus on its count, leaves its list as it is, and shows it again only if it showed', async () => {
@@ -276,7 +299,7 @@ test('a lane drawn again keeps focus on its count, leaves its list as it is, and
   assert(list.contains(d.activeElement), 'Enter on the count moved into its list');
   D.roadmap.days['t2/e5']['2026-09-22'].done = 3;
   A.refreshRoadmap(); await nextFrame(w); await nextFrame(w); await tick();
-  assert.equal(count().textContent, '5');
+  assert.equal(count().textContent, '3');
   assert.equal(d.activeElement, count());
   assert(d.getElementById('roadmap-list') && d.getElementById('roadmap-list') !== list);
   assert.equal(asked.length, 3);
@@ -301,14 +324,15 @@ test('a list closed while it loads stops its read, and a list that loaded stops 
 
 test('a count whose tasks the lanes hold lists them at once, and a list that fails to load says so', async () => {
   const { d } = boot('roadmap/p1?scale=months', { actions: true, reads: { roadmapList: async () => { throw new Error('offline'); } }, prepare: D => {
-    // Sep 22 has one done task, which the lanes hold.
+    // Sep 22 has one done task, which the lanes hold, as they hold those of Sep 24 and 25.
     D.roadmap.days['t2/e5']['2026-09-22'].done = 1;
     D.roadmap.marks['bir-057'] = { ...D.roadmap.marks['bir-061'], internalId: 'bir-057', id: 'BIR-057', day: '2026-09-22', completedAt: Date.parse('2026-09-22T09:00:00Z') };
   } });
   const count = lane(d, 't2').querySelector('.rt-count-done');
-  assert.equal(count.textContent, '3');
+  assert.equal(count.textContent, '2');
+  assert(mark(d, 'BIR-057'), 'alone in its cell, Sep 22 shows its task');
   count.click();
-  assert.deepEqual([...d.querySelectorAll('#roadmap-list .tid')].map(el => el.textContent), ['BIR-061', 'BIR-058', 'BIR-057']);
+  assert.deepEqual([...d.querySelectorAll('#roadmap-list .tid')].map(el => el.textContent), ['BIR-061', 'BIR-058']);
   assert.equal(d.querySelector('#roadmap-list .rt-pop-list').getAttribute('aria-busy'), 'false');
   // A blank dot of a day the lanes count but don't hold reads its one task.
   count.click();
@@ -746,9 +770,9 @@ test('a day with one task the lanes don\'t hold yet shows a mark that says so, w
   const web = lane(t.d, 't2'), plan = lane(t.d, 't4').querySelector('.rt-planned.rt-pending');
   assert.equal(web.querySelectorAll('.rt-done.rt-pending[data-list]:not([data-task])').length, 2);
   assert.deepEqual([plan.getAttribute('aria-label'), !!plan.querySelector('.rt-tag-pending')], ['1 planned task, due Oct 20, loading', true]);
-  // One read for every day the lanes draw with one task, with how far apart days must be to be drawn on their own.
+  // One read for every day the lanes draw with one task, with the days each mark stands for: four at Months.
   const [read, ...others] = dayReads(t);
-  assert.deepEqual([read.from <= '2026-09-10', read.to >= '2026-10-20', read.marks, Math.round(read.apart * 100), others], [true, true, 400, Math.round(2200 / 8.5), []]);
+  assert.deepEqual([read.from <= '2026-09-10', read.to >= '2026-10-20', read.marks, read.cell, others], [true, true, 400, 4, []]);
   // Those days' tasks were read: a scroll asks for them no more, even if the read gave none.
   for (const by of [10, -10]) await scrollBy(t, by);
   assert.equal(dayReads(t).length, 1);

@@ -371,9 +371,9 @@ async fn marks_can_come_for_the_days_the_page_draws_on_their_own() {
         ],
     )
     .await;
-    let read = |apart: Option<f64>| {
+    let read = |cell: Option<i64>| {
         let window = RoadmapWindow {
-            apart,
+            cell,
             marks: Some(400),
             ..window("2026-01-01", "2026-01-18")
         };
@@ -384,14 +384,14 @@ async fn marks_can_come_for_the_days_the_page_draws_on_their_own() {
         ids.sort_unstable();
         ids.join(" ")
     };
-    // Without `apart`, every day with one task.
+    // Without `cell`, every day with one task.
     assert_eq!(sorted(&read(None).await), "alone close edge first plan");
-    // 2.5 days: Jan 1 and 3 are drawn merged, and so is Jan 18 with Jan 20,
-    // past the window; a plan is on its own line.
-    let spaced = read(Some(2.5)).await;
-    assert_eq!(sorted(&spaced), "alone plan");
+    // Cells of 3 days from 1970: Jan 1 and 3 share one, Jan 18 and 20 don't;
+    // a plan is on its own line.
+    let celled = read(Some(3)).await;
+    assert_eq!(sorted(&celled), "alone edge plan");
     assert_eq!(
-        sections(&spaced.sections),
+        sections(&celled.sections),
         [(
             "tr1",
             None,
@@ -401,19 +401,17 @@ async fn marks_can_come_for_the_days_the_page_draws_on_their_own() {
         )],
         "the counts stay those of the window"
     );
-    // A day apart from the next.
-    assert_eq!(
-        sorted(&read(Some(1.0)).await),
-        "alone close edge first plan"
-    );
-    for apart in [0.0, -1.0, 61.0, f64::NAN] {
+    // Cells of 5: Jan 1 and 3 are apart, and Jan 18 shares its cell with
+    // Jan 20, past the window.
+    assert_eq!(sorted(&read(Some(5)).await), "alone close first plan");
+    for cell in [0, -1, 61] {
         assert_eq!(
             f.service
                 .roadmap_days(
                     &f.member,
                     "p1".into(),
                     RoadmapWindow {
-                        apart: Some(apart),
+                        cell: Some(cell),
                         ..window("2026-01-01", "2026-01-18")
                     },
                 )
@@ -421,7 +419,7 @@ async fn marks_can_come_for_the_days_the_page_draws_on_their_own() {
                 .unwrap_err()
                 .code(),
             "validation_failed",
-            "{apart}"
+            "{cell}"
         );
     }
 }
@@ -810,8 +808,7 @@ async fn the_roadmap_page_reads_its_lanes_days_and_lists_and_its_bootstrap_the_d
     assert_eq!(days["sections"][0]["done"], json!([0, 2]));
     // Marks of the days drawn on their own, at the page's spacing.
     let (status, spaced) =
-        get("/api/projects/p1/roadmap/days?from=2026-01-01&to=2026-01-10&apart=2.5&marks=400")
-            .await;
+        get("/api/projects/p1/roadmap/days?from=2026-01-01&to=2026-01-10&cell=3&marks=400").await;
     assert_eq!(
         (status.as_u16(), &spaced["sections"][1]["marks"][0]["id"]),
         (200, &json!("done-epic"))
@@ -828,7 +825,7 @@ async fn the_roadmap_page_reads_its_lanes_days_and_lists_and_its_bootstrap_the_d
     let (_, changed) = get("/api/projects/p1/roadmap/lanes?tasks=plan-alone,done-a&sections=tr1/&late=true&from=2026-01-01&to=2026-01-10").await;
     assert_eq!(changed["lanes"]["tasks"].as_array().unwrap().len(), 2);
     assert!(changed["lanes"]["late"].is_array() && changed["tracks"] == json!([]));
-    let (_, bootstrap) = get("/api/bootstrap?projectId=p1&view=roadmap&roadmapFrom=2026-01-01&roadmapTo=2026-02-01&roadmapAnchor=2026-01-05&roadmapApart=0.5").await;
+    let (_, bootstrap) = get("/api/bootstrap?projectId=p1&view=roadmap&roadmapFrom=2026-01-01&roadmapTo=2026-02-01&roadmapAnchor=2026-01-05&roadmapCell=1").await;
     assert_eq!(
         (
             &bootstrap["roadmap"]["days"]["from"],
