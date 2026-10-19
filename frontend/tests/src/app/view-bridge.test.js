@@ -87,14 +87,14 @@ test('a live refresh of Profile, Users and Settings reads passively, and a visit
   }
 });
 
-test('typed text saves on the revision its editor was focused at, and an assignee pick on the revision the page shows',async()=>{
+test('typed text saves on the revision its editor was focused at, and an assignee pick on the revision its list opened at',async()=>{
   const sent=[];let finished='';
   const gateway={execute:async(_operation,payload,input)=>{sent.push([Object.keys(payload).find(key=>key!=='taskId'),input.expectedRevision]);return {entities:[],events:[]};}};
   // The editor was focused at revision 1; live data has moved the task to revision 2 since.
   const recovery={revisionKey:()=> 'task:opaque-1',expectedRevision:()=>1,captureEditor:()=>null,finishRevision:(key)=>{finished=key;}};
   const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway,recovery});
   state.data.tasks.push({id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:2,title:'Title',assignees:[]});
-  await state.bridge.setAssignees('ONE-1',['u2']);
+  await state.bridge.setAssignees('ONE-1',['u2'],2);
   state.app.updTask('ONE-1','title','Typed title');await settle();
   assert.deepEqual(sent,[['assigneeIds',2],['title',1]]);assert.equal(finished,'task:opaque-1');
 });

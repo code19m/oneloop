@@ -213,13 +213,20 @@ function notePlace(t) {
   const pick = picks.get(`${t.internalId}:trackId`);
   if (pick && t.trackId !== pick.value) Object.assign(pick, { epicId: t.epicId, trackId: t.trackId });
 }
+// The task's revision when the person last opened its Status, Track, Epic or
+// Assignees list. A pick builds on what its list showed: a change that lands
+// while the list is open meets the conflict question, and one the page
+// showed before the list opened doesn't.
+let opened = null;
+const noteOpened = (id) => () => { const t = taskById(id); opened = t ? { taskId: t.internalId, revision: t.revision } : null; };
+const openedRevision = (t) => opened?.taskId === t.internalId ? opened.revision : undefined;
 /**
  * Save the task's status, track or epic as picked in its select. The
  * selects show the saved values again once the save settles, so a pick that
  * didn't save, such as offline, doesn't stay on screen.
  */
 function saveProperty(id, field, value) {
-  const t = taskById(id), saving = t && App.updTask(id, field, value);
+  const t = taskById(id), saving = t && App.updTask(id, field, value, openedRevision(t));
   if (typeof saving?.then !== 'function') { App.refreshTaskHeader(); return; }
   const key = `${t.internalId}:${field}`, pick = { value, epicId: t.epicId, trackId: t.trackId };
   picks.set(key, pick);
@@ -240,8 +247,8 @@ const showSaved = () => App.refreshTaskHeader();
 function trackEpicHtml(t, canEdit) {
   notePlace(t);
   const note = epicNote(t);
-  return `<div class="task-property"><dt>Track</dt><dd>${selectHtml('tpTrack', { label: 'Track', cls: 'prop', disabled: !canEdit, icon: I.track, value: shownValue(t, 'trackId'), options: trackOptions(), pick: (v) => saveProperty(t.id, 'trackId', v), onClose: showSaved })}</dd></div>
-        <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: shownValue(t, 'epicId'), search: true, describedBy: note ? 'tpEpic-note' : '', options: epicOptions(t.trackId, t.epicId), pick: (v) => saveProperty(t.id, 'epicId', v), onClose: showSaved })}${note ? `<p class="task-property-note" id="tpEpic-note">${esc(note)}</p>` : ''}</dd></div>`;
+  return `<div class="task-property"><dt>Track</dt><dd>${selectHtml('tpTrack', { label: 'Track', cls: 'prop', disabled: !canEdit, icon: I.track, value: shownValue(t, 'trackId'), options: trackOptions(), pick: (v) => saveProperty(t.id, 'trackId', v), onOpen: noteOpened(t.id), onClose: showSaved })}</dd></div>
+        <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: shownValue(t, 'epicId'), search: true, describedBy: note ? 'tpEpic-note' : '', options: epicOptions(t.trackId, t.epicId), pick: (v) => saveProperty(t.id, 'epicId', v), onOpen: noteOpened(t.id), onClose: showSaved })}${note ? `<p class="task-property-note" id="tpEpic-note">${esc(note)}</p>` : ''}</dd></div>`;
 }
 /** Show the open task's track and epic in place: their choices, values and the Epic cleared note. */
 function paintTrackEpic(t, page) {
@@ -275,7 +282,7 @@ export function renderTask() {
     <aside class="tp-rail" aria-labelledby="task-properties-heading">
       ${taskPropertiesHeadingHtml(t, canEdit)}
       <dl class="task-properties">
-        <div class="task-property"><dt>Status</dt><dd>${selectHtml('tpState', { label: 'Status', cls: 'prop', disabled: !canEdit, icon: stIcon(shownValue(t, 'state')), value: shownValue(t, 'state'), options: Object.entries(STATUS).map(([v, l]) => ({ v, l, icon: stIcon(v) })), pick: (v) => saveProperty(t.id, 'state', v), onClose: showSaved })}</dd></div>
+        <div class="task-property"><dt>Status</dt><dd>${selectHtml('tpState', { label: 'Status', cls: 'prop', disabled: !canEdit, icon: stIcon(shownValue(t, 'state')), value: shownValue(t, 'state'), options: Object.entries(STATUS).map(([v, l]) => ({ v, l, icon: stIcon(v) })), pick: (v) => saveProperty(t.id, 'state', v), onOpen: noteOpened(t.id), onClose: showSaved })}</dd></div>
         ${trackEpicHtml(t, canEdit)}
         <div class="task-property"><dt>Assignees</dt><dd>${msHtml('tpAssign', t.id, !canEdit)}</dd></div>
         <div class="task-property task-property-date prop-row${late ? ' late' : ''}"><dt>Deadline</dt><dd>${dateHtml('tpDl', { hideLabel: true, cls: 'prop', disabled: !canEdit, icon: I.clock, name: '_dl', value: t.deadline || '', clearable: true, autosave: true, pick: (v) => App.updTask(t.id, 'deadline', v) })}<span class="task-overdue" ${late ? '' : 'hidden'}>Overdue</span></dd></div>
@@ -303,7 +310,8 @@ function msHtml(key, taskId, disabled) {
     icon: () => { const a = (taskById(taskId)?.assignees || []).filter(userById); return a.length ? `<span class="avs">${a.slice(0, 3).map((x) => avatarHtml(x, 16)).join('')}</span>` : I.person; },
     options: projectMembers().map((u) => ({ v: u.id, l: u.name, sub: userHandle(u) })),
     values: () => taskById(taskId)?.assignees || [],
-    toggle: (v) => { clearTaskSaved();if (!App.require('manage_board') || !recovery.ensureOnline()) return; const t = taskById(taskId); if(!t){App.toast('This task is no longer available','error');return;} if(!(t.assignees||[]).includes(v)&&!projectMembers().some(u=>u.id===v)){App.toast('This person is no longer a project member','error');return;} runtime().setAssignees(t.internalId,t.assignees.includes(v)?t.assignees.filter(id=>id!==v):[...t.assignees,v]).catch(report); },
+    toggle: (v) => { clearTaskSaved();if (!App.require('manage_board') || !recovery.ensureOnline()) return; const t = taskById(taskId); if(!t){App.toast('This task is no longer available','error');return;} if(!(t.assignees||[]).includes(v)&&!projectMembers().some(u=>u.id===v)){App.toast('This person is no longer a project member','error');return;} runtime().setAssignees(t.internalId,t.assignees.includes(v)?t.assignees.filter(id=>id!==v):[...t.assignees,v],openedRevision(t)).catch(report); },
+    onOpen: noteOpened(taskId),
     summary: () => { const a = taskById(taskId)?.assignees || []; return a.length ? a.map((x) => (userById(x) || { name: x }).name).join(', ') : 'Unassigned'; },
     onClose: () => App.refresh(),
   });

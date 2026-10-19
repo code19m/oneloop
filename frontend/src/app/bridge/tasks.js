@@ -26,11 +26,12 @@ export function installTasks(ctx) {
   function noteTaskSaved(result,id){const item=task(id);if(!result?.stale&&!result?.skipped&&!recovery.isSavingTask()&&!(item&&(taskBusy(item.internalId)||unsavedDraft(item.internalId))))app.noteTaskSaved(id);return result;}
   const sameAssignees=(left,right)=>left.length===right.length&&left.every((id)=>right.includes(id));
 
-  function saveAssignees(item,assigneeIds){
+  /** @param {any} item @param {string[]} assigneeIds @param {number} [base] the revision the person's picks started from */
+  function saveAssignees(item,assigneeIds,base){
     const id=item.internalId,scope=sessionScope(),key=`${scope}:${id}`,desired=[...new Set(assigneeIds.map(String))];
     let state=assigneeSaves.get(key);
-    if(!state){state={desired,persisted:[...(item.assignees??[])],running:false,promise:null};assigneeSaves.set(key,state);}
-    state.desired=desired;item.assignees=[...desired];
+    if(!state){state={desired,persisted:[...(item.assignees??[])],running:false,promise:null,base};assigneeSaves.set(key,state);}
+    state.desired=desired;state.base=base;item.assignees=[...desired];
     if(state.running)return state.promise;
     state.running=true;
     state.promise=(async()=>{
@@ -39,8 +40,7 @@ export function installTasks(ctx) {
         while(!sameAssignees(state.persisted,state.desired)){
           const target=[...state.desired],current=task(id);if(sessionScope()!==scope||!current)break;
           const comparison={...current,assignees:[...state.persisted]};
-          // The picks start from the assignees the task has now, so the save builds on its revision now.
-          const result=await execute('task.update',{taskId:id,assigneeIds:target},current,null,{compareEntity:comparison,paint:false,expectedRevision:current.revision});
+          const result=await execute('task.update',{taskId:id,assigneeIds:target},current,null,{compareEntity:comparison,paint:false,expectedRevision:state.base});
           if(result?.stale)break;
           changed ||= !result?.skipped;state.persisted=target;
           if(task(id))task(id).assignees=[...state.desired];
@@ -72,11 +72,7 @@ export function installTasks(ctx) {
     // Status shows the saved status again behind the dialog, which opens once
     // the Status menu has returned focus, so it takes focus and gives it back.
     if(field==='state'&&value==='done'&&item.block){app.refresh();queueMicrotask(()=>app.openModal('completeBlocked',item.id));return false;}
-    // Status, Track and Epic show the task as it is now, also after a change
-    // made elsewhere, so a pick builds on that revision. Typed text builds on
-    // the revision the page had when the person started typing.
-    const shown=['state','trackId','epicId'].includes(field)?item.revision:undefined;
-    if(field==='state')return accepted(execute('task.move',{taskId:item.internalId,status:toWireStatus(value)},item,null,{reload:true,coalesce:true,expectedRevision:shown}).then((result)=>noteTaskSaved(result,item.id)));
+    if(field==='state')return accepted(execute('task.move',{taskId:item.internalId,status:toWireStatus(value)},item,null,{reload:true,coalesce:true,expectedRevision:base}).then((result)=>noteTaskSaved(result,item.id)));
     const names={title:'title',desc:'description',deadline:'deadline',trackId:'trackId',epicId:'epicId'};
     if(!names[field])return false;
     // No deadline and No epic are null.
@@ -100,7 +96,7 @@ export function installTasks(ctx) {
     // takes the task out of its epic, which the server does.
     const payload={taskId:item.internalId,[names[field]]:next,...(chosenEpic&&chosenEpic.trackId!==item.trackId?{trackId:chosenEpic.trackId}:{})};
     const control={desc:'#task-description',title:'.task-title-field textarea',trackId:'#select-tpTrack',epicId:'#select-tpEpic'}[field]??`[name="${field}"]`;
-    return accepted(execute('task.update',payload,item,null,{form,coalesce:true,expectedRevision:base??shown,draft,draftValue:next,conflictElement:()=>document.querySelector(control)}).then((result)=>noteTaskSaved(result,item.id)));
+    return accepted(execute('task.update',payload,item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>document.querySelector(control)}).then((result)=>noteTaskSaved(result,item.id)));
   }
   function retryDrafts(){
     for(const draft of [...drafts.values()]){
@@ -110,10 +106,13 @@ export function installTasks(ctx) {
   }
   recovery.whenOnline(retryDrafts);
 
-  app.updTask = (id, field, value) => {
+  // A pick from a list passes `base`, the revision the list showed when it
+  // opened, so a change that landed while it was open meets the conflict
+  // question. Without it, a field builds on the revision its editor had.
+  app.updTask = (id, field, value, base) => {
     if(app.isRendering())return false;
     const item=task(id);if(!item)return false;
-    return saveTaskField(item,field,value);
+    return saveTaskField(item,field,value,{base});
   };
   app.saveTaskDraft=(id,field)=>{
     const item=task(id),draft=item&&drafts.get(draftKey(item.internalId,field));
@@ -199,8 +198,8 @@ export function installTasks(ctx) {
       pruneDrafts();
       drafts.set(draftKey(item.internalId,field),{taskId:item.internalId,field,value:next,base:recovery.expectedRevision(recovery.revisionKey(item),item.revision),scope:sessionScope(),unsaved:true,retryOnline:false});
     },
-    /** @param {string} taskId @param {string[]} assigneeIds */
-    async setAssignees(taskId,assigneeIds){const item=task(taskId);if(!item)return skipped();return saveAssignees(item,assigneeIds);},
+    /** @param {string} taskId @param {string[]} assigneeIds @param {number} [base] the revision the Assignees list showed when it opened */
+    async setAssignees(taskId,assigneeIds,base){const item=task(taskId);if(!item)return skipped();return saveAssignees(item,assigneeIds,base);},
     /**
      * Move a task to `status`, at `position` or before or after another task.
      * An `optimistic` move already shows, so it paints nothing and says nothing.

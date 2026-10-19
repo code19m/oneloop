@@ -577,23 +577,20 @@ test('a change made elsewhere while the Status, Track or Epic list is open shows
   }
 });
 
-test('a pick after a change made elsewhere builds on the revision the page shows, so it meets no false conflict', async () => {
-  for (const [key, label, operation] of [['tpState', 'In Review', 'task.move'], ['tpTrack', 'Mobile experience', 'task.update'], ['tpEpic', 'Search relevance', 'task.update']]) {
-    const t = changedElsewhere(), select = t.d.getElementById(`select-${key}`);
-    select.focus(); t.A.popSelect({ currentTarget: select, preventDefault() {} }, key);
+test('a pick builds on the revision its list showed when it opened: a change made while it is open meets the question, one made before does not', async () => {
+  const picks = { tpState: 'In Review', tpTrack: 'Mobile experience', tpEpic: 'Search relevance', tpAssign: 'robin' };
+  for (const [key, choice] of Object.entries(picks)) for (const whileOpen of [true, false]) {
+    const t = changedElsewhere(), assignees = key === 'tpAssign', button = () => assignees ? t.d.querySelector('[data-filter-key="tpAssign"]') : t.d.getElementById(`select-${key}`);
+    const open = () => assignees ? t.A.popMulti({ currentTarget: button(), preventDefault() {} }, key) : t.A.popSelect({ currentTarget: button(), preventDefault() {} }, key);
+    // Focus on the page keeps it from being drawn again, so only the list decides what the person saw.
+    button().focus();
+    if (whileOpen) open();
     t.change(['task'], { title: 'Renamed elsewhere' });
     await waitFor(() => t.D.tasks.find(item => item.id === 'BIR-079').revision === 2, `the change arrives (${key})`);
-    t.d.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    pick(t, key, label);
-    assert.deepEqual([t.commands.at(-1).operation, t.commands.at(-1).expectedRevision], [operation, 2], key);
+    if (!whileOpen) open();
+    (assignees ? t.d.querySelector(`.pop [data-v="${choice}"]`) : [...t.d.querySelectorAll('.pop-opt')].find(option => option.textContent.trim() === choice)).click();
+    assert.equal(t.commands.at(-1).expectedRevision, whileOpen ? 1 : 2, `${key}: changed ${whileOpen ? 'while its list was open' : 'before its list opened'}`);
   }
-  // Assignees too: their list lists the task's assignees as they are now.
-  const t = changedElsewhere(), assignees = t.d.querySelector('[data-filter-key="tpAssign"]');
-  assignees.focus(); t.A.popMulti({ currentTarget: assignees, preventDefault() {} }, 'tpAssign');
-  t.change(['task'], { title: 'Renamed elsewhere' });
-  await waitFor(() => t.D.tasks.find(item => item.id === 'BIR-079').revision === 2, 'the change arrives (assignees)');
-  t.d.querySelector('.pop [data-v="robin"]').click();
-  assert.deepEqual([t.commands.at(-1).payload, t.commands.at(-1).expectedRevision], [{ taskId: 'bir-079', assigneeIds: ['robin'] }, 2]);
 });
 
 test('a description changed elsewhere shows at once while focus is elsewhere on the page, and once focus leaves its text', async () => {

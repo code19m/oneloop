@@ -393,6 +393,7 @@ Object.assign(App, {
     POP.id = 'ms:' + key;
     el.id='multi-'+key;POP.trigger=btn;btn.setAttribute('aria-expanded','true');btn.setAttribute('aria-controls',el.id);
     POP.onClose = def.onClose || null;
+    def.onOpen?.();
     let q = '';
     const row = (o) => `<button type="button" class="pop-opt multi${def.values().includes(o.v) ? ' on' : ''}" aria-pressed="${def.values().includes(o.v)}" data-v="${esc(o.v)}">
         <span class="chk">${def.values().includes(o.v) ? I.tick : ''}</span>
@@ -440,6 +441,7 @@ Object.assign(App, {
     const el = openPop(btn);
     POP.id = 'sel:' + key;POP.trigger=btn;btn.setAttribute('aria-expanded','true');btn.setAttribute('aria-controls',`select-${key}-list`);
     POP.onClose = def.onClose || null;
+    def.onOpen?.();
     setHTML(el,`${searchable ? '<div class="pop-search-wrap"><input class="pop-search" type="text" placeholder="Search options" spellcheck="false"></div>' : ''}<div class="pop-list"></div>`);
     const listEl = el.querySelector('.pop-list');
     const input = el.querySelector('.pop-search');
