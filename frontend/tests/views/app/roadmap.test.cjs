@@ -707,6 +707,23 @@ test('a view that reaches before the days the lanes hold reads only the days nex
   assert.deepEqual([asked[1].to, t.d.querySelector('.connection-notice')], ['2026-09-09', null]);
 });
 
+test('while reads fail, every mark whose task hasn\'t come says it couldn\'t load, and loads once a read comes again', async () => {
+  let clock = NOW, failing = true;
+  const asked = [];
+  const t = boot('roadmap/p1?scale=months', { api: { serverNow: () => clock }, prepare: D => { heldFromSep10(D); delete D.roadmap.marks['bir-076']; }, reads: {
+    roadmapDays: async (_projectId, days) => { asked.push(days); if (failing) throw new ApiError('Connection lost', { code: 'network_error' }); return { stale: false, marked: { from: days.from, to: days.to } }; },
+  } });
+  await settle();
+  const ring = () => lane(t.d, 't4').querySelector('[data-list="plans"][data-from="2026-10-20"]');
+  // The read that failed asked for the days before the ones held, not for this ring's task.
+  assert.deepEqual(asked.map(days => !!days.marks), [false]);
+  assert.deepEqual([ring().getAttribute('aria-label'), ring().querySelector('.rt-tag-failed')?.textContent], ['1 planned task, due Oct 20, its task couldn’t load', 'Couldn’t load']);
+  clock += 3000; failing = false;
+  await scrollBy(t, -10); await settle();
+  assert(asked.length >= 2);
+  assert.equal(ring().getAttribute('aria-label'), '1 planned task, due Oct 20, loading');
+});
+
 test('a view that reaches past the days the lanes hold reads the later days, with the plans due on them', async () => {
   const t = boot('roadmap/p1?scale=months', { prepare: D => { D.roadmap.window.to = '2026-10-01'; } });
   await scrollBy(t, 0, parseFloat(t.d.querySelector('.rm-canvas').style.width));

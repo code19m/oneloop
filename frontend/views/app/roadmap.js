@@ -527,8 +527,9 @@ function drawLanes(view) {
   const focusedLane = active && view.sc.contains(active) && active.closest('.rt-body') ? active.closest('.lane') : null;
   // Focus in an open list goes back to its mark if that is drawn again, which shows the list again.
   const inList = !!document.getElementById('roadmap-list')?.contains(active), listed = listAnchor()?.dataset.nav;
-  // Days whose tasks couldn't load: their marks say so, and list their task when pressed.
-  const unloaded = askedReads.get(roadmapLanes())?.unloaded ?? [], failed = (day) => unloaded.some((range) => range.from <= day && day <= range.to);
+  // Days whose tasks couldn't load, or all of them while reads fail: their marks say so, and list their task when pressed.
+  const asked = askedReads.get(roadmapLanes()), unloaded = asked?.unloaded ?? [];
+  const failed = (day) => !!asked?.failed || unloaded.some((range) => range.from <= day && day <= range.to);
   view.lanes.forEach((entry, i) => {
     const { lane, body, data } = entry;
     if (!body) return;
@@ -967,10 +968,11 @@ function windowScroll(sc, { from, to }, ppd, { reserve, ahead }, now) {
 
 /**
  * The reads asked for these lanes: the days asked for, the days whose tasks
- * came, the days whose tasks couldn't load, whether one is loading, and when
- * one failed. While one loads the view asks for nothing more; after one
- * failed, nothing until the next scroll, zoom or change made elsewhere a
- * little later, so a scroll on a failing network sends no stream of reads.
+ * came, the days whose tasks couldn't load, whether one is loading, whether
+ * the last one failed, and when. While one loads the view asks for nothing
+ * more; after one failed, nothing until the next scroll, zoom or change made
+ * elsewhere a little later, so a scroll on a failing network sends no stream
+ * of reads.
  */
 const askedReads = new WeakMap();
 /** How long a failed read waits before the view tries again, at the least. */
@@ -978,7 +980,7 @@ const RETRY_AFTER = 2000;
 
 /** The reads asked for `lanes`, kept with them. */
 function readsOf(lanes) {
-  const asked = askedReads.get(lanes) ?? { busy: false, days: new Set(), marked: [], unloaded: [], failedAt: 0 };
+  const asked = askedReads.get(lanes) ?? { busy: false, days: new Set(), marked: [], unloaded: [], failed: false, failedAt: 0 };
   askedReads.set(lanes, asked);
   return asked;
 }
@@ -1016,20 +1018,23 @@ function loadMore(view, { retry = false } = {}) {
     if (!marks) asked.days.add(key);
     // Once it lands, the view goes on with what it still lacks; days a change made elsewhere overtook come again.
     runtime().roadmapDays(days).then((result) => {
-      asked.busy = false;
+      // Marks that said their task couldn't load, as all do while reads fail, say what they say now.
+      let redraw = asked.failed;
+      Object.assign(asked, { busy: false, failed: false });
       if (result?.stale) { if (!marks) asked.days.delete(key); }
       else if (marks) {
         // The days whose tasks all came are read, at least the one asked about; the others are asked for again.
         const got = result.marked && result.marked.from <= result.marked.to ? result.marked : { from: days.anchor, to: days.anchor };
         asked.marked.push({ ...got, cell });
         const unloaded = asked.unloaded.filter((range) => range.to < got.from || range.from > got.to);
-        // Marks that said their task couldn't load say what they say now.
-        if (unloaded.length !== asked.unloaded.length) { asked.unloaded = unloaded; if (mountedRoadmap === view) drawLanes(view); }
+        if (unloaded.length !== asked.unloaded.length) { asked.unloaded = unloaded; redraw = true; }
       }
-      if (mountedRoadmap === view) { loadMore(view); returnFocus(view); }
+      if (mountedRoadmap !== view) return;
+      if (redraw) drawLanes(view);
+      loadMore(view); returnFocus(view);
     }, () => {
       // The page says it couldn't refresh the view; the days come again with the next scroll or change.
-      Object.assign(asked, { busy: false, failedAt: runtime().now() });
+      Object.assign(asked, { busy: false, failed: true, failedAt: runtime().now() });
       if (marks) asked.unloaded.push({ from: days.from, to: days.to });
       else asked.days.delete(key);
       if (mountedRoadmap === view) { drawLanes(view); returnFocus(view); }
