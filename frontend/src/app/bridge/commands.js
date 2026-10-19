@@ -102,8 +102,9 @@ export function createCommands(ctx) {
     if(!field)return undefined;
     const entityType=operation.startsWith('task.block')?'taskBlock':operation.startsWith('pool.')?'poolItem':operation.split('.')[0];
     const value=item===payload?payload[field]:item?.[clientField(entityType,field)];
-    // A status, a track or an epic reads as its select names it.
+    // A status, a track, an epic or the assignees read as their controls name them.
     if(field==='status')return statusLabel(value);
+    if(field==='assigneeIds')return value?.length?value.map((id)=>data.users.find((user)=>user.id===id)?.name??id).join(', '):'Nobody';
     if(field==='trackId')return track(value)?.name??value;
     if(field==='epicId')return value?epic(value)?.title??value:'No epic';
     return value;

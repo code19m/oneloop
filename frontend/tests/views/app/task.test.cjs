@@ -479,6 +479,17 @@ test('a Status pick that meets a change made elsewhere names the latest status b
   assert.match(t.d.querySelector('[data-recovery-conflict]').textContent, /Latest saved value: In Progress/);
 });
 
+test('an Assignees pick that meets a change made elsewhere names the latest assignees, or Nobody', async () => {
+  for (const [assignees, named] of [[[], 'Nobody'], [['blairq', 'robin'], 'Blair Quinn, Robin Vale']]) {
+    const t = conflictPage({ assignees }), button = t.d.querySelector('[data-filter-key="tpAssign"]');
+    t.A.popMulti({ currentTarget: button, preventDefault() {} }, 'tpAssign');
+    t.d.querySelector('.pop [data-v="taylorwu"]').click();
+    t.commands[0].reject(conflict(t));
+    await waitFor(() => promptButton(t, 'Use latest'), 'the conflict prompt appears');
+    assert.equal(t.d.querySelector('[data-recovery-conflict] span').textContent, `Changed elsewhere. Latest saved value: ${named}`);
+  }
+});
+
 test('Use latest on a description shows the saved description, not the typed one', async () => {
   const t = conflictPage({ desc: 'Their description' }), description = t.d.getElementById('task-description');
   description.focus(); description.value = 'My description'; description.blur(); t.A.updTask(t.task.id, 'desc', description.value);
