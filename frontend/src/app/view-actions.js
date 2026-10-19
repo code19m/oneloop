@@ -40,7 +40,7 @@ export const ACTIONS = Object.freeze([
   'colOver', 'commentInput', 'commentKey', 'commentMenu', 'copyTemporaryPassword', 'dateBlur',
   'dateKey', 'dateTyping', 'delAttachment', 'delPool', 'deleteEpic', 'deleteMilestone',
   'deleteProject', 'descriptionKey', 'downloadAttachment', 'dragEnd', 'dropTask', 'editDescription',
-  'editPoolDescription', 'epicHover', 'epicKey', 'epicLeave', 'expandDescription', 'goToday',
+  'editPoolDescription', 'epicLeave', 'expandDescription', 'focusOverdue', 'goToday',
   'inboxBulk', 'inboxFilter', 'jumpToComment', 'leaveField', 'leaveProjectField',
   'loadMoreBoard', 'loadMoreEpicActivity', 'loadMoreEpicTasks', 'loadMorePool', 'loadMoreUsers',
   'loadOlderActivity', 'login', 'logout', 'menuAction', 'milestoneClick', 'milestoneHover',

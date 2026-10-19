@@ -1,120 +1,137 @@
 // @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
-/* The Roadmap: tracks, epics and milestones on a zoomable timeline, the epic
-   drawer, and moving tracks. */
+/* The Roadmap: each track as a lane on a zoomable time axis, with milestones
+   and Today above them (the lanes' tasks are timeline.js's), the epic drawer,
+   and moving tracks. */
 
 import { pageOf, projectAddress } from '../../src/app/address.js';
 import { UIMotion } from '../../src/app/motion.js';
 import { sortable } from '../../src/app/sortable.js';
 import { sessionKey } from '../../src/data/projection-store.js';
 import {
-  DAY, I, STATUS, UIAction, ago, d, esc, formatInstant, human, humanShort, setHTML, stIcon, today,
+  DAY, I, STATUS, UIAction, ago, d, esc, formatInstant, human, humanShort, iso, setHTML, stIcon, today,
 } from './format.js';
 import { descriptionReadHtml } from './forms.js';
 import {
-  App, D, OPENING_SCALE, ROADMAP_SCALES, canReadProject, canRoadmap, epicById, epics, milestones, project, projectLoaded,
-  report, runtime, state, taskById, tasks, trackById, tracks, userById,
+  App, D, ROADMAP_SCALES, canBoard, canReadProject, canRoadmap, epicById, epics, milestones, project,
+  recovery, report, runtime, state, taskById, tasks, trackById, tracks, userById,
 } from './model.js';
 import {
   EPIC_TIP, POP, hideEpicTip, mountRoadmapTip, openMenu, peekOpened, pendingConfirmation,
   rememberOpener, restoreOpener,
 } from './overlays.js';
 import { announce } from './toasts.js';
+import {
+  closeTimelineList, drawnIn, epicDated, epicStatus, focusOpener, focusTask, focusTimeline, headFigure, lanePieces, laneDates, laneEntry, laneFocus, laneModels, refocus,
+  layoutLane, listAnchor, markCell, mountLanes, numbers, placeOfKey, resolveKey, roadmapLanes, roomAfterNow, setStyle, setTabStop, syncLaneEdges, textWidth,
+} from './timeline.js';
 
 // ---------- roadmap geometry ----------
-// The model holds dates as whole days from the range start; pixels are days
-// times the zoom level (pixels per day). A zoom step rewrites the positions
-// of the existing elements instead of rebuilding the Roadmap, and the same
-// functions produce them for the render and for every step.
-let RAIL = 208;
-const AXIS = 70, MONTH_ROW = 32, BAR_H = 58, ROW_GAP = 8, LANE_PAD = 14, EPIC_GAP = 8, EPIC_MIN_WIDTH = 60, GOAL_ROW = 58;
+// The model holds dates as days from the range start; pixels are days times
+// the zoom level (pixels per day). A zoom step moves the axis, lines and
+// labels in place and draws only the lanes' marks again, which merge
+// differently at each zoom.
+/** The track rail on the left; on a phone each track's head sits above its lane instead. */
+let RAIL = 216;
+/**
+ * The axis: a row of milestone cards when the project has milestones, a row
+ * for Today, then a row of dates. Its height never changes with the zoom.
+ */
+const AXIS = 56, CARD_ROW = 52;
+/** A milestone's card: the app's shiny diamond, its name and "Oct 26 · 9d away"; its line drops from the card. */
+const CARD_TOP = 8, CARD_H = 44, LABEL_H = 20;
+/** A card's border and padding, its diamond and the gap after it; and the card as the diamond alone. */
+const CARD_PAD = 12, DIAMOND = 14, CARD_GAP = 10, COMPACT = 2 + 2 * CARD_PAD + DIAMOND;
+/** Where the diamond's middle sits in a card, from its edge. */
+const POLE = 1 + CARD_PAD + DIAMOND / 2;
+/** The room between two cards. */
+const CARDS_APART = 8;
+/** A card wide enough for its longer line, with a little room. */
+const cardWidth = (name, dateLabel) => Math.ceil(2 + 2 * CARD_PAD + DIAMOND + CARD_GAP + Math.max(textWidth(name, '600 13px'), textWidth(dateLabel, '500 12px') * 1.06) + 6);
+const axisHeight = (model) => AXIS + (model.goals.length ? CARD_ROW : 0);
+const labelTop = (model) => CARD_TOP + (model.goals.length ? CARD_ROW : 0);
 const ZOOM_MIN = 2.2, ZOOM_MAX = 42;
+/** At this width and below, a track's head sits above its lane. */
+const stackedLayout = () => window.innerWidth <= 900;
+/**
+ * Where today sits in a view the Roadmap places, as a share of the visible
+ * timeline: the work done and in progress gets a little more room than the
+ * dated plans after it. With nothing dated ahead, Today sits near the right
+ * edge (roomAfterNow).
+ */
+const TODAY_AT = 0.56, TODAY_AT_PHONE = 0.6;
 /** The scale nearest a zoom, in proportion, as each wheel notch zooms by a factor. */
 const nearestScale = (ppd) => ROADMAP_SCALES.reduce((near, scale) => (Math.abs(Math.log(scale.ppd / ppd)) < Math.abs(Math.log(near.ppd / ppd)) ? scale : near));
 /** From 18 px a day, a week is 126 px or more, so the axis shows weeks instead of months. */
 const WEEK_AXIS_PPD = 18;
 const roadmapScale = () => ROADMAP_SCALES.find((scale) => Math.abs(scale.ppd - state.pxPerDay) < 0.005) || null;
-/** The epic last focused or opened on the Roadmap, which a scale change keeps in view. */
+/** The item last focused or opened on the Roadmap, which a scale change keeps in view. */
 let roadmapSelection = null;
+/**
+ * Whether the person picked the zoom: with a scale, a wheel or a pinch, or
+ * through an address that names a scale. Otherwise the Roadmap opens at the
+ * scale that fits each project's work, once its lanes load (`fitted`).
+ */
+let picked = false, fitted = null;
 
-/** The data's dates: `start` anchors day 0 and `end` is the last date the timeline must reach before it fills the view. */
-function rmRange() {
-  let min = today, max = new Date(today.getTime() + 60 * DAY);
-  epics().forEach((e) => {
-    // An ongoing epic's start also extends the range, or a late one would fall past the end.
-    const s = d(e.start); if (s < min) min = s; if (s > max) max = s;
-    if (e.end) { const en = d(e.end); if (en > max) max = en; }
-  });
-  milestones().forEach((m) => { const md = d(m.date); if (md < min) min = md; if (md > max) max = md; });
-  return { start: new Date(min.getTime() - 10 * DAY), end: new Date(max.getTime() + 45 * DAY) };
-}
-
-/** The Roadmap's tracks, epics and milestones as day offsets; nothing here depends on the zoom level. */
-function roadmapModel() {
-  const { start, end } = rmRange();
-  const day = (dt) => Math.round((dt - start) / DAY);
-  const all = epics();
-  const lanes = tracks().map((track) => ({
-    track,
-    epics: all.filter((e) => e.trackId === track.id).sort((a, b) => d(a.start) - d(b.start))
-      .map((epic) => ({ epic, from: day(d(epic.start)), to: epic.end ? day(d(epic.end)) : null })),
-  }));
-  const goals = milestones().slice().sort((a, b) => d(a.date) - d(b.date)).map((m) => {
-    const date = d(m.date);
-    const days = Math.round((date.getTime() - today.getTime()) / DAY);
-    const past = days < 0;
-    const name = m.name.charAt(0).toUpperCase() + m.name.slice(1);
-    const dateLabel = humanShort(date) + (days > 0 ? ` · ${days}d away` : days === 0 ? ' · Today' : '');
-    const width = Math.min(240, Math.max(112, name.length * (past ? 7.5 : 8.5) + (past ? 50 : 62), dateLabel.length * 6 + (past ? 50 : 62)));
-    return { m, past, name, dateLabel, width, at: day(date) };
-  });
-  return { start, span: day(end), today: day(today), lanes, goals };
+/**
+ * The scale that shows the work around today: the last three weeks' done
+ * work, the work in progress, the next six weeks of dates, and the room the
+ * view keeps after now (`reserve`, in pixels). Returns its zoom and that
+ * window of days.
+ */
+function fitScale(model, room, reserve) {
+  const now = model.today;
+  let from = now - 3, to = now;
+  for (const lane of model.lanes) for (const section of lane.sections) for (const item of section.items) {
+    if (item.kind === 'done' && item.at >= now - 21) from = Math.min(from, item.at);
+    if (item.kind === 'flight') { from = Math.min(from, Math.max(item.from, now - 30)); if (!item.open && item.to <= now + 45) to = Math.max(to, item.to); }
+    if (item.kind === 'planned' && item.at <= now + 45) to = Math.max(to, item.at);
+  }
+  for (const goal of model.goals) if (goal.at >= now - 3 && goal.at <= now + 45) to = Math.max(to, goal.at);
+  const span = to - from + 4;
+  const scale = ROADMAP_SCALES.find((item) => span * item.ppd + reserve <= room * 0.94) || ROADMAP_SCALES[ROADMAP_SCALES.length - 1];
+  return { ppd: scale.ppd, window: { from, to } };
 }
 
 /**
- * The parts of the layout that change at a zoom level: which row each epic
- * and goal label takes, the lane heights and the axis height. `heads` are
- * the heights the lanes' rail cells need; `width` and `height` are the
- * content area's size.
+ * The days the timeline covers: `start` anchors day 0, and `end` is the last
+ * date it must reach. It runs from seven weeks back to two months ahead, and
+ * further for dated epics, milestones and the project's work, loaded or not.
  */
-function roadmapLayout(model, ppd, { barHeight, heads, width, height }) {
-  const x = (days) => dayX(days, ppd);
-  const timeline = timelineWidth(model, ppd, width);
-  // Goal labels pack independently of epic lanes, including room for Today.
-  const todayX = x(model.today);
-  const labelRows = [[{ left: todayX - 34, right: todayX + 34 }]];
-  const goalRows = model.goals.map((goal) => {
-    const left = Math.max(6, Math.min(x(goal.at) - goal.width / 2, timeline - goal.width - 6));
-    let row = labelRows.findIndex((items) => items.every((other) => left + goal.width + 12 <= other.left || left >= other.right + 12));
-    if (row < 0) { row = labelRows.length; labelRows.push([]); }
-    labelRows[row].push({ left, right: left + goal.width });
-    return row;
-  });
-  const axisHeight = AXIS + (labelRows.length - 1) * GOAL_ROW;
-  // Date intervals and minimum card widths must both fit before reusing a row.
-  // An ongoing epic runs to the end of the range, so nothing later shares its row.
-  const packed = model.lanes.map((lane) => {
-    const rows = [];
-    const assigned = lane.epics.map((item) => {
-      const left = x(item.from);
-      const right = item.to === null ? Infinity : left + Math.max(x(item.to) - left, EPIC_MIN_WIDTH);
-      let row = rows.findIndex((last) => item.from > last.to && left >= last.right + EPIC_GAP);
-      if (row < 0) row = rows.length;
-      rows[row] = { to: item.to ?? Infinity, right };
-      return row;
-    });
-    return { assigned, count: Math.max(rows.length, 1) };
-  });
-  // Packed minimum heights, as tall as the rail cell needs, then leftover viewport height shared evenly.
-  const rowsHeight = (count) => count * barHeight + (count - 1) * ROW_GAP;
-  const minHs = packed.map((lane, i) => Math.max(2 * LANE_PAD + rowsHeight(lane.count), 88, heads[i]));
-  const availH = height - axisHeight - MONTH_ROW - 8;
-  const extra = packed.length ? Math.max((availH - minHs.reduce((a, b) => a + b, 0)) / packed.length, 0) : 0;
-  const lanes = packed.map((lane, i) => {
-    const laneHeight = Math.round(minHs[i] + extra);
-    return { rows: lane.assigned, count: lane.count, height: laneHeight, pad: Math.round((laneHeight - rowsHeight(lane.count)) / 2) };
-  });
-  return { ppd, axisHeight, goalRows, lanes };
+function rmRange() {
+  let min = new Date(today.getTime() - 50 * DAY), max = new Date(today.getTime() + 60 * DAY);
+  const take = (date) => { if (date < min) min = date; if (date > max) max = date; };
+  epics().forEach((e) => { if (epicDated(e)) { take(d(e.start)); take(d(e.end)); } });
+  milestones().forEach((m) => take(d(m.date)));
+  // Every day the project's done work and dated plans fall on, so the timeline stays put as their days load.
+  const lanes = roadmapLanes();
+  for (const day of [lanes?.firstDay, lanes?.lastDay]) if (day) take(d(day));
+  const work = laneDates();
+  if (work) { take(work.min); take(work.max); }
+  return { start: new Date(min.getTime() - 10 * DAY), end: new Date(max.getTime() + 45 * DAY) };
 }
+
+/** The Roadmap's lanes and milestones as day offsets; nothing here depends on the zoom level. */
+function roadmapModel() {
+  const { start, end } = rmRange(), timeline = laneModels(start);
+  const day = (dt) => Math.round((dt - start) / DAY);
+  const goals = milestones().slice().sort((a, b) => d(a.date) - d(b.date) || a.id.localeCompare(b.id)).map((m) => {
+    const date = d(m.date), days = Math.round((date - today) / DAY);
+    const name = m.name.charAt(0).toUpperCase() + m.name.slice(1);
+    const dateLabel = humanShort(date) + (days > 0 ? ` · ${days}d away` : days === 0 ? ' · Today' : '');
+    // A milestone marks its whole day: the line runs through the middle of it.
+    return { m, date, past: days < 0, name, dateLabel, at: day(date) + 0.5 };
+  });
+  return { start, span: day(end), today: timeline.now, lanes: timeline.lanes, ready: timeline.ready, goals };
+}
+
+/** Whether anything dated lies ahead: a dated plan, a deadline of work in progress, or a milestone. */
+function datedAhead(model) {
+  const now = model.today, items = model.lanes.flatMap((lane) => lane.sections).flatMap((section) => section.items);
+  return items.some((item) => (item.kind === 'planned' && item.at > now) || (item.kind === 'flight' && !item.open && item.to > now)) || model.goals.some((goal) => goal.at > now);
+}
+/** Where every mark of every lane goes at a zoom level. */
+const roadmapLayout = (model, ppd) => ({ ppd, lanes: model.lanes.map((lane) => layoutLane(lane, ppd, model.today)) });
 
 /** The zoom factor of one wheel event, as a natural logarithm. */
 const WHEEL_NOTCH = Math.log(1.15), MAC_WHEEL_LINE = 4.000244140625;
@@ -132,157 +149,137 @@ function wheelZoom(event) {
 const clampZoom = (ppd) => Math.round(Math.min(Math.max(ppd, ZOOM_MIN), ZOOM_MAX) * 1e4) / 1e4;
 // Horizontal places at a zoom level, in whole pixels so text stays on the pixel grid.
 const dayX = (days, ppd) => Math.round(days * ppd);
-const barLeft = (item, ppd) => `${dayX(item.from, ppd)}px`;
-/** An ongoing bar has no width: CSS runs it to the end of its lane. */
-const barWidth = (item, ppd) => `${Math.max(dayX(item.to, ppd) - dayX(item.from, ppd), EPIC_MIN_WIDTH)}px`;
-const barTop = (lane, row, barHeight) => `${lane.pad + row * (barHeight + ROW_GAP)}px`;
-const timelineWidth = (model, ppd, width) => Math.max(dayX(model.span, ppd), width - RAIL);
-/** A goal label's center: under its date, but kept inside the timeline. */
-const goalCenter = (goal, ppd, timeline) => `${Math.max(6, Math.min(dayX(goal.at, ppd) - goal.width / 2, timeline - goal.width - 6)) + goal.width / 2}px`;
+/** A milestone card's left edge: its diamond on the date. Where that card has no room it ends at its line, or shows its diamond alone (placeCards). */
+const cardLeft = (card, ppd) => dayX(card.at, ppd) - card.pole;
 
-/** Task counts arrive with the Roadmap's own read; until then, a placeholder. */
-const countsLoading = '<span class="tone-faint" aria-hidden="true">…</span><span class="sr-only">Loading task counts</span>';
-
-function epicBar(item, ppd, top) {
-  const e = item.epic, s = d(e.start);
-  const ongoing = item.to === null, counted = e.counted !== false;
-  const cls = ['bar', e.state, ongoing ? 'ongoing' : '', (counted && ongoing && e.total === 0 && e.state !== 'done') ? 'quiet' : ''].join(' ');
-  const pct = e.total ? Math.round((e.done / e.total) * 100) : 0;
-
-  const right = e.state === 'done' ? I.check : '';
-
-  let meta;
-  if (!counted && e.state !== 'done') meta = countsLoading;
-  else if (e.state === 'done') meta = `${counted && e.total ? e.done+'/'+e.total+' · ' : ''}<span class="tone-ok">complete</span>`;
-  else if (ongoing && e.total === 0) meta = '<span class="tone-faint">ongoing</span>';
-  else if (ongoing) meta = `<span class="tone-soft">ongoing</span> · ${e.completedSinceStart ?? e.done} done · ${e.open ?? e.total - e.done} open`;
-  else if (e.state === 'planning') meta = `${e.done}/${e.total} · starts ${humanShort(s)}`;
-  else meta = `${e.done}/${e.total}`;
-
-  const prog = (!counted || ongoing || e.total === 0) ? '' :
-    `<div class="prog"><i style="width:${pct}%;background:${e.state === 'done' ? 'var(--ok)' : 'var(--run)'}"></i></div>`;
-
-  return `<div class="${cls}" data-epic="${esc(e.id)}" role="button" tabindex="0" aria-label="${esc(e.title)}" style="left:${barLeft(item, ppd)};top:${top};${ongoing ? '' : `width:${barWidth(item, ppd)}`}" ${UIAction('openPeek', e.id)} ${UIAction.on('mouseenter', 'epicHover', UIAction.event, e.id)} ${UIAction.on('mouseleave', 'epicLeave')} ${UIAction.on('focus', 'epicHover', UIAction.event, e.id, true)} ${UIAction.on('blur', 'epicLeave')} ${UIAction.on('keydown', 'epicKey', UIAction.event, e.id)}>
-    <div class="t"><span class="txt">${esc(e.title)}</span>${right}</div>
-    <div class="m">${meta}</div>${prog}</div>`;
-}
-// The words the product uses for an epic's status.
-const epicStatus = (epic) => ({ planning: 'Planning', active: 'In progress', done: 'Done' })[epic.state] || epic.state;
-
-function showEpicTip(anchor, id) {
-  const epic = epicById(id);
-  if (!epic||!canReadProject(trackById(epic.trackId)?.projectId)) return;
-  const status = epicStatus(epic);
-  mountRoadmapTip(anchor, 'epic-tooltip', `<div class="epic-tip-title">${esc(epic.title)}</div>
-    <div class="epic-tip-track">${esc(trackById(epic.trackId)?.name || '')}</div>
-    <dl class="epic-tip-facts"><div><dt>Status</dt><dd>${esc(status)}</dd></div><div><dt>Tasks</dt><dd>${epic.counted === false ? countsLoading : `${epic.done} / ${epic.total} done`}</dd></div>
-    <div><dt>Start</dt><dd>${esc(epic.start)}</dd></div><div><dt>End</dt><dd>${epic.end ? esc(epic.end) : 'No end date'}</dd></div></dl>
-    ${epic.desc ? `<div class="epic-tip-description">${esc(epic.desc)}</div>` : ''}`);
+/**
+ * The milestones' cards at a zoom: one each, but milestones so close that no
+ * two cards could stand apart, even as diamonds, share one, "2 milestones",
+ * which lists them on hover and focus. Each keeps its own line.
+ */
+function goalCards(goals, ppd) {
+  const card = (run) => {
+    if (run.length === 1) {
+      const [goal] = run;
+      return { ...goal, ids: goal.m.id, goals: run, width: cardWidth(goal.name, goal.dateLabel), pole: POLE, compact: COMPACT, label: `Milestone ${goal.name}, ${goal.dateLabel}` };
+    }
+    const first = run[0], last = run[run.length - 1], name = `${run.length} milestones`, count = String(run.length);
+    const dateLabel = +first.date === +last.date ? humanShort(first.date) : `${humanShort(first.date)} – ${humanShort(last.date)}`;
+    return {
+      ids: run.map((goal) => goal.m.id).join(' '), goals: run, past: run.every((goal) => goal.past), name, dateLabel, count,
+      width: cardWidth(name, dateLabel), pole: POLE, compact: COMPACT + CARD_GAP + textWidth(count, '600 12px'), at: (first.at + last.at) / 2,
+      label: `${name}: ${run.map((goal) => `${goal.name}, ${goal.dateLabel}`).join('; ')}`,
+    };
+  };
+  let runs = goals.map((goal) => [goal]), cards = runs.map(card);
+  // Two neighbours whose diamonds would touch become one card, until none do.
+  for (let index = 1; index < cards.length;) {
+    const [a, b] = [cards[index - 1], cards[index]];
+    if ((b.at - a.at) * ppd >= (a.compact + b.compact) / 2 + CARDS_APART) { index++; continue; }
+    runs.splice(index - 1, 2, [...runs[index - 1], ...runs[index]]);
+    cards.splice(index - 1, 2, card(runs[index - 1]));
+    index = Math.max(1, index - 1);
+  }
+  return cards;
 }
 
-function showMilestoneTip(anchor, id) {
-  const milestone = milestones().find(m => m.id === id);
-  if (!milestone) return;
+/** The cards' markup, each placed with its diamond on its date; placeCards fits them to the view. */
+function cardsHtml(cards, ppd) {
+  return cards.map((card) => {
+    const x = dayX(card.at, ppd), group = card.goals.length > 1;
+    return `<button type="button" class="ms-label rt-card${card.past ? ' past' : ''}${group ? ' rt-card-group' : ''}" ${group ? `data-milestones="${esc(card.ids)}"${canRoadmap() ? ' aria-haspopup="menu" aria-expanded="false"' : ''}` : `data-milestone="${esc(card.ids)}"`} data-flag="${esc(numbers(x, card.width, card.pole, card.compact))}" aria-label="${esc(card.label)}" style="left:${cardLeft(card, ppd)}px;top:${CARD_TOP}px;width:${card.width}px" ${UIAction('milestoneClick', UIAction.event, card.ids)} ${UIAction.on('mouseenter', 'milestoneHover', UIAction.event, card.ids)} ${UIAction.on('mouseleave', 'epicLeave')} ${UIAction.on('focus', 'milestoneHover', UIAction.event, card.ids, true)} ${UIAction.on('blur', 'epicLeave')} ${UIAction.on('keydown', 'roadmapTipKey', UIAction.event)}>
+      ${I.diamond}${group ? `<span class="goal-count" aria-hidden="true">${esc(card.count)}</span>` : ''}<span class="txt"><span class="goal-name">${esc(card.name)}</span><span class="goal-date">${esc(card.dateLabel)}</span></span></button>`;
+  }).join('');
+}
+
+/** How a milestone stands from today, in words. */
+function timing(milestone) {
   const days = Math.round((d(milestone.date) - today) / DAY);
-  const timing = days === 0 ? 'Today' : `${Math.abs(days)} ${Math.abs(days) === 1 ? 'day' : 'days'} ${days > 0 ? 'away' : 'ago'}`;
+  return days === 0 ? 'Today' : `${Math.abs(days)} ${Math.abs(days) === 1 ? 'day' : 'days'} ${days > 0 ? 'away' : 'ago'}`;
+}
+
+/** The card of one milestone, or the list of the milestones a card holds; `ids` names them, separated by spaces. */
+function showMilestoneTip(anchor, ids) {
+  const list = ids.split(' ').map((id) => milestones().find((m) => m.id === id)).filter(Boolean);
+  if (!list.length) return;
+  if (list.length > 1) {
+    mountRoadmapTip(anchor, 'milestone-tooltip', `<div class="epic-tip-title">${esc(`${list.length} milestones`)}</div>
+      <div class="epic-tip-track">${esc(project().name)}</div>
+      <dl class="epic-tip-facts">${list.map((milestone) => `<div><dt>${esc(milestone.name)}</dt><dd>${esc(`${humanShort(d(milestone.date))} · ${timing(milestone)}`)}</dd></div>`).join('')}</dl>`);
+    return;
+  }
+  const [milestone] = list;
   mountRoadmapTip(anchor, 'milestone-tooltip', `<div class="epic-tip-title">${esc(milestone.name)}</div>
     <div class="epic-tip-track">Milestone · ${esc(project().name)}</div>
-    <dl class="epic-tip-facts"><div><dt>Date</dt><dd>${esc(milestone.date)}</dd></div><div><dt>Timing</dt><dd>${timing}</dd></div></dl>
+    <dl class="epic-tip-facts"><div><dt>Date</dt><dd>${esc(milestone.date)}</dd></div><div><dt>Timing</dt><dd>${timing(milestone)}</dd></div></dl>
     <div class="epic-tip-description">${milestone.desc ? esc(milestone.desc) : '<span class="tone-ghost">No description</span>'}</div>`);
 }
 
-export let roadmapHeight=null;
-
-/**
- * What the rows need, measured on hidden copies in one layout: an epic bar's
- * height, and each lane's rail cell height, `heads`, as its name and epic
- * count wrap. The copies have no row line: in a lane, the line takes a pixel
- * of the cell's padding, so a one-line name fits the least lane height, 88 px.
- * Whole pixels keep the lanes on the pixel grid.
- */
-function measureRows(heads) {
-  const probe = document.createElement('div');
-  probe.style.cssText = 'position:fixed;top:0;left:0;visibility:hidden;pointer-events:none';
-  setHTML(probe, `<div class="bar planning" style="width:300px"><div class="t"><span class="txt">Epic</span></div><div class="m">0/1 · ongoing</div></div>${heads.join('')}`);
-  (document.querySelector('.content') || document.body).append(probe);
-  const [bar, ...rails] = [...probe.children].map((el) => Math.ceil(el.getBoundingClientRect().height));
-  probe.remove();
-  return { barHeight: Math.max(BAR_H, bar), heads: rails };
-}
-
-/** A lane's rail cell: its track's name and a summary of its epics, with the grip and ⋮ for people who manage the Roadmap. */
-function laneHeadHtml(t, list) {
-  const active = list.filter((e) => e.state === 'active').length;
-  const doneN = list.filter((e) => e.state === 'done').length;
-  const cont = list.some((e) => !e.end);
-  const sub = list.length
-    ? `${list.length} epic${list.length > 1 ? 's' : ''}${active ? ` · ${active} active` : ''}${doneN ? ` · ${doneN} done` : ''}${cont ? ' · continuous' : ''}`
-    : 'no epics yet';
-  // A name cut off after two lines shows in full in its tip, on hover or, from its grip and ⋮, on keyboard focus.
-  const nameTip = `data-tip="${esc(t.name)}" data-tip-overflow="track-name-${esc(t.id)}" data-tip-keyboard`;
-  return `<div class="rail-cell lane-head" style="width:${RAIL}px">
-        <h2 class="name" id="track-name-${esc(t.id)}" data-tip="${esc(t.name)}" data-tip-overflow>${esc(t.name)}</h2><div class="sub">${sub}</div>
-        ${canRoadmap() ? `<div class="head-ctl">
-          <button type="button" class="grip" aria-label="Reorder ${esc(t.name)}" title="Drag to reorder · Arrow keys to move" ${nameTip}>${I.grip}</button>
-          <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" ${nameTip} ${UIAction('trackMenu', UIAction.event, t.id)}>${I.kebab}</button>
-        </div>` : ''}
-      </div>`;
-}
 /** The latest rendered Roadmap, which mountRoadmap binds. */
 let renderedRoadmap = null;
+
+/** A track's lane: its head (its name and figures, with its grip and menu for people who manage the Roadmap) and its timeline. */
+function laneHtml(lane, laid, body, model, stacked, viewWidth) {
+  const t = lane.track;
+  body ??= '<div class="rt-loading" aria-hidden="true"><span class="skeleton"></span><span class="skeleton"></span></div>';
+  const figure = headFigure(lane, model.ready);
+  // A name cut off shows in full in its tip, on hover or, from its grip and ⋮, on keyboard focus.
+  const nameTip = `data-tip="${esc(t.name)}" data-tip-overflow="track-name-${esc(t.id)}" data-tip-keyboard`;
+  return `<section class="lane" data-track="${esc(t.id)}" aria-labelledby="track-name-${esc(t.id)}">
+    <div class="rail-cell lane-head" style="width:${stacked ? `${viewWidth}px` : `${RAIL}px`}">
+      <div class="lane-title-row"><h2 class="name" id="track-name-${esc(t.id)}" data-tip="${esc(t.name)}" data-tip-overflow>${esc(t.name)}</h2>${canRoadmap() ? `<div class="head-ctl">
+        <button type="button" class="grip" aria-label="Reorder ${esc(t.name)}" title="Drag to reorder · Arrow keys to move" ${nameTip}>${I.grip}</button>
+        <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" ${nameTip} ${UIAction('trackMenu', UIAction.event, t.id)}>${I.kebab}</button>
+      </div>` : ''}</div>
+      ${figure ? `<p class="lane-figure">${figure}</p>` : ''}
+    </div>
+    <div class="lane-body rt-body" role="group" aria-label="${esc(`${t.name} timeline`)}" style="min-height:${laid.height}px">${body}</div>
+  </section>`;
+}
 
 export function renderRoadmap() {
   // A scale change still easing finishes first, so the new Roadmap starts at its zoom.
   roadmapGestureCleanup();
-  RAIL = window.innerWidth <= 900 ? 132 : 208;
-  const model = roadmapModel();
-  const heads = model.lanes.map(({ track, epics: items }) => laneHeadHtml(track, items.map((item) => item.epic)));
-  const { barHeight, heads: headHeights } = measureRows(heads);
-  const contentEl = document.querySelector('.content');
-  roadmapHeight=contentEl ? contentEl.clientHeight : window.innerHeight - 80;
-  const metrics = { barHeight, heads: headHeights, width: contentEl?.clientWidth || window.innerWidth, height: roadmapHeight };
-  const ppd = state.pxPerDay;
-  const layout = roadmapLayout(model, ppd, metrics);
-  const { axisHeight } = layout;
-  renderedRoadmap = { model, layout, metrics };
+  const stacked = stackedLayout();
+  RAIL = stacked ? 0 : 216;
+  const model = roadmapModel(), ppd = state.pxPerDay;
+  const width = document.querySelector('.content')?.clientWidth || window.innerWidth;
+  const layout = roadmapLayout(model, ppd);
+  // The lanes draw what they drew, when the page is drawn again at the same zoom; else around where the
+  // view will be: where it was, or around today.
+  const drawn = keptDrawn?.ppd === ppd && keptDrawn.start === +model.start ? keptDrawn.drawn : drawnAround((document.getElementById('rmScroll')?.clientWidth ?? width) - RAIL, state.rmScrollLeft ?? todayScroll(null, model.today, ppd));
+  const pieces = model.lanes.map((lane, i) => model.ready ? lanePieces(lane, layout.lanes[i], ppd, model.today, laneEntry(layout.lanes[i], laneFocus.get(lane.track.id)), drawn) : null);
+  renderedRoadmap = { model, layout, pieces, drawn };
+  const lanes = model.lanes.map((lane, i) => laneHtml(lane, layout.lanes[i], pieces[i]?.map(([, html]) => html).join(''), model, stacked, width)).join('');
 
-  // Calendar cells are mounted for the viewport, independent of date span.
-  let lanes = '';
-  model.lanes.forEach(({ track: t, epics: items }, ti) => {
-    const lane = layout.lanes[ti];
-    const bars = items.map((item, i) => epicBar(item, ppd, barTop(lane, lane.rows[i], barHeight))).join('');
-    lanes += `<div class="lane" data-track="${esc(t.id)}" style="height:${lane.height}px">
-      ${heads[ti]}
-      <div class="lane-body">${bars}</div>
-    </div>`;
+  // Milestones: a card with the shiny diamond above the lanes, and a line from the card down through them.
+  let lines = '', connectors = '';
+  model.goals.forEach(({ past, at }) => {
+    const x = dayX(at, ppd);
+    lines += `<div class="ms-line${past ? ' past' : ''}" aria-hidden="true" style="left:${RAIL + x}px"></div>`;
+    connectors += `<div class="ms-line goal-connector${past ? ' past' : ''}" aria-hidden="true" style="left:${x}px;top:${CARD_TOP + CARD_H}px;bottom:0"></div>`;
   });
+  const cards = `${connectors}<div class="rt-cards">${cardsHtml(goalCards(model.goals, ppd), ppd)}</div>`;
+  const todayX = dayX(model.today, ppd), top = labelTop(model);
+  const todayLine = `<div class="today-line" aria-hidden="true" style="left:${RAIL + todayX}px"></div>`;
+  const todayLabel = `<div class="today-line today-connector" aria-hidden="true" style="left:${todayX}px;top:${top + LABEL_H}px;bottom:0"></div><div class="rt-today" style="left:${todayX}px;top:${top}px" title="${esc(human(today))}">Today<span class="sr-only">, ${esc(human(today))}</span></div>`;
 
-  // milestones + today (labels live in the sticky axis; lines span the canvas)
-  const timeline = timelineWidth(model, ppd, metrics.width);
-  let msHtml = '', msLabels = '';
-  model.goals.forEach((goal, i) => {
-    const { m, past, name, dateLabel, width, at } = goal, row = layout.goalRows[i];
-    msHtml += `<div class="ms-line${past ? ' past' : ''}" aria-hidden="true" style="left:${RAIL + dayX(at, ppd)}px;top:${axisHeight}px;bottom:${MONTH_ROW}px"></div>`;
-    msLabels += `<div class="ms-line goal-connector${past ? ' past' : ''}" aria-hidden="true" style="left:${dayX(at, ppd)}px;top:${12 + row * GOAL_ROW + 54}px;bottom:-1px"></div>`;
-    msLabels += `<button type="button" class="ms-label${past ? ' past' : ''}" data-milestone="${esc(m.id)}" style="left:${goalCenter(goal, ppd, timeline)};top:${12 + row * GOAL_ROW}px;width:${width}px" ${UIAction('milestoneClick', UIAction.event, m.id)} ${UIAction.on('mouseenter', 'milestoneHover', UIAction.event, m.id)} ${UIAction.on('mouseleave', 'epicLeave')} ${UIAction.on('focus', 'milestoneHover', UIAction.event, m.id, true)} ${UIAction.on('blur', 'epicLeave')} ${UIAction.on('keydown', 'roadmapTipKey', UIAction.event)}>
-      ${I.diamond}<span class="txt"><span class="goal-name">${esc(name)}</span><span class="goal-date">${dateLabel}</span></span></button>`;
-  });
-  const todayX = dayX(model.today, ppd);
-  const todayHtml = `<div class="today-line" style="left:${RAIL + todayX}px;top:${axisHeight}px;bottom:${MONTH_ROW}px"></div>`;
-  const todayPill = `<div class="today-line today-connector" aria-hidden="true" style="left:${todayX}px;top:32px;bottom:-1px"></div><div class="today-pill" style="left:${todayX}px;top:12px">${human(today)}</div>`;
-
-  // Month cells are day offsets that their container's --ppd scales.
-  const calendar = `--ppd:${ppd}`, calendarLines = `${calendar};--rm-rail:${RAIL}px;--rm-axis-h:${axisHeight}px;--rm-month-h:${MONTH_ROW}px`;
-  const emptyProject = model.lanes.length === 0;
-  return `<div class="rm-scroll" id="rmScroll" data-bar-height="${esc(barHeight)}" data-range-start="${esc(+model.start)}">
+  // Calendar cells are day offsets that their container's --ppd scales.
+  const calendar = `--ppd:${ppd}`;
+  const trackHead = stacked ? '' : `<div class="rail-cell rm-track-head" style="width:${RAIL}px"></div>`;
+  // A track is added from the row that ends the lanes.
+  const addTrack = canRoadmap() ? `<div class="rt-add-track"><div class="rail-cell" style="width:${stacked ? `${width}px` : `${RAIL}px`}"><button class="btn quiet" type="button" ${UIAction('openModal', 'track')}>${I.plus}<span>Add track</span></button></div></div>` : '';
+  return `<div class="rm-scroll${stacked ? ' rt-stacked' : ''}" id="rmScroll" role="region" aria-label="Roadmap timeline" data-range-start="${esc(+model.start)}" style="--rm-rail:${RAIL}px">
     <div class="rm-canvas" style="width:${RAIL + dayX(model.span, ppd)}px">
-      <div class="rm-axis" style="height:${axisHeight}px">
-        <div class="rail-cell rm-track-head" style="width:${RAIL}px">${canRoadmap() ? `<button class="btn quiet" type="button" ${UIAction('openModal', 'track')}>${I.plus}<span>Track</span></button>` : '<span class="rm-track-title">Tracks</span>'}</div>
-        <div class="rm-axis-labels"><span class="rm-calendar-axis" style="${calendar}"></span>${msLabels}${todayPill}</div>
+      <div class="rm-axis" style="height:${axisHeight(model)}px">
+        ${trackHead}
+        <div class="rm-axis-labels">${cards}${todayLabel}<div class="rm-month-grid rt-axis-dates" style="${calendar}"></div><div class="rt-axis-pin" aria-hidden="true"></div></div>
       </div>
-      <span class="rm-calendar-lines" style="${calendarLines}"></span>${msHtml}${todayHtml}${lanes}
-      ${emptyProject ? `<div class="rm-empty">No tracks yet.</div>` : ''}
-      <div class="rm-month-row" style="height:${MONTH_ROW}px"><div class="rail-cell" style="width:${RAIL}px"></div><div class="rm-month-grid" style="${calendar}"></div></div>
+      <div class="rt-lanes">
+        <span class="rm-calendar-lines" style="${calendar}"></span>${todayLine}${lines}${lanes}
+        ${model.lanes.length ? '' : '<div class="rm-empty">No tracks yet.</div>'}
+      </div>
+      ${addTrack}
     </div>
   </div>`;
 }
@@ -346,7 +343,7 @@ sortable({
 
 // ---------- epic drawer ----------
 const actFeed = (list, limit) => (list || []).slice(-(limit || 8)).reverse().map((a) =>
-  `<div class="act-row"><span class="act-dot"></span><span class="act-text"><b>${esc(userById(a.who)?.name||a.actorName||a.who)}</b> ${esc(a.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span><time class="act-time" datetime="${new Date(a.ts).toISOString()}" aria-label="${formatInstant(a.ts)}" data-tip="${esc(formatInstant(a.ts))}">${ago(a.ts)}</time></div>`).join('')
+  `<div class="act-row"><span class="act-dot"></span><span class="act-text"><b>${esc(userById(a.who)?.name||a.actorName||a.who)}</b> ${esc(a.text.replace(/[؜‎‏‪-‮⁦-⁩]/g,''))}</span><time class="act-time" datetime="${new Date(a.ts).toISOString()}" aria-label="${formatInstant(a.ts)}" data-tip="${esc(formatInstant(a.ts))}">${ago(a.ts)}</time></div>`).join('')
   || '<div class="empty-note inline">nothing yet</div>';
 
 function sparkline(weekly) {
@@ -363,7 +360,6 @@ export function renderPeek() {
   const e = epicById(state.peek);
   if (!e) return '';
   const t = trackById(e.trackId);
-  const ongoing = !e.end;
   const page=D.epicPageInfo?.[e.id];
   const eTasks = page?.loaded?page.taskIds.map(taskById).filter(Boolean):tasks().filter((x) => x.epicId === e.id);
   const order = { progress: 0, review: 1, planning: 2, done: 3 };
@@ -375,8 +371,9 @@ export function renderPeek() {
     return `<div class="task-row">${dot}<span class="tid">${esc(x.id)}</span><span class="tt" data-tip="${esc(x.title)}" data-tip-overflow>${esc(x.title)}</span><span class="tm">${m}</span></div>`;
   }).join('') || '<div class="empty-note peek-empty">no tasks yet</div>';
 
+  // An epic without an end date shows how its work goes week by week; one with an end date, how far it is.
   const pct = e.total ? Math.round((e.done / e.total) * 100) : 0;
-  const midBlock = e.counted === false ? '' : ongoing && e.weekly
+  const midBlock = e.counted === false ? '' : !e.end && e.weekly
     ? `<div class="peek-throughput" data-epic-throughput>${sparkline(e.weekly)}
         <div><div class="mono subtle tone-soft">${e.closedThisWeek} closed this week</div>
         <div class="mono subtle">${e.completedSinceStart ?? e.done} since ${humanShort(d(e.start))} · ${e.open ?? e.total - e.done} open</div></div></div>`
@@ -393,8 +390,8 @@ export function renderPeek() {
       </div>
       <h2 id="peek-title" class="peek-title">${esc(e.title)}</h2>
       <div class="peek-meta">
-        <span class="chip idle">${ongoing ? 'Ongoing · ' : ''}${esc(epicStatus(e))}</span>
-        <span class="mono subtle tone-faint">${humanShort(d(e.start))} → ${e.end ? humanShort(d(e.end)) : '<span class="tone-soft">no end date</span>'}</span>
+        <span class="chip idle">${esc(epicStatus(e))}</span>
+        <span class="mono subtle tone-faint">${e.end ? `${humanShort(d(e.start))} → ${humanShort(d(e.end))}` : `From ${humanShort(d(e.start))}`}</span>
       </div>
     </div>
     <div class="peek-body">
@@ -410,11 +407,12 @@ export function renderPeek() {
     </div>
     </div>
     <div class="peek-actions">
+      ${canBoard() && e.state !== 'done' ? `<button class="btn" ${UIAction('openModal', 'task', '', e.id)}>${I.plus} New task</button>` : ''}
       ${canRoadmap() ? `${e.state === 'done'
         ? `<button class="btn" ${UIAction('reopenEpic', e.id)}>Reopen</button>`
         : `<button class="btn" ${UIAction('closeEpic', e.id)}>Mark as done</button>`}
       <button class="btn" ${UIAction('openModal', 'epic', e.id)}>Edit epic</button>
-      <button class="btn danger" ${UIAction('deleteEpic', e.id)}>Delete</button>` : '<span class="access-note">Read only</span>'}
+      <button class="btn danger" ${UIAction('deleteEpic', e.id)}>Delete</button>` : canBoard() ? '' : '<span class="access-note">Read only</span>'}
     </div>
   </aside>`;
 }
@@ -429,14 +427,16 @@ function refreshEpicSummary() {
 }
 
 // ---------- page header ----------
-const roadmapStat = (label,value) => `<span class="roadmap-stat"><span>${label}</span>${value === null ? '<span class="skeleton" aria-hidden="true"></span>' : `<strong>${value}</strong>`}</span>`;
-/** The Roadmap's counts, with no numbers while the project's tracks, epics and milestones load. */
+/** The late task "Overdue N" showed last, so the next press shows the next one; and one whose days still load, which gets focus when they land. */
+let overdueShown = null, overdueWaiting = null;
+
+/** The Roadmap's one figure: what is overdue, when anything is. Each track's head says what it has in progress. */
 function roadmapStatsHtml() {
-  const loaded = projectLoaded(), count = (list) => loaded ? list.length : null;
-  return `<span class="roadmap-structure-stats"${loaded ? '' : ' aria-busy="true"'}>${roadmapStat('Tracks',count(tracks()))}${roadmapStat('Epics',count(epics()))}${roadmapStat('Milestones',count(milestones()))}</span>`;
+  const late = roadmapLanes()?.overdue ?? 0;
+  return `<span class="roadmap-structure-stats">${late ? `<button type="button" class="roadmap-stat rt-stat-late" aria-label="${esc(`Overdue: ${late} ${late === 1 ? 'task' : 'tasks'}. Show ${late === 1 ? 'it' : 'the next one'}`)}" ${UIAction('focusOverdue')}><span>Overdue</span><strong>${late}</strong></button>` : ''}</span>`;
 }
 
-/** The Roadmap's page header: its counts, scale, Today and add buttons. */
+/** The Roadmap's page header: what is overdue, the scale, Today and the add buttons. */
 export function roadmapTopbarHtml() {
   return `<h1 class="roadmap-title">Roadmap</h1><div class="roadmap-meta" role="group" aria-label="Roadmap summary">${roadmapStatsHtml()}</div>
   <div class="right">
@@ -454,77 +454,254 @@ export function roadmapTopbarHtml() {
  */
 function bindRoadmap(sc, rendered) {
   const all = (selector) => [...sc.querySelectorAll(selector)];
-  const lines = all('.rm-canvas > .ms-line'), connectors = all('.goal-connector'), labels = all('.ms-label');
+  const lines = all('.rt-lanes > .ms-line'), connectors = all('.goal-connector');
   const laneEls = all('.lane');
   return {
-    sc, canvas: sc.querySelector('.rm-canvas'), axis: sc.querySelector('.rm-axis'), ...rendered, ppd: rendered.layout.ppd, calendar: null, zoomLeft: NaN,
-    lanes: rendered.model.lanes.map((lane, i) => {
-      const bars = [...(laneEls[i]?.querySelector('.lane-body')?.children || [])];
-      return { lane: laneEls[i], bars: lane.epics.map((item, j) => ({ el: bars[j], item })).filter((bar) => bar.el) };
-    }),
-    goals: rendered.model.goals.map((goal, i) => ({ goal, line: lines[i], connector: connectors[i], label: labels[i] })).filter((goal) => goal.line && goal.connector && goal.label),
-    today: [sc.querySelector('.rm-canvas > .today-line'), sc.querySelector('.today-connector'), sc.querySelector('.today-pill')],
-    cells: { axis: sc.querySelector('.rm-calendar-axis'), lines: sc.querySelector('.rm-calendar-lines'), months: sc.querySelector('.rm-month-grid') },
+    sc, canvas: sc.querySelector('.rm-canvas'), ...rendered, ppd: rendered.layout.ppd, calendar: null, zoomLeft: NaN, shape: roadmapShape(rendered.model),
+    lanes: rendered.model.lanes.map((lane, i) => ({ lane: laneEls[i], body: laneEls[i]?.querySelector('.rt-body'), data: lane, pieces: rendered.pieces[i] })),
+    goals: rendered.model.goals.map((goal, i) => ({ goal, line: lines[i], connector: connectors[i] })).filter((goal) => goal.line && goal.connector),
+    cards: { el: sc.querySelector('.rt-cards'), ids: goalCards(rendered.model.goals, rendered.layout.ppd).map((card) => card.ids).join('|') },
+    today: [sc.querySelector('.rt-lanes > .today-line'), sc.querySelector('.today-connector'), sc.querySelector(".rt-today")],
+    cells: { lines: sc.querySelector('.rm-calendar-lines'), months: sc.querySelector('.rm-month-grid') },
   };
 }
 
-/** Apply a zoom level's rows and heights, writing only what changed. */
-function applyRoadmapLayout(view, next) {
-  const prev = view.layout, { barHeight } = view.metrics;
-  if (next.axisHeight !== prev.axisHeight) {
-    const top = `${next.axisHeight}px`;
-    view.axis.style.height = top;
-    for (const el of [...view.goals.map((goal) => goal.line), view.today[0]]) if (el) el.style.top = top;
-    view.cells.lines?.style.setProperty('--rm-axis-h', top);
-  }
-  view.goals.forEach(({ connector, label }, i) => {
-    const row = next.goalRows[i];
-    if (row === prev.goalRows[i]) return;
-    connector.style.top = `${12 + row * GOAL_ROW + 54}px`;
-    label.style.top = `${12 + row * GOAL_ROW}px`;
-  });
-  next.lanes.forEach((lane, i) => {
-    const before = prev.lanes[i], bound = view.lanes[i];
-    if (!bound?.lane) return;
-    if (lane.height !== before.height) bound.lane.style.height = `${lane.height}px`;
-    bound.bars.forEach((bar, j) => { if (lane.pad !== before.pad || lane.rows[j] !== before.rows[j]) bar.el.style.top = barTop(lane, lane.rows[j], barHeight); });
-  });
-  view.layout = next;
+/**
+ * The pixels of the lanes drawn around a view of `room` pixels that starts at
+ * `left`: the view and half a view to spare on each side, so a scroll seldom
+ * reaches what isn't drawn.
+ */
+const drawnAround = (room, left) => ({ from: left - Math.max(room, 320) / 2, to: left + Math.max(room, 320) * 1.5 });
+/**
+ * The scroller's width, read once at the start of a frame or redraw, before
+ * anything in it changes: reading it after a change makes the browser lay
+ * out the page then, and again when the frame ends.
+ */
+const measure = (view) => { view.width = view.sc.clientWidth; return view.width; };
+const viewRoom = (view) => (view.width ?? measure(view)) - RAIL;
+/** The pixels the lanes drew last, at a zoom and from a first day: the page drawn again draws the same. */
+let keptDrawn = null;
+function drawAt(view, drawn) {
+  view.drawn = drawn;
+  keptDrawn = { ppd: view.ppd, start: +view.model.start, drawn };
+}
+
+/** Draw the lanes around the view again once it leaves half of what they spare. Returns whether it did. */
+function followView(view) {
+  const room = Math.max(viewRoom(view), 320), left = view.sc.scrollLeft, { drawn } = view;
+  if (drawn && drawn.from <= left - room / 4 && drawn.to >= left + room * 1.25) return false;
+  drawAt(view, drawnAround(room, left));
+  drawLanes(view);
+  return true;
 }
 
 /**
- * One zoom step: move and size the mounted elements for `ppd`, move the
- * rows that the new widths change, and keep `day` at `cx` pixels from the
- * scroller's left edge. Only the positioned elements change, so the browser
- * restyles those and not the text inside them.
+ * What the lanes' keyboard and focus need of the mounted view: a lane's
+ * layout at its zoom, and the element of an item, drawn first, around it,
+ * when it isn't yet.
+ */
+const lanesOf = (view) => ({
+  layout: (trackId) => view.layout.lanes[view.model.lanes.findIndex((lane) => lane.track.id === trackId)] ?? null,
+  reveal(trackId, key) {
+    const entry = view.lanes.find((item) => item.data.track.id === trackId);
+    const find = () => [...(entry?.body?.querySelectorAll('[data-nav]') ?? [])].find((el) => el.dataset.nav === key) ?? null;
+    if (!entry || find()) return find();
+    const x = placeOfKey(this.layout(trackId), key);
+    if (x === null) return null;
+    drawAt(view, drawnAround(viewRoom(view), x - viewRoom(view) / 2));
+    drawLanes(view);
+    return find();
+  },
+});
+
+/**
+ * Draw each lane's marks near the view for its zoom and data. Only the pieces
+ * that changed, came near the view or left it change in the page; the others
+ * stay as they are, with their cards and lists. Focus stays on the same
+ * task: on its own mark, or the count it merged into. A card or list shown
+ * from a mark drawn again closes, as that mark is gone.
+ */
+function drawLanes(view) {
+  if (!view.model.ready) return;
+  const active = document.activeElement;
+  const focusedLane = active && view.sc.contains(active) && active.closest('.rt-body') ? active.closest('.lane') : null;
+  // Focus in an open list goes back to its mark if that is drawn again, which shows the list again.
+  const inList = !!document.getElementById('roadmap-list')?.contains(active), listed = listAnchor()?.dataset.nav;
+  // Days whose tasks couldn't load, or all of them while reads fail: their marks say so, and list their task when pressed.
+  const lanes = roadmapLanes(), unloaded = (lanes && askedReads.get(lanes)?.unloaded) ?? [], failing = !!lanes && recovery.readFailing(daysRead(lanes.projectId));
+  const failed = (day) => failing || unloaded.some((range) => range.from <= day && day <= range.to);
+  view.lanes.forEach((entry, i) => {
+    const { lane, body, data } = entry;
+    if (!body) return;
+    const laid = view.layout.lanes[i], focus = laneEntry(laid, lane === focusedLane ? active.dataset.nav : laneFocus.get(data.track.id));
+    const pieces = lanePieces(data, laid, view.ppd, view.model.today, focus, view.drawn, failed);
+    const removed = patchPieces(body, entry.pieces, pieces);
+    entry.pieces = pieces;
+    setTabStop(body, focus);
+    if (!removed.length) return;
+    const gone = (el) => !!el && removed.some((piece) => piece.contains(el));
+    const card = gone(EPIC_TIP.anchor), list = gone(listAnchor());
+    if (card) hideEpicTip();
+    if (list) closeTimelineList();
+    body.style.minHeight = `${laid.height}px`;
+    const find = (key) => [...body.querySelectorAll('[data-nav]')].find((el) => el.dataset.nav === key);
+    if (lane === focusedLane && gone(active)) {
+      // Focus stays with its task, on its mark or the count it merged into; with neither, on the lane's timeline.
+      const holder = resolveKey(laid, active.dataset.nav);
+      if (holder) refocus(find(holder), card || list); else focusTimeline(body);
+    } else if (list && inList) refocus(find(listed), true);
+  });
+}
+
+/**
+ * Bring a lane body from its `before` pieces to its `after` pieces, keyed, in
+ * order: a piece with the same key and markup stays, others are made from
+ * their markup in one parse. Returns the elements it removed.
+ * @param {Element} body @param {[string, string][]|null} before @param {[string, string][]} after
+ */
+function patchPieces(body, before, after) {
+  const removed = [];
+  if (!before) {
+    removed.push(...body.children);
+    setHTML(body, after.map(([, html]) => html).join(''));
+    return removed;
+  }
+  const wanted = new Map(after), kept = new Map();
+  [...body.children].forEach((el, index) => {
+    const [key, html] = before[index] ?? [];
+    if (key !== undefined && wanted.get(key) === html && !kept.has(key)) kept.set(key, el);
+    else { removed.push(el); el.remove(); }
+  });
+  const fresh = after.filter(([key]) => !kept.has(key));
+  const template = document.createElement('template');
+  setHTML(template, fresh.map(([, html]) => html).join(''));
+  const made = [...template.content.children];
+  let ref = body.firstElementChild, next = 0;
+  for (const [key] of after) {
+    const el = kept.get(key) ?? made[next++];
+    if (el === ref) ref = ref.nextElementSibling;
+    else body.insertBefore(el, ref);
+  }
+  return removed;
+}
+
+/** What the page around the lanes shows: the tracks, the milestones, the layout and who may manage it. The lanes change in place while it stays. */
+const roadmapShape = (model) => JSON.stringify([model.ready, stackedLayout(), canRoadmap(), model.lanes.map(({ track }) => [track.id, track.name]), model.goals.map(({ m, name, dateLabel, at, past }) => [m.id, name, dateLabel, at, past])]);
+
+/**
+ * Draw again in place what changed in the lanes, when nothing else did: as
+ * when more of their days load, or a teammate's change is read. The scroller,
+ * its position and its momentum stay. Returns false when the page has to be
+ * drawn again: the tracks, the milestones, the days the timeline spans or
+ * who may manage it changed.
+ */
+function patchLanes() {
+  const view = mountedRoadmap;
+  if (!view?.sc.isConnected) return false;
+  measure(view);
+  const model = roadmapModel();
+  if (+model.start !== +view.model.start || model.span !== view.model.span || roadmapShape(model) !== view.shape) return false;
+  view.model = model;
+  view.layout = roadmapLayout(model, view.ppd);
+  renderedRoadmap = { ...renderedRoadmap, model, layout: view.layout };
+  view.lanes.forEach((entry, index) => { entry.data = model.lanes[index]; });
+  drawLanes(view);
+  for (const { lane, data } of view.lanes) {
+    const head = lane?.querySelector('.lane-head'), shown = head?.querySelector('.lane-figure'), text = headFigure(data, true);
+    if (!head || shown?.textContent === text) continue;
+    if (!text) { shown?.remove(); continue; }
+    const figure = shown ?? head.appendChild(Object.assign(document.createElement('p'), { className: 'lane-figure' }));
+    figure.textContent = text;
+  }
+  view.place = { reserve: roomAfterNow(model, datedAhead(model)), ahead: datedAhead(model) };
+  syncEdges(view);
+  refreshStats();
+  // A late task whose days just loaded.
+  if (overdueWaiting && focusTask(view.sc, overdueWaiting, RAIL, lanesOf(view))) overdueWaiting = null;
+  loadMore(view);
+  returnFocus(view);
+  App.refreshCounts();
+  return true;
+}
+
+/**
+ * After the Roadmap is drawn again in full, focus goes back to the item
+ * `key` of lane `track`: its mark, or the count it merged into; with
+ * neither, to the lane's timeline. Its card or list shows again if one
+ * showed (`shown`).
+ */
+function keepFocus(track, key, shown) {
+  const view = mountedRoadmap, lanes = view && lanesOf(view), body = view?.lanes.find((entry) => entry.data.track.id === track)?.body;
+  if (!body) return;
+  const layout = lanes.layout(track), holder = layout && resolveKey(layout, key), stop = body.querySelector('[data-nav][tabindex="0"]');
+  const el = holder && (stop?.dataset.nav === holder ? stop : lanes.reveal(track, holder));
+  if (el) refocus(el, shown); else focusTimeline(body);
+}
+
+/**
+ * After Back from a task opened on the Roadmap: focus on the item it opened
+ * from, once the lanes can tell where that is (focusOpener).
+ */
+function returnFocus(view) {
+  const lanes = roadmapLanes();
+  focusOpener(view.sc, RAIL, lanesOf(view), !view.model.ready || !lanes || readsOf(lanes).busy);
+}
+
+/** The header's figures, as the lanes now count them. */
+function refreshStats() {
+  const stats = document.querySelector('.topbar .roadmap-structure-stats'), counted = roadmapStatsHtml();
+  if (stats && stats.outerHTML !== counted) { const template = document.createElement('template'); setHTML(template, counted); stats.replaceWith(template.content); }
+}
+
+/**
+ * One zoom step: move the axis, lines and cards for `ppd`, draw the lanes'
+ * marks again, and keep `day` at `cx` pixels from the scroller's left edge.
  */
 function zoomRoadmap(view, ppd, day, cx) {
   const { sc, model } = view;
   if (ppd !== view.ppd) {
     view.ppd = state.pxPerDay = ppd;
     view.canvas.style.width = `${RAIL + dayX(model.span, ppd)}px`;
-    for (const lane of view.lanes) for (const { el, item } of lane.bars) {
-      el.style.left = barLeft(item, ppd);
-      if (item.to !== null) el.style.width = barWidth(item, ppd);
-    }
-    const timeline = timelineWidth(model, ppd, view.metrics.width);
-    for (const { goal, line, connector, label } of view.goals) {
+    for (const { goal, line, connector } of view.goals) {
       const x = dayX(goal.at, ppd);
       line.style.left = `${RAIL + x}px`;
       connector.style.left = `${x}px`;
-      label.style.left = goalCenter(goal, ppd, timeline);
     }
+    moveCards(view, ppd);
     const [line, connector, pill] = view.today, todayX = dayX(model.today, ppd);
     if (line) line.style.left = `${RAIL + todayX}px`;
     for (const el of [connector, pill]) if (el) el.style.left = `${todayX}px`;
     for (const el of Object.values(view.cells)) el?.style.setProperty('--ppd', String(ppd));
-    applyRoadmapLayout(view, roadmapLayout(model, ppd, view.metrics));
+    view.layout = roadmapLayout(model, ppd);
+    drawAt(view, drawnAround(viewRoom(view), Math.max(0, RAIL + day * ppd - cx)));
+    drawLanes(view);
     syncRoadmapScale();
   }
   const left = Math.max(0, RAIL + day * ppd - cx);
   if (Math.abs(sc.scrollLeft - left) >= 0.5) sc.scrollLeft = left;
   state.rmScrollLeft = view.zoomLeft = sc.scrollLeft;
   mountRoadmapCalendar(view);
+}
+
+/**
+ * The milestone cards at a new zoom: in place while they hold the same
+ * milestones, else drawn again, as when close ones come to share a card.
+ */
+function moveCards(view, ppd) {
+  const { el } = view.cards;
+  if (!el) return;
+  const cards = goalCards(view.model.goals, ppd), ids = cards.map((card) => card.ids).join('|');
+  if (ids !== view.cards.ids) {
+    if (el.contains(document.activeElement) || EPIC_TIP.anchor && el.contains(EPIC_TIP.anchor)) hideEpicTip();
+    setHTML(el, cardsHtml(cards, ppd));
+    view.cards.ids = ids;
+    return;
+  }
+  [...el.children].forEach((label, index) => {
+    const card = cards[index];
+    label.style.left = `${cardLeft(card, ppd)}px`;
+    label.dataset.flag = numbers(dayX(card.at, ppd), card.width, card.pole, card.compact);
+  });
 }
 
 /** The scale the header shows as pressed; after a free zoom, none. */
@@ -535,7 +712,7 @@ function roadmapScaleHtml() {
   return `<div class="seg roadmap-scale" role="group" aria-label="Timeline scale">${ROADMAP_SCALES.map((scale) => `<button type="button" data-scale="${esc(scale.key)}" class="${pressedScale === scale.key ? 'on' : ''}" aria-pressed="${pressedScale === scale.key}" aria-keyshortcuts="${esc(scale.shortcut)}" ${UIAction('setRoadmapScale', scale.key)}>${scale.label}</button>`).join('')}</div>`;
 }
 
-/** Show the zoom's scale as pressed in the header, and the scale nearest it in the address. */
+/** Show the zoom's scale as pressed in the header, and a picked scale in the address. */
 function syncRoadmapScale() {
   // A zoom step can run after Back or a link moved the tab to another page: that address stays.
   if (pageOf(location.hash) === projectAddress('roadmap', state.projectId)) App.replaceAddress();
@@ -548,57 +725,58 @@ function syncRoadmapScale() {
   });
 }
 
-/** The scale the Roadmap's address names: the one nearest its zoom, or none at Months. */
+/** The scale the Roadmap's address names: the one nearest a zoom the person picked, or none while it fits the work. */
 export function roadmapAddressScale() {
-  const scale = nearestScale(state.pxPerDay);
-  return scale === OPENING_SCALE ? null : scale.key;
+  return picked ? nearestScale(state.pxPerDay).key : null;
 }
 
 /**
- * Show the scale an address names, or Months when it names none or one the
- * Roadmap doesn't have. Another scale starts at today, since a scroll position
- * belongs to its zoom; a free zoom nearest the named scale stays, as after Back.
+ * Show the scale an address names. One the Roadmap doesn't have, or none,
+ * fits the work again when a scale was picked. Another scale starts at
+ * today, since a scroll position belongs to its zoom; a free zoom nearest
+ * the named scale stays, as after Back.
  */
 export function showRoadmapScale(key) {
-  const scale = ROADMAP_SCALES.find((item) => item.key === key) ?? OPENING_SCALE;
+  const scale = ROADMAP_SCALES.find((item) => item.key === key);
+  if (!scale) { if (picked) { resetRoadmapScale(); state.rmScrollLeft = null; } return; }
+  picked = true;
   if (nearestScale(state.pxPerDay) === scale) return;
   state.pxPerDay = scale.ppd; state.rmScrollLeft = null;
 }
 
-/** Open the Roadmap at Months again, as for the next person to sign in here. */
-export function resetRoadmapScale() { state.pxPerDay = OPENING_SCALE.ppd; }
+/** Forget the picked scale, so the Roadmap fits the work again, as for another project or the next person to sign in here. */
+export function resetRoadmapScale() { picked = false; fitted = null; }
 
-/** The selected epic's bar while it shows in the view, or null. */
-function selectedEpicBar(view) {
-  const found = roadmapSelection && view.lanes.flatMap((lane) => lane.bars).find((bar) => bar.el.dataset.epic === roadmapSelection);
-  if (!found?.el.isConnected) return null;
-  const box = found.el.getBoundingClientRect(), port = view.sc.getBoundingClientRect();
-  const shows = box.right > port.left + RAIL && box.left < port.right && box.bottom > port.top + view.layout.axisHeight && box.top < port.bottom - MONTH_ROW;
-  return shows ? found : null;
+/** The day under the item last focused or opened, while it shows in the view, or null. */
+function selectedDay(view) {
+  if (!roadmapSelection) return null;
+  const el = [...view.sc.querySelectorAll('.rt-body [data-nav]')].find((item) => item.dataset.nav === roadmapSelection);
+  if (!el?.isConnected) return null;
+  const shown = el.getBoundingClientRect(), port = view.sc.getBoundingClientRect();
+  if (!(shown.right > port.left + RAIL && shown.left < port.right && shown.bottom > port.top + axisHeight(view.model) && shown.top < port.bottom)) return null;
+  // A bar from the day it starts and a task's dot or ring from its day, as the layout placed them: whole
+  // pixels would let each scale change move it a little further.
+  const mark = view.layout.lanes.flatMap((lane) => lane.sections).flatMap((laid) => laid.marks).find((item) => item.key === roadmapSelection);
+  if (mark?.type === 'bar') return mark.item.from;
+  if (mark?.item) return mark.item.at;
+  // An epic from its start, a count from its middle, read from where they were drawn.
+  const placed = el.closest('.rt-epic') ?? el, start = placed !== el;
+  return (parseFloat(placed.style.left) + (start ? 0 : (parseFloat(placed.style.width) || 20) / 2)) / view.ppd;
 }
 
 /**
- * What a scale change keeps in place: the selected epic while it shows,
- * else today while it shows, else the date in the middle of the view.
- * An epic that fits the view keeps its middle, moved into the view if
- * needed; a wider one keeps its start when that shows, and otherwise the
- * middle of the part that shows. Returns the day and its distance from the
- * scroller's left edge.
+ * What a scale change keeps in place: the selected task or epic while it
+ * shows, else today while it shows, else the date in the middle of the view.
+ * Returns the day and its distance from the scroller's left edge.
  */
-function scaleAnchor(view, ppd) {
-  const { sc, model } = view, width = sc.clientWidth, room = width - RAIL;
+function scaleAnchor(view) {
+  const { sc, model } = view, width = view.width ?? measure(view), room = width - RAIL;
   const x = (day) => RAIL + day * view.ppd - sc.scrollLeft;
   const margin = Math.min(80, room / 4), inside = (cx) => Math.min(Math.max(cx, RAIL + margin), width - margin);
-  const selected = selectedEpicBar(view);
-  if (selected) {
-    const { from, to } = selected.item;
-    if (to !== null && (to - from) * ppd <= room) return { day: (from + to) / 2, cx: inside(x((from + to) / 2)) };
-    if (x(from) >= RAIL) return { day: from, cx: x(from) };
-    const shown = (Math.max(from, sc.scrollLeft / view.ppd) + Math.min(to ?? model.span, (sc.scrollLeft + room) / view.ppd)) / 2;
-    return { day: shown, cx: x(shown) };
-  }
-  const today = x(model.today);
-  if (today >= RAIL && today <= width) return { day: model.today, cx: today };
+  const selected = selectedDay(view);
+  if (selected !== null) return { day: selected, cx: inside(x(selected)) };
+  const now = x(model.today);
+  if (now >= RAIL && now <= width) return { day: model.today, cx: now };
   const cx = RAIL + room / 2;
   return { day: (sc.scrollLeft + cx - RAIL) / view.ppd, cx };
 }
@@ -607,16 +785,17 @@ const monthFormatter = new Intl.DateTimeFormat('en-US', { timeZone:'UTC', month:
 
 /**
  * Month labels and lines cover the visible dates plus one view of overscan
- * each way, so the DOM stays bounded at every zoom level. From WEEK_AXIS_PPD,
- * weeks get lines too, and the bottom row labels each week with its Monday's
- * date instead of each month. The cells follow --ppd, so this redraws them
- * only when the view nears the window's edge, the window becomes much wider
- * than needed or passes the end of the range, a partial month at either end
- * gains or loses its label, or the axis changes between months and weeks.
+ * each way, so the DOM stays bounded at every zoom level. From WEEK_AXIS_PPD
+ * the axis labels each week with its Monday's date instead of each month;
+ * only months draw lines through the lanes. The cells follow --ppd, so this
+ * redraws them only when the view nears the window's edge, the window
+ * becomes much wider than needed or passes the end of the range, a partial
+ * month at either end gains or loses its label, or the axis changes between
+ * months and weeks.
  */
 function mountRoadmapCalendar(view) {
-  const { sc, model, ppd } = view, start = model.start, width = sc.clientWidth || window.innerWidth;
-  const end = Math.max(model.span, (view.metrics.width - RAIL) / ppd);
+  const { sc, model, ppd } = view, start = model.start, width = (view.width ?? measure(view)) || window.innerWidth;
+  const end = Math.max(model.span, (width - RAIL) / ppd);
   const day = (dt) => (dt - start) / DAY;
   const labeled = (from, to) => Math.round(to * ppd) - Math.round(from * ppd) > 46;
   const weeks = ppd >= WEEK_AXIS_PPD;
@@ -626,40 +805,297 @@ function mountRoadmapCalendar(view) {
   const margin = width / 2 / ppd;
   const need = { from: Math.max(0, sc.scrollLeft / ppd - margin), to: Math.min(end, (sc.scrollLeft + width - RAIL) / ppd + margin) };
   const shown = view.calendar;
-  if (shown && shown.from <= need.from && shown.to >= need.to && shown.to <= end && shown.to - shown.from <= 4 * (width + RAIL) / ppd + 62 && shown.labels === labels) return;
+  if (shown && shown.from <= need.from && shown.to >= need.to && shown.to <= end && shown.to - shown.from <= 4 * (width + RAIL) / ppd + 62 && shown.labels === labels) { syncEdges(view); return; }
   const first = new Date(+start + Math.max(0, (sc.scrollLeft - width - RAIL) / ppd) * DAY);
   first.setUTCDate(1); first.setUTCHours(0, 0, 0, 0);
   const last = Math.min(end, (sc.scrollLeft + width * 2) / ppd);
-  let months = '', seps = '', axisSeps = '', covered = Math.max(0, day(first));
+  let dates = '', lines = '', dividers = '', covered = Math.max(0, day(first));
   for (const m = new Date(first); day(m) < last; m.setUTCMonth(m.getUTCMonth() + 1)) {
     const next = new Date(m); next.setUTCMonth(next.getUTCMonth() + 1);
     const from = Math.max(day(m), 0), to = Math.min(day(next), end);
-    const label = monthFormatter.format(m) + (m.getUTCMonth() === 0 || +m === +first ? ' ' + String(m.getUTCFullYear()).slice(2) : '');
-    if (!weeks && labeled(from, to)) months += `<div class="rm-month" style="--d:${from};--n:${to - from}">${label}</div>`;
+    // The full year, so a month never reads like a date ("Aug 26").
+    const label = monthFormatter.format(m) + (m.getUTCMonth() === 0 || +m === +first ? ' ' + m.getUTCFullYear() : '');
+    if (!weeks && labeled(from, to)) dates += `<div class="rm-month" data-at="${esc(String(from))}" data-w="${esc(numbers(textWidth(label, '500 12px') + 4))}" style="--d:${from};--n:${to - from}">${label}</div>`;
     if (day(next) < end) {
-      seps += `<div class="rm-month-line" aria-hidden="true" style="--d:${day(next)}"></div>`;
-      axisSeps += `<div class="rm-axis-divider" aria-hidden="true" style="--d:${day(next)}"></div>`;
+      lines += `<div class="rm-month-line" aria-hidden="true" style="--d:${day(next)}"></div>`;
+      if (!weeks) dividers += `<div class="rm-axis-divider" aria-hidden="true" style="--d:${day(next)}"></div>`;
     }
     covered = to;
   }
-  // Each week starts on a Monday, labeled with its date and, outside this year, the year.
-  let weekSeps = '';
+  // Each week starts on a Monday, labeled with its day; the first week of a month also names the month.
   if (weeks) for (const monday = new Date(+first + ((8 - first.getUTCDay()) % 7) * DAY); day(monday) < Math.min(last, end); monday.setUTCDate(monday.getUTCDate() + 7)) {
     const at = day(monday);
     if (at <= 0) continue;
-    if (monday.getUTCDate() !== 1) seps += `<div class="rm-week-line" aria-hidden="true" style="--d:${at}"></div>`;
-    weekSeps += `<div class="rm-axis-divider" aria-hidden="true" style="--d:${at}"></div>`;
-    months += `<div class="rm-week" style="--d:${at}">${humanShort(monday)}</div>`;
+    const opens = monday.getUTCDate() <= 7, text = opens ? humanShort(monday) : String(monday.getUTCDate());
+    dividers += `<div class="rm-axis-divider" aria-hidden="true" style="--d:${at}"></div>`;
+    dates += `<div class="rm-week${opens ? ' rt-month-start' : ''}" data-at="${esc(String(at))}" data-w="${esc(numbers(textWidth(text, '500 12px') * 1.06 + 4))}" style="--d:${at}">${text}</div>`;
   }
   view.calendar = { from: Math.max(0, day(first)), to: covered, labels };
-  setHTML(view.cells.axis, axisSeps);
-  setHTML(view.cells.lines, seps);
-  setHTML(view.cells.months, (weeks ? weekSeps : axisSeps) + months);
+  setHTML(view.cells.lines, lines);
+  setHTML(view.cells.months, dividers + dates);
+  syncEdges(view);
+}
+
+/**
+ * Milestone cards' places: each card's diamond sits on its line, so the line
+ * drops straight from it. From the best: the card starting at the line,
+ * ending at it (the diamond at the card's right), or the diamond alone, which
+ * opens to the full card on hover and focus. A card the view's edge would cut
+ * stays whole instead: at the right edge it ends there and points on with
+ * "→"; at the left edge its diamond moves just inside.
+ */
+const CARD_PLACES = [['start', 0], ['end', 1], ['compact', 10]];
+const EDGE_COST = 50, HIDDEN_COST = 1000;
+
+/**
+ * Milestone cards, in their own row above Today: each takes its best place
+ * clear of the others and inside the view. Close milestones share a card
+ * (goalCards), so each has a place; only a card that an edge pushes onto its
+ * neighbour hides. With none in view, the next one waits at the right edge
+ * and points to it.
+ */
+function placeCards(sc, from, to) {
+  const pairs = (value) => value.split(',').map(Number);
+  const cards = [...sc.querySelectorAll('.rt-cards [data-flag]')].map((flag) => {
+    const [x, width, pole, compact] = pairs(flag.dataset.flag);
+    const places = CARD_PLACES.map(([form, cost]) => {
+      const size = form === 'compact' ? compact : width;
+      const left = form === 'start' ? x - pole : form === 'end' ? x + pole - size : x - size / 2;
+      return { form, cost, width: size, left, right: left + size };
+    });
+    // Too near an edge for any of those: whole at the edge instead.
+    if (x + compact / 2 > to) places.push({ form: 'edge', cost: EDGE_COST, width: width + 20, left: to - width - 20, right: to });
+    if (x - compact / 2 < from) places.push({ form: 'compact', cost: EDGE_COST, width: compact, left: from, right: from + compact });
+    return { flag, x, places };
+  }).sort((a, b) => a.x - b.x);
+  const shown = cards.map(({ x }) => x >= from && x <= to);
+  // The best places together: a card that keeps its words may cost a neighbour its place, so a view with a
+  // few milestones tries every combination; one crowded with them takes each first free place.
+  const greedy = shown.filter(Boolean).length > 6;
+  let best = null;
+  const search = (index, taken, chosen, score) => {
+    if (best && score >= best.score) return;
+    if (index === cards.length) { best = { score, chosen: chosen.slice() }; return; }
+    const free = shown[index] ? cards[index].places.filter((option) => option.left >= from && option.right <= to && taken.every(([a, b]) => option.right + CARDS_APART <= a || option.left - CARDS_APART >= b)).sort((a, b) => a.cost - b.cost) : [];
+    for (const option of greedy ? free.slice(0, 1) : free) {
+      chosen.push(option); taken.push([option.left, option.right]);
+      search(index + 1, taken, chosen, score + option.cost);
+      chosen.pop(); taken.pop();
+    }
+    if (greedy && free.length) return;
+    // No place clear: the card hides rather than overlap or be cut.
+    chosen.push(null);
+    search(index + 1, taken, chosen, score + (shown[index] ? HIDDEN_COST : 0)); chosen.pop();
+  };
+  search(0, [], [], 0);
+  const upcoming = shown.some(Boolean) ? -1 : cards.findIndex(({ flag, x }) => x > to && !flag.classList.contains('past'));
+  cards.forEach(({ flag, places }, index) => {
+    const place = index === upcoming ? { form: 'edge', width: places[0].width + 20, left: to - places[0].width - 20 } : best.chosen[index];
+    flag.classList.toggle('rt-card-end', place?.form === 'end');
+    flag.classList.toggle('rt-card-compact', place?.form === 'compact');
+    flag.classList.toggle('rt-card-edge', place?.form === 'edge');
+    if (place) {
+      setStyle(flag, 'left', `${Math.round(place.left)}px`);
+      setStyle(flag, 'width', `${Math.round(place.width)}px`);
+    }
+    flag.classList.toggle('rt-cut', !place);
+  });
+}
+
+/**
+ * Fit what the view's edges would cut: the month at the left edge stays
+ * named, pinned there, and the dates under it hide; milestone cards take
+ * their places; the lanes' titles and epic headers follow (timeline.js).
+ * Dates are placed from the zoom, so they are right the moment a zoom lands.
+ */
+function syncEdges(view) {
+  const { sc } = view, ppd = state.pxPerDay;
+  const from = sc.scrollLeft + 2, to = sc.scrollLeft + viewRoom(view) - 2;
+  const pin = sc.querySelector('.rt-axis-pin');
+  let pinned = from, named = null;
+  if (pin) {
+    const start = Number(sc.dataset.rangeStart), day = new Date(start + (sc.scrollLeft / ppd) * DAY);
+    const name = (date) => date.toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', ...(date.getUTCFullYear() !== today.getUTCFullYear() ? { year: 'numeric' } : {}) });
+    // When the next month starts within the pin's width, the pin names it already, so no month loses its name;
+    // that month's own label then hides, wherever it is, so the month isn't named twice.
+    const next = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth() + 1, 1));
+    const nextX = ((+next - start) / DAY) * ppd - sc.scrollLeft, early = nextX < textWidth(name(day), '500 12px') + 32;
+    const month = early ? name(next) : name(day);
+    if (early) named = String(Math.round((+next - start) / DAY));
+    if (pin.textContent !== month) pin.textContent = month;
+    setStyle(pin, 'left', `${sc.scrollLeft}px`);
+    pinned = sc.scrollLeft + textWidth(month, '500 12px') + 24;
+  }
+  for (const label of sc.querySelectorAll('.rt-axis-dates [data-at]')) {
+    const left = Math.round(Number(label.dataset.at) * ppd) + 8;
+    label.classList.toggle('rt-cut', left < pinned || left + Number(label.dataset.w) > to || (label.classList.contains('rm-month') && label.dataset.at === named));
+  }
+  placeCards(sc, from, to);
+  syncLaneEdges(sc, RAIL, view.width);
 }
 
 let roadmapGestureCleanup = () => {};
 /** The Roadmap on the page, which a scale change zooms. */
 let mountedRoadmap = null;
+
+/**
+ * The scroll that puts now at TODAY_AT of the visible timeline when dated
+ * work lies ahead; with nothing dated ahead, as far right as leaves the room
+ * after now (`reserve`), so the done work and the work in progress get the rest.
+ */
+function todayScroll(sc, now, ppd, { reserve = 0, ahead = true } = {}) {
+  const room = (sc ? sc.clientWidth : 900) - RAIL, share = room * (stackedLayout() ? TODAY_AT_PHONE : TODAY_AT);
+  const at = ahead ? Math.min(share, room - reserve) : room - reserve;
+  return Math.max(Math.round(now * ppd - at), 0);
+}
+/**
+ * The scroll that shows a window of days, with a little room before it and
+ * after it. Titles run to the right of their marks, so the window reaches to
+ * the end of the last one that starts in it, while that still fits. With
+ * nothing dated ahead, the window ends just after now, and most of the room
+ * to spare goes to the work before it.
+ */
+function windowScroll(sc, { from, to }, ppd, { reserve, ahead }, now) {
+  const room = sc.clientWidth - RAIL, left = from * ppd;
+  let right = Math.max(to * ppd, now * ppd + reserve);
+  for (const tag of sc.querySelectorAll('.rt-body [data-tag]')) {
+    const [start, end] = tag.dataset.tag.split(',').map(Number);
+    if (start >= left && start <= right + 24 && end > right && end - left + 48 <= room) right = end;
+  }
+  const spare = Math.max(0, room - (right - left));
+  return Math.max(Math.round(ahead ? left - Math.max(48, spare * 0.3) : right - room + spare * 0.3), 0);
+}
+
+/**
+ * The reads asked for these lanes: the days asked for, the days whose tasks
+ * came, the days whose tasks couldn't load, and whether one is loading.
+ * While one loads the view asks for nothing more.
+ */
+const askedReads = new WeakMap();
+/**
+ * What the page's recovery calls a project's reads of days. After one
+ * failed it tries again by itself (recovery.readFailed): after a wait that
+ * grows, while the tab shows, or at once when the connection really comes
+ * back. A scroll, a zoom, a change made elsewhere or a reload that replaces
+ * the lanes asks no sooner, so a failing or busy server gets no stream of reads.
+ */
+const daysRead = (projectId) => `roadmap-days:${projectId}`;
+
+/** The reads asked for `lanes`, kept with them. */
+function readsOf(lanes) {
+  const asked = askedReads.get(lanes) ?? { busy: false, days: new Set(), marked: [], unloaded: [] };
+  askedReads.set(lanes, asked);
+  return asked;
+}
+
+
+/**
+ * Load what the lanes draw around the view and don't hold yet, in place and
+ * one read at a time: first the days they lack, as counts, next to the days
+ * they hold, or in their place after a jump; then the tasks of the days they
+ * draw on their own, a stretch at a time. Every read keeps to what the
+ * server says one read may ask for. The days the view shows are the ones
+ * reads of the lanes ask for again. `due` says a failed read may go again
+ * now: its wait is over, or the connection came back.
+ */
+function loadMore(view, { due = false } = {}) {
+  const lanes = roadmapLanes();
+  if (!lanes || !view.model.ready || !view.sc.isConnected) return;
+  const { sc, model, ppd, drawn } = view, room = viewRoom(view) / ppd, cell = markCell(ppd), most = lanes.limits;
+  const left = sc.scrollLeft / ppd, right = left + room;
+  const date = (day) => iso(new Date(+model.start + day * DAY)), offset = (key) => Math.round((d(key) - model.start) / DAY);
+  // The days drawn, and a cell more on each side, so the cells at the edges are whole; days outside the
+  // timeline's span hold no work.
+  const from = Math.max(0, Math.floor(drawn.from / ppd) - cell), to = Math.max(from, Math.min(model.span, Math.ceil(drawn.to / ppd) + cell));
+  const middle = Math.round((left + right) / 2), anchor = date(middle);
+  // What a read of the lanes asks for again: these days, as many as one read covers, with the tasks of
+  // the days drawn on their own at this zoom.
+  lanes.shown = { from: date(Math.max(from, middle - most.days / 2)), to: date(Math.min(to, middle + most.days / 2 - 1)), anchor, cell };
+  const asked = readsOf(lanes), read = daysRead(lanes.projectId);
+  if (asked.busy || !due && recovery.readWaiting(read)) return;
+  // A read of days gives their counts; one of a stretch's tasks, the tasks of the days drawn on their own there.
+  const ask = (first, last, marks = null) => {
+    const days = { from: date(first), to: date(last), ...(marks ? { anchor: marks, marks: most.marks, cell } : {}) }, key = `${days.from}/${days.to}`;
+    if (!marks && asked.days.has(key)) return;
+    asked.busy = true;
+    if (!marks) asked.days.add(key);
+    // Once it lands, the view goes on with what it still lacks; days a change made elsewhere overtook come again.
+    runtime().roadmapDays(days).then((result) => {
+      // Marks that said their task couldn't load, as all do while reads fail, say what they say now.
+      let redraw = recovery.readFailing(read);
+      asked.busy = false;
+      recovery.readWorked(read);
+      if (result?.stale) { if (!marks) asked.days.delete(key); }
+      else if (marks) {
+        // The days whose tasks all came are read, at least the one asked about; the others are asked for again.
+        const got = result.marked && result.marked.from <= result.marked.to ? result.marked : { from: days.anchor, to: days.anchor };
+        asked.marked.push({ ...got, cell });
+        const unloaded = asked.unloaded.filter((range) => range.to < got.from || range.from > got.to);
+        if (unloaded.length !== asked.unloaded.length) { asked.unloaded = unloaded; redraw = true; }
+      }
+      if (mountedRoadmap !== view) return;
+      if (redraw) drawLanes(view);
+      loadMore(view); returnFocus(view);
+    }, () => {
+      // The page says it couldn't refresh the view; the days come again once the wait is over.
+      asked.busy = false;
+      const projectId = lanes.projectId;
+      recovery.readFailed(read, () => { if (mountedRoadmap?.sc.isConnected && roadmapLanes()?.projectId === projectId) loadMore(mountedRoadmap, { due: true }); });
+      if (marks) asked.unloaded.push({ from: days.from, to: days.to });
+      else asked.days.delete(key);
+      if (mountedRoadmap === view) { drawLanes(view); returnFocus(view); }
+    });
+  };
+  const held = { from: offset(lanes.window.from), to: offset(lanes.window.to) };
+  if (to < held.from - 1 || from > held.to + 1) {
+    // A jump: the days around the view in place of the ones held.
+    const first = Math.max(from, middle - most.days / 2);
+    ask(first, Math.min(to, first + most.days - 1));
+    return;
+  }
+  // The days next to the ones held, on the side the view reaches first.
+  const before = from < held.from ? [Math.max(from, held.from - most.days), held.from - 1] : null;
+  const after = to > held.to ? [held.to + 1, Math.min(to, held.to + most.days)] : null;
+  const next = before && after ? (held.from - left > right - held.to ? before : after) : before ?? after;
+  if (next) { ask(...next); return; }
+  const stretch = blankStretch(view, asked.marked, cell, most);
+  if (stretch) ask(offset(stretch.from), offset(stretch.to), stretch.near);
+}
+
+
+/**
+ * The next days to read the tasks of: the drawn days with one task that the
+ * lanes don't hold yet, from the one nearest the view's middle outwards, as
+ * long as the days drawn on their own there are no more than one read gives
+ * and the stretch spans no more days than one read may. Days already read
+ * for cells of this many days are done.
+ */
+function blankStretch(view, marked, cell, most) {
+  const { drawn, sc } = view, middle = sc.scrollLeft + viewRoom(view) / 2;
+  const singles = view.layout.lanes.flatMap((lane) => lane.sections).flatMap((laid) => laid.marks)
+    .filter((mark) => (mark.type === 'done' || mark.type === 'planned' || mark.group?.count === 1) && drawnIn(mark, drawn))
+    .map((mark) => ({ day: (mark.item ?? mark.group.items[0]).day, x: mark.x, blank: !mark.item?.task && !mark.group.items[0].task }));
+  // Days read for cells of these days: other cells draw other days on their own.
+  const clear = (from, to) => !marked.some((range) => range.cell === cell && range.from <= to && range.to >= from);
+  const read = (day) => !clear(day, day);
+  const wanted = singles.filter((single) => single.blank && !read(single.day)).sort((a, b) => Math.abs(a.x - middle) - Math.abs(b.x - middle))[0];
+  if (!wanted) return null;
+  const perDay = new Map();
+  for (const { day } of singles) if (!read(day)) perDay.set(day, (perDay.get(day) ?? 0) + 1);
+  const days = [...perDay.keys()].sort(), away = (day) => Math.abs(d(day) - d(wanted.day));
+  let low = days.indexOf(wanted.day), high = low, total = perDay.get(wanted.day);
+  // Outwards over the days not read yet, up to the read ones on either side; a tenth to spare, for days a
+  // change made elsewhere left with one task that the lanes don't know of yet.
+  const open = (index) => index >= 0 && index < days.length && clear(days[Math.min(index, low)], days[Math.max(index, high)]);
+  const fits = (first, last) => (d(last) - d(first)) / DAY < most.days;
+  for (;;) {
+    const side = open(low - 1) && (!open(high + 1) || away(days[low - 1]) <= away(days[high + 1])) ? low - 1 : open(high + 1) ? high + 1 : -1;
+    if (side < 0 || total + perDay.get(days[side]) > most.marks * 0.9 || !fits(days[Math.min(side, low)], days[Math.max(side, high)])) break;
+    total += perDay.get(days[side]);
+    if (side < low) low = side; else high = side;
+  }
+  return { from: days[low], to: days[high], near: wanted.day };
+}
 
 export function mountRoadmap() {
   roadmapGestureCleanup();
@@ -667,41 +1103,54 @@ export function mountRoadmap() {
   if (!sc || !renderedRoadmap) return;
   const view = Object.assign(bindRoadmap(sc, renderedRoadmap), { zoomTo: (_ppd) => {} });
   mountedRoadmap = view;
-  sc.addEventListener('focusin', (event) => { const bar = event.target.closest?.('[data-epic]'); if (bar) roadmapSelection = bar.dataset.epic; });
-  if (state.rmScrollLeft === null) state.rmScrollLeft = Math.max(RAIL + view.model.today * view.ppd - sc.clientWidth * 0.42, 0);
+  measure(view);
+  drawAt(view, view.drawn);
+  // Each lane's Tab stop: the item last focused in it, or where its work is.
+  view.lanes.forEach((entry, i) => { if (entry.body && view.model.ready) setTabStop(entry.body, laneEntry(view.layout.lanes[i], laneFocus.get(entry.data.track.id))); });
+  sc.addEventListener('focusin', (event) => { const item = event.target.closest?.('.rt-body [data-nav]'); if (item) roadmapSelection = item.dataset.nav; });
+  const stopLanes = mountLanes(sc, RAIL, lanesOf(view));
+  const place = { reserve: roomAfterNow(view.model, datedAhead(view.model)), ahead: datedAhead(view.model) };
+  // A project the person picked no scale for opens at the scale that fits its work, with that work in view.
+  if (!picked && fitted !== state.projectId && view.model.ready) {
+    fitted = state.projectId;
+    const fit = stackedLayout() ? { ppd: ROADMAP_SCALES[0].ppd, window: null } : fitScale(view.model, sc.clientWidth - RAIL, place.reserve);
+    if (fit.ppd !== view.ppd) zoomRoadmap(view, fit.ppd, view.model.today, 0);
+    state.rmScrollLeft = fit.window ? windowScroll(sc, fit.window, view.ppd, place, view.model.today) : todayScroll(sc, view.model.today, view.ppd, place);
+  }
+  if (state.rmScrollLeft === null) state.rmScrollLeft = todayScroll(sc, view.model.today, view.ppd, place);
+  view.place = place;
+  syncRoadmapScale();
   sc.scrollLeft = state.rmScrollLeft;
   sc.scrollTop = state.rmScrollTop;
+  followView(view);
   mountRoadmapCalendar(view);
+  loadMore(view);
   /** The zoom gesture in progress. */
   let gesture = null;
-  let calendarFrame = 0;
+  let scrollFrame = 0;
   sc.addEventListener('scroll', () => {
     state.rmScrollLeft = sc.scrollLeft; state.rmScrollTop = sc.scrollTop;
     // A scroll the zoom did not make, such as a touchpad pan during a
     // pinch, moves the content under the pointer: zoom around that day now.
     if (gesture && Math.abs(sc.scrollLeft - view.zoomLeft) > 1) { gesture.day = (sc.scrollLeft + gesture.cx - RAIL) / view.ppd; view.zoomLeft = sc.scrollLeft; }
-    if (!calendarFrame) calendarFrame = requestAnimationFrame(() => {
-      calendarFrame = 0;
-      if (sc.isConnected) mountRoadmapCalendar(view);
+    if (!scrollFrame) scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = 0;
+      if (!sc.isConnected) return;
+      measure(view);
+      followView(view);
+      mountRoadmapCalendar(view);
+      loadMore(view);
     });
-  });
-  const sample = sc.querySelector('.bar');
-  let sizeFrame = null;
-  const sizeObserver = typeof ResizeObserver === 'undefined' || !sample ? null : new ResizeObserver(() => {
-    if(sizeFrame===null && sc.isConnected && Math.ceil(sample.getBoundingClientRect().height)!==Number(sc.dataset.barHeight)){
-      sizeFrame=requestAnimationFrame(()=>{sizeFrame=null;if(sc.isConnected)App.refreshRoadmap();});
-    }
-  });
-  if(sample)sizeObserver?.observe(sample);
-
+  }, {passive:true});
   // Zoom: input events update one gesture, and one frame applies it. A
   // gesture keeps the day under the pointer, or under the pinch center as it
   // moves, in place.
   let frame = 0, pointerX = NaN;
   let idle;
   const begin = (kind, clientX, left = sc.getBoundingClientRect().left) => {
+    picked = true;
     stopScale(false);
-    hideEpicTip();
+    hideEpicTip(); closeTimelineList();
     const cx = clientX - left;
     view.zoomLeft = sc.scrollLeft;
     gesture = { kind, left, cx, day: (view.zoomLeft + cx - RAIL) / view.ppd, ppd0: view.ppd, log: 0, target: null, distance: 0, cy: 0, dy: 0 };
@@ -711,6 +1160,7 @@ export function mountRoadmap() {
     frame = 0;
     const current = gesture;
     if (!current || !sc.isConnected) return;
+    measure(view);
     const ppd = clampZoom(current.target ?? view.ppd * Math.exp(current.log));
     current.log = 0;
     zoomRoadmap(view, ppd, current.day, current.cx);
@@ -722,6 +1172,7 @@ export function mountRoadmap() {
     if (frame) { cancelAnimationFrame(frame); step(); }
     gesture = null;
     sc.removeEventListener('touchmove', movePinch);
+    loadMore(view);
   }
   sc.addEventListener('wheel', e => {
     if (!e.ctrlKey && !e.metaKey) return;
@@ -789,28 +1240,31 @@ export function mountRoadmap() {
   const stepScale = (time) => {
     scaleFrame = 0;
     if (!scaled || !sc.isConnected) return;
+    measure(view);
     scaled.started ??= time - 1000 / 60;
     const progress = Math.min(1, (time - scaled.started) / UIMotion.normal), eased = 1 - (1 - progress) ** 3;
     zoomRoadmap(view, progress < 1 ? clampZoom(scaled.from * Math.exp(Math.log(scaled.ppd / scaled.from) * eased)) : scaled.ppd, scaled.day, scaled.cx);
-    if (progress < 1) scaleFrame = requestAnimationFrame(stepScale); else scaled = null;
+    if (progress < 1) scaleFrame = requestAnimationFrame(stepScale); else { scaled = null; loadMore(view); }
   };
   view.zoomTo = (ppd) => {
     if (gesture) end();
     stopScale();
-    hideEpicTip();
-    const { day, cx } = scaleAnchor(view, ppd);
-    if (UIMotion.reduced() || Math.abs(ppd - view.ppd) < 1e-3) { zoomRoadmap(view, ppd, day, cx); return; }
+    measure(view);
+    hideEpicTip(); closeTimelineList();
+    const { day, cx } = scaleAnchor(view);
+    if (UIMotion.reduced() || Math.abs(ppd - view.ppd) < 1e-3) { zoomRoadmap(view, ppd, day, cx); loadMore(view); return; }
     scaled = { ppd, day, cx, from: view.ppd, started: null };
     scaleFrame = requestAnimationFrame(stepScale);
   };
   roadmapGestureCleanup = () => {
-    if(calendarFrame)cancelAnimationFrame(calendarFrame);
-    sizeObserver?.disconnect();if(sizeFrame!==null)cancelAnimationFrame(sizeFrame);sizeFrame=null;
+    if (scrollFrame) cancelAnimationFrame(scrollFrame);
+    stopLanes();
     clearTimeout(idle); if (frame) cancelAnimationFrame(frame);
     frame = 0; gesture = null; sc.removeEventListener('touchmove', movePinch);
     stopScale();
     if (mountedRoadmap === view) mountedRoadmap = null;
   };
+  returnFocus(view);
 }
 
 document.addEventListener('scroll', (e) => { if (!EPIC_TIP.el?.contains(e.target)) hideEpicTip(); }, true);
@@ -827,7 +1281,7 @@ document.addEventListener('keydown', (event) => {
   if (state.view !== 'roadmap' || event.defaultPrevented || event.repeat || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
   const scale = ROADMAP_SCALES.find((item) => item.shortcut === String(event.key).toUpperCase());
   const onPage = event.target === document.body || event.target === document.documentElement || event.target.closest?.('#main,.page-header');
-  if (!scale || !onPage || event.target.closest('input,textarea,select,[contenteditable="true"]') || state.modal || state.peek || state.menu || state.sideOpen && innerWidth <= 900 || POP.el || pendingConfirmation || document.querySelector('.confirmation-layer,.file-overlay') || document.getElementById('app').inert) return;
+  if (!scale || !onPage || event.target.closest('input,textarea,select,[contenteditable="true"]') || state.modal || state.peek || state.menu || state.sideOpen && innerWidth <= 900 || POP.el || pendingConfirmation || document.querySelector('.confirmation-layer,.file-overlay,#roadmap-list') || document.getElementById('app').inert) return;
   event.preventDefault();
   App.setRoadmapScale(scale.key);
   announce(`Roadmap scale: ${scale.label}`);
@@ -856,10 +1310,12 @@ Object.assign(App, {
     if (focus && !peek.inert && !document.querySelector('.confirmation-layer,.file-overlay')) restoreOpener(focus);
   },
   /**
-   * Draw the Roadmap again in place: its scroll and the focused control stay,
-   * and lanes slide to their new places. A track moved here, `moved`, first
-   * comes into view with focus on its grip, so its lane slides from where it
-   * showed instead of jumping.
+   * Show the Roadmap as it is now. When only its lanes changed, they change
+   * in place (patchLanes). Otherwise the page is drawn again in place: the
+   * same date stays at the left edge, the focused control stays, and lanes
+   * slide to their new places. A track moved here, `moved`, first comes into
+   * view with focus on its grip, so its lane slides from where it showed
+   * instead of jumping.
    */
   refreshRoadmap(moved) {
     // A change from elsewhere waits for a press on the page to end, as on a
@@ -869,46 +1325,78 @@ Object.assign(App, {
     if(state.view!=='roadmap'){App.refreshBackground();return;}
     const content=document.querySelector('.content'),scroll=document.getElementById('rmScroll');
     if(!content||!scroll){App.refresh();return;}
+    if(!moved&&patchLanes())return;
     roadmapGestureCleanup();
-    const before=UIMotion.positions('.lane'),left=scroll.scrollLeft,top=scroll.scrollTop;
+    // The focused mark's card or list shows again on it once drawn again, if one showed.
+    const shown=!!document.getElementById('roadmap-list')||!!EPIC_TIP.anchor&&content.contains(EPIC_TIP.anchor);
+    closeTimelineList();
+    const before=UIMotion.positions('.lane'),top=scroll.scrollTop;
+    // More done work can move day 0 earlier: the same date stays at the left edge, not the same pixels.
+    const leftDay=scroll.scrollLeft/state.pxPerDay+Number(scroll.dataset.rangeStart)/DAY;
     const focus=content.contains(document.activeElement)?rememberOpener(document.activeElement):null;
-    setHTML(content,renderRoadmap());mountRoadmap();
-    // The header counts what the timeline now shows.
-    const stats=document.querySelector('.topbar .roadmap-structure-stats'),counted=roadmapStatsHtml();
-    if(stats&&stats.outerHTML!==counted){const template=document.createElement('template');setHTML(template,counted);stats.replaceWith(template.content);}
-    const next=document.getElementById('rmScroll');if(next){next.scrollLeft=left;next.scrollTop=top;}
-    if(moved)focusMovedTrack(moved);else if(focus)restoreOpener(focus);
+    const item=document.activeElement?.closest?.('.rt-body [data-nav]'),nav=item?.dataset.nav,navTrack=item?.closest('.lane')?.dataset.track;
+    setHTML(content,renderRoadmap());
+    const next=document.getElementById('rmScroll');
+    if(next){state.rmScrollLeft=Math.max(0,Math.round((leftDay-Number(next.dataset.rangeStart)/DAY)*state.pxPerDay));state.rmScrollTop=top;}
+    mountRoadmap();
+    refreshStats();
+    if(moved)focusMovedTrack(moved);
+    else if(nav)keepFocus(navTrack,nav,shown);
+    else if(focus)restoreOpener(focus);
     App.updateDocumentTitle();
-    if(before)UIMotion.layout(before,'.lane');
+    // Lanes slide up or down to their new places. Every lane shares its left edge, which a new scroll
+    // position moves sideways at once, so that is no motion.
+    const shift=(content.querySelector('.lane')?.getBoundingClientRect().left??0)-([...before.values()][0]?.left??0);
+    UIMotion.layout(new Map([...before].map(([track,box])=>[track,{left:box.left+shift,top:box.top}])),'.lane');
     App.refreshCounts();
   },
-  /** Zoom the Roadmap to a fixed scale, in place, keeping the selected epic or today where it is. */
+  /**
+   * "Overdue N": focus the next of the longest overdue tasks and show its
+   * card. One on days the lanes don't hold yet comes into view, and gets
+   * focus once they load.
+   */
+  focusOverdue() {
+    const sc = document.getElementById('rmScroll'), lanes = roadmapLanes(), late = lanes?.late ?? [], view = mountedRoadmap;
+    if (!sc || !late.length || !view) return;
+    const index = (late.findIndex((task) => task.id === overdueShown) + 1) % late.length, task = late[index];
+    overdueShown = task.id; overdueWaiting = null;
+    announce(`Overdue ${index + 1} of ${lanes.overdue}: ${task.title}`);
+    if (focusTask(sc, task, RAIL, lanesOf(view)) || !task.deadline) return;
+    overdueWaiting = task;
+    const day = Math.round((d(task.deadline) - view.model.start) / DAY);
+    sc.scrollLeft = state.rmScrollLeft = Math.max(0, Math.round(day * view.ppd - (sc.clientWidth - RAIL) / 2));
+  },
+  /** Zoom the Roadmap to a fixed scale, in place, keeping the selected task or epic, or today, where it is. */
   setRoadmapScale(key) {
     const scale = ROADMAP_SCALES.find((item) => item.key === key);
     if (!scale) return;
+    picked = true;
     if (state.view === 'roadmap' && mountedRoadmap?.sc.isConnected) { mountedRoadmap.zoomTo(scale.ppd); return; }
     state.pxPerDay = scale.ppd; syncRoadmapScale();
   },
   goToday() {
-    const sc = document.getElementById('rmScroll');
-    const { start } = rmRange();
-    state.rmScrollLeft = Math.max(RAIL + (today - start) / DAY * state.pxPerDay - (sc ? sc.clientWidth : 900) * 0.42, 0);
-    // Scroll the mounted Roadmap in place; rebuilding the page would only repeat it.
-    if (sc && state.view === 'roadmap' && Number(sc.dataset.rangeStart) === +start) sc.scrollLeft = state.rmScrollLeft;
-    else App.refresh();
+    const view = mountedRoadmap;
+    if (!view?.sc.isConnected || state.view !== 'roadmap') { state.rmScrollLeft = null; App.refresh(); return; }
+    // Scroll the mounted Roadmap in place; drawing the page again would only repeat it.
+    view.sc.scrollLeft = state.rmScrollLeft = todayScroll(view.sc, view.model.today, view.ppd, view.place);
   },
-  epicHover(ev, id, keyboard = false, kind = 'epic') {
+  /** A milestone's card, or the list of the milestones a card holds: at once on keyboard focus, after a short pause on hover. */
+  milestoneHover(ev, ids, keyboard = false) {
     if (!keyboard && !window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
     hideEpicTip();
     const anchor = ev.currentTarget;
-    const show = kind === 'milestone' ? showMilestoneTip : showEpicTip;
-    if (keyboard) show(anchor, id);
-    else EPIC_TIP.showTimer = setTimeout(() => show(anchor, id), 220);
+    if (keyboard) showMilestoneTip(anchor, ids);
+    else EPIC_TIP.showTimer = setTimeout(() => showMilestoneTip(anchor, ids), 220);
   },
-  milestoneHover(ev, id, keyboard = false) { App.epicHover(ev, id, keyboard, 'milestone'); },
-  milestoneClick(ev, id) {
-    if (canRoadmap()) App.openModal('milestone', id);
-    else showMilestoneTip(ev.currentTarget, id);
+  /** Open the milestone, or choose one of the milestones a card holds. Without permission to change them, show them. */
+  milestoneClick(ev, ids) {
+    const list = ids.split(' ');
+    if (!canRoadmap()) { showMilestoneTip(ev.currentTarget, ids); return; }
+    if (list.length === 1) { App.openModal('milestone', ids); return; }
+    hideEpicTip();
+    openMenu(list.map((id) => milestones().find((m) => m.id === id)).filter(Boolean).map((milestone) => ({
+      label: `${milestone.name} · ${humanShort(d(milestone.date))}`, fn: () => App.openModal('milestone', milestone.id),
+    })), 0, 0, { trigger: ev.currentTarget });
   },
   roadmapTipKey(ev) {
     const tip = EPIC_TIP.el;
@@ -920,11 +1408,7 @@ Object.assign(App, {
     clearTimeout(EPIC_TIP.showTimer); clearTimeout(EPIC_TIP.hideTimer);
     EPIC_TIP.hideTimer = setTimeout(hideEpicTip, 140);
   },
-  epicKey(ev, id) {
-    App.roadmapTipKey(ev);
-    if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); App.openPeek(id); }
-  },
-  openPeek(id) { if(!canReadProject(trackById(epicById(id)?.trackId)?.projectId)){App.toast('This project is unavailable','error');return;}if (state.peek !== id) peekOpened(); state.peek = id; roadmapSelection = id; App.refreshOverlays(); },
+  openPeek(id) { if(!canReadProject(trackById(epicById(id)?.trackId)?.projectId)){App.toast('This project is unavailable','error');return;}if (state.peek !== id) peekOpened(); state.peek = id; roadmapSelection = `e:${id}`; App.refreshOverlays(); },
   trackMenu(ev, id) {
     ev.stopPropagation();
     if (!App.require('manage_roadmap')) return;

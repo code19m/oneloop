@@ -10,8 +10,8 @@ All notable changes to oneloop are recorded here. The format follows
 
 - Stop oneloop, install the new version, and run
   `oneloop db migrate --backup-dir <directory>`. It saves a backup first, then
-  upgrades the database from schema 8 to schema 9. Older versions refuse a
-  schema 9 database. To go back to one, restore the backup that `db migrate`
+  upgrades the database from schema 8 to schema 10. Older versions refuse a
+  schema 10 database. To go back to one, restore the backup that `db migrate`
   made.
 - Every task is now on a track, and an epic is optional. The upgrade puts
   each task on its epic's track and keeps every task, epic and track. If you
@@ -53,18 +53,49 @@ All notable changes to oneloop are recorded here. The format follows
 - A task's page shows its **Track** beside its **Epic**. Moving the task to
   another track takes it out of its epic, and a note under **Epic** says why.
   **No epic** takes a task out of its epic.
+- An epic's details on the **Roadmap** offer **New task** to people with the
+  **Board** permission, with the epic and its track filled in.
 
 ### Changed
 
+- The **Roadmap** now shows each track's tasks on its timeline instead of
+  epic bars: done work as dots on the day it was finished, work in progress
+  as thin bars from when it started to its deadline, and plans with a
+  deadline as rings. Late work shows in red with an error icon and blocked
+  work in amber. Each lane shows three tasks in progress at most, the late
+  and blocked first, and **+N in progress** lists the rest. Epics are boxes
+  around their work, milestones are cards above the lanes, and a track's name
+  says how many tasks it has in progress and planned. **Overdue** with a
+  number shows when tasks are late, and steps through them. Every task, epic
+  and milestone has the same details on hover and keyboard focus, and the
+  arrow keys move through a lane. Back from a task opened there puts focus
+  back where it was opened. Plans without a deadline stay on the Board.
+- The **Roadmap** opens at the scale that fits the recent work, unless you
+  chose a scale, and another project opens at its own fit. It loads the days
+  around what it shows, and more days as you scroll to them, and draws only
+  what is near the view. Each day shows all of its done work and plans at
+  any scale. Where they are too close to tell apart, the work of a few days
+  becomes a number, whose list shows 50 tasks, so steady work reads as a row
+  of numbers across time. A plan's title that couldn't load says so, and
+  loads again by itself a little later, or at once when the connection comes
+  back. **Overdue** steps through the 20 longest overdue. A change made
+  elsewhere reads only what it changed, and a change to a track or milestone
+  reads no tasks. Its header no longer counts tracks, epics and milestones.
+- On a phone, each track's name on the **Roadmap** sits above its lane.
+- An epic's details no longer say **Ongoing**: an epic without an end date
+  shows from when it runs.
+- **Delete epic** says how many tasks stay on its track, or that the epic just
+  goes when it has none. **Edit epic** says that its tasks move with it to
+  another track.
 - Deleting an epic keeps its tasks on its track, without an epic. Before, an
   epic with tasks couldn't be deleted.
 - A track can be deleted only when it has no tasks and no epics, and the
   message says how many it has. Moving an epic to another track moves its
   tasks with it.
-- A task's **Epic** offers the epics of the task's track. Choosing an epic, on
-  a task's page or in **New task**, puts the task on the epic's track, also
-  when the epic moved to another track meanwhile. In MCP, an epic on another
-  track than the task's is refused.
+- A task's **Epic** offers the epics of the task's track. Choosing an epic on
+  a task's page puts the task on the epic's track, also when the epic moved
+  to another track meanwhile. In MCP, an epic on another track than the
+  task's is refused.
 - A **Board** card names the task's epic, or its track when it has no epic.
 - The activity of a task says where it went: "moved the task to iOS", "added
   the task to Payments v2" or "removed the task from Payments v2", instead of
@@ -94,6 +125,14 @@ All notable changes to oneloop are recorded here. The format follows
 
 ### Fixed
 
+- A busy server that turns some reads away no longer looks like a lost
+  connection. Before, the page then checked the connection, loaded everything
+  again and read once more, about every second, also in a hidden tab. Now the
+  page says it couldn't load or refresh, and tries again by itself after 5
+  seconds, then 15, then every minute, while the tab shows. A connection that
+  keeps coming back only to go again is checked less and less often.
+- The **Board** and the **Roadmap** read their cards faster in a project with
+  many deleted tasks.
 - On a task's page, a **Status** that couldn't be saved, such as while
   offline, now shows the saved status again. Before, it kept showing the
   status you chose until the page was drawn again.
@@ -105,8 +144,14 @@ All notable changes to oneloop are recorded here. The format follows
   their IDs.
 - A change made elsewhere while a task's **Status** list was open now shows
   once the list closes. Before, it showed only after focus left the page.
-- On the **Roadmap**, today's date no longer shows over **+ Track** when you
-  scroll past today, as on a phone. Milestone lines and today's line no longer
+- **Delete track** on the **Roadmap** now says first that a track must be
+  empty, and how many tasks and epics to move or delete, in the words the
+  server uses when it refuses. Before, it asked to confirm a delete that then
+  failed.
+- **Mark as done** on an epic now counts all of its open tasks, not only those
+  the page had loaded.
+- On the **Roadmap**, today's label no longer shows over the column of track
+  names when you scroll past today. Milestone lines and today's line no longer
   leave small marks on the column of track names either.
 - A change made elsewhere, such as in another tab, no longer takes focus off a
   track's grip or **⋮** button on the **Roadmap**. Esc in a track's menu now
@@ -125,11 +170,8 @@ All notable changes to oneloop are recorded here. The format follows
 - On a touch screen, a second finger now stops dragging a checklist item or a
   file, as it does for a track.
 - A track's grip and **⋮** on the **Roadmap** no longer cover the end of its
-  name: on a phone they sit above the name, and on a wider screen the name
-  keeps clear of them. A name shows two lines at most and then ends with an
-  ellipsis; its tip shows all of it, on hover or, from its grip or **⋮**, on
-  keyboard focus. A lane grows to fit a two-line name and the epic count
-  under it.
+  name. A long name ends with an ellipsis; its tip shows all of it, on hover
+  or, from its grip or **⋮**, on keyboard focus.
 - **Sign out** now signs out your other open tabs in the browser at once. They
   go straight to the sign-in page, without first saying that the session
   ended. They forget their project, the Board's filters and open dialogs too,
@@ -154,9 +196,8 @@ All notable changes to oneloop are recorded here. The format follows
 - Choosing another project on **Page not found** or **Access denied** now opens
   that project's page of the same kind, such as its **Knowledge**, or else its
   **Board**, and loads it with one request.
-- While another project's **Roadmap** loads, its header and the sidebar's
-  **Board** count show no numbers instead of 0. The header's counts of tracks,
-  epics and milestones now also follow changes made elsewhere.
+- While another project's **Roadmap** loads, the sidebar's **Board** count
+  shows no number instead of 0.
 - **Reload now** reloads the tab once. On a slow network, switching to another
   tab before the new page arrived made the tab start a second reload, and the
   new page then said **oneloop was updated**.

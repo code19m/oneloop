@@ -62,12 +62,15 @@ test('a Board bootstrap asks for Done in the order this browser chose', async (t
   saveDoneOrder('completed', undefined); t.after(() => saveDoneOrder('manual', undefined));
   await api.bootstrap({ projectId: 'p1', view: 'board' });
   await api.bootstrap({ projectId: 'p1', view: 'roadmap' });
+  // The Roadmap's days in view, and the days each of its marks stands for.
+  await api.bootstrap({ projectId: 'p1', view: 'roadmap', roadmap: { from: '2026-01-01', to: '2026-03-01', anchor: '2026-02-01', cell: 4 } });
   // A filtered Board's pages come for its filters, named as a Board read names them.
   await api.bootstrap({ projectId: 'p1', view: 'board', filters: { search: 'x', trackIds: ['t1', 't2'], blocked: true } });
   assert.deepEqual(requested, [
     '/api/bootstrap?projectId=p1&view=board',
     '/api/bootstrap?projectId=p1&view=board&doneOrder=completed',
     '/api/bootstrap?projectId=p1&view=roadmap',
+    '/api/bootstrap?projectId=p1&view=roadmap&roadmapFrom=2026-01-01&roadmapTo=2026-03-01&roadmapAnchor=2026-02-01&roadmapCell=4',
     '/api/bootstrap?projectId=p1&view=board&search=x&trackIds=t1%2Ct2&blocked=true&doneOrder=completed',
   ]);
 });

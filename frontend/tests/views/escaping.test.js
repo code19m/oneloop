@@ -56,8 +56,11 @@ test('user text with markup stays text on every page, dialog, drawer, menu and t
   const visit=(label,show)=>{show();for(const element of t.d.querySelectorAll('.planted'))planted.push(`${label}: ${element.outerHTML}`);};
   const cancel=()=>t.d.querySelector('[data-confirm-cancel]')?.click();
   const epic=t.D.epics.find(item=>item.state!=='done'),milestone=t.D.milestones[0];
+  const frame=()=>new Promise(resolve=>t.w.requestAnimationFrame(resolve));
   visit('roadmap',()=>{});
-  visit('epic tooltip',()=>t.A.epicHover({currentTarget:t.d.querySelector(`[data-epic="${epic.id}"]`)},epic.id,true));
+  // Focus without a press shows a card on the next frame.
+  t.d.querySelector(`.rt-epic-label[data-epic="${epic.id}"]`).focus();await frame();visit('epic card',()=>{});
+  t.d.querySelector('.rt-body [data-task]').focus();await frame();visit('task card',()=>{});
   visit('milestone tooltip',()=>t.A.milestoneHover({currentTarget:t.d.querySelector(`[data-milestone="${milestone.id}"]`)},milestone.id,true));
   visit('epic drawer',()=>t.A.openPeek(epic.id));
   visit('epic dialog',()=>t.A.openModal('epic',epic.id));

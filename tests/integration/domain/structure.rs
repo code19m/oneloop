@@ -429,7 +429,13 @@ async fn membership_removal_and_unblock_complete_preserve_invariants_atomically(
         .unwrap();
     assert_eq!(task["status"], "done");
     assert_eq!(block["resolved"], true);
-    let roadmap = f.service.roadmap(&f.manager, "p1".into()).await.unwrap();
+    let roadmap = serde_json::to_value(
+        f.service
+            .roadmap(&f.manager, "p1".into(), None)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(roadmap["projectId"], "p1");
     let epic = roadmap["epics"]
         .as_array()

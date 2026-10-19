@@ -1,7 +1,7 @@
 // @ts-check
 
 import {
-  appendBoardTasks, compareTaskOrder, mergeEpicActivityPage, mergeEpicTaskPage, replaceBoardTasks, replacePoolPage, replaceRoadmap, replaceTaskDetail,
+  NAMED_TASKS_LIMIT, appendBoardTasks, appendRoadmapDays, changedSections, compareTaskOrder, mapRoadmapMark, sectionKey, mergeEpicActivityPage, mergeEpicTaskPage, replaceBoardTasks, replacePoolPage, replaceRoadmap, replaceTaskDetail,
   setBoardPageInfo, setPoolPageInfo, setProjectTaskCounts,
 } from './projection-store.js';
 import {byStatus, toLegacyScope, toLegacyStatus, toWireStatus} from './wire.js';
@@ -20,8 +20,8 @@ function boardFilters(filters={}){
 
 /**
  * Reads behind the open views. Every read has a slot named after what it
- * loads: the Board, one task, the epic drawer, or a project's counts, Roadmap
- * or Pool scope.
+ * loads: the Board, one task, the epic drawer, or a project's counts, Roadmap,
+ * Roadmap structure, Roadmap days, list of a Roadmap mark, or Pool scope.
  * A newer read of a slot replaces an older one; when both asked for the same
  * thing, the older caller gets the newer result instead of nothing. Reads of
  * different slots never cancel each other. A background (live) read never
@@ -33,6 +33,8 @@ function boardFilters(filters={}){
  */
 export function createReadController({api,data,writes={readUnchanged:(/** @type {()=>Promise<any>} */ read,/** @type {()=>boolean} */ _current)=>read()},onBoard=(_state)=>{},onRoadmap=(_projection)=>{},onPool=(_page)=>{},onTask=(_task)=>{},onEpic=(_page)=>{},onCounts=(_counts)=>{},onError=(_error)=>{}}){
   let epoch=0;
+  /** How many changes made elsewhere each lanes of the Roadmap were read for. @type {WeakMap<object,number>} */
+  const changesOf=new WeakMap();
   let boardState=null,boardDirty=false,pageController=new AbortController();
   /** @type {Promise<any>|null} */ let boardPageRead=null;
   /** @type {Map<string,Token>} */ const slots=new Map();
@@ -222,11 +224,62 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
     }
   }
 
+  /**
+   * A project's Roadmap with its lanes, in one read: for the days `window`
+   * names, else the days its view shows, else the ones it opens with.
+   * @param {string} projectId @param {{background?:boolean,window?:{from:string,to:string,anchor?:string}}} [options]
+   */
   async function roadmap(projectId,options={}){
     return read(`roadmap:${projectId}`,'',!!options.background,async token=>{
-      try{const projection=await answerOf(token,()=>api.roadmap(projectId,{signal:token.signal,background:options.background}));if(!current(token))return {stale:true};replaceRoadmap(data,projection);onRoadmap(projection);return {stale:false};}
-      catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
+      try{
+        const lanes=data.roadmap?.projectId===projectId?data.roadmap:null,window=options.window??lanes?.shown??null;
+        // The page reads the lanes, their days and titles itself, as it draws them: never at a person's request.
+        const projection=await answerOf(token,()=>api.roadmapLanes(projectId,window,{signal:token.signal,background:true}));
+        if(!current(token))return {stale:true};
+        replaceRoadmap(data,projection);onRoadmap(projection);return {stale:false};
+      }catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
     });
+  }
+
+  /**
+   * What a change to the tasks `ids` changed in the Roadmap's lanes, in one
+   * read: those tasks, the lanes' counts, and the work in progress and all
+   * the days the lanes hold (as counts alone: the lanes keep the tasks of
+   * days with one that they hold) of the sections the change may have
+   * changed. Those are
+   * the ones the tasks were in, as far as the lanes hold them, and the ones
+   * they are in now. A section whose counts of done tasks or plans changed
+   * otherwise had a task the lanes didn't hold leave it: a second read gives
+   * its days. Lanes of another project, or more tasks than one read names,
+   * are read again.
+   * @param {string} projectId @param {string[]} ids @param {{background?:boolean}} [options] @param {string[]} [left] sections a change left, for the second read
+   */
+  async function patchRoadmap(projectId,ids,options={},left=[]){
+    const lanes=data.roadmap,named=[...new Set(ids)];
+    // Lanes that hold more days than one read of a change covers are read again too.
+    const held=lanes?(Date.parse(lanes.window.to)-Date.parse(lanes.window.from))/86400000:0;
+    if(lanes?.projectId!==projectId||(!named.length&&!left.length)||named.length>NAMED_TASKS_LIMIT||held>=lanes.limits.changeDays)return roadmap(projectId,options);
+    // A read of more days asked for before this change may miss it: it is dropped, and asked for again.
+    changesOf.set(lanes,(changesOf.get(lanes)??0)+1);
+    // Where the lanes last saw each named task.
+    const seen=new Map([...data.tasks.filter((task)=>task.projectId===projectId),...Object.values(lanes.marks),...lanes.late].map((task)=>[task.internalId,sectionKey(task.trackId,task.epicId)]));
+    const sections=[...new Set([...named.flatMap((id)=>seen.has(id)?[/** @type {string} */ (seen.get(id))]:[]),...left])];
+    const result=await read(`roadmap:${projectId}`,'',!!options.background,async token=>{
+      try{
+        const before=lanes.sections;
+        // The longest overdue come again when a named task is among them: it may have left them.
+        const late=named.some((id)=>lanes.late.some((task)=>task.internalId===id))?{late:true}:{};
+        const projection=await answerOf(token,()=>api.roadmapLanes(projectId,{...lanes.window,marks:0,tasks:named,sections,...late},{signal:token.signal,background:true}));
+        // A newer read of the lanes, such as a bootstrap's, has these changes already.
+        if(!current(token)||data.roadmap!==lanes)return {stale:true};
+        replaceRoadmap(data,projection,named,sections);onRoadmap(projection);
+        const changed=changedSections(projection.lanes,sections);
+        const moved=[...new Set([...Object.keys(before),...Object.keys(lanes.sections)])].filter((key)=>!changed.has(key)&&(before[key]?.done!==lanes.sections[key]?.done||before[key]?.planning!==lanes.sections[key]?.planning));
+        return {stale:false,moved};
+      }catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
+    });
+    if(left.length||!result?.moved?.length)return {stale:!!result?.stale};
+    return patchRoadmap(projectId,[],options,result.moved);
   }
 
   /**
@@ -243,6 +296,44 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
       }catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
     });
   }
+
+  /**
+   * More days for the Roadmap's lanes, as the view comes to them: their
+   * counts, and the tasks of days with one, nearest `anchor` first. A newer
+   * read of the lanes drops it.
+   * @param {string} projectId @param {{from:string,to:string,anchor?:string,marks?:number}} days
+   */
+  async function roadmapDays(projectId,days){
+    const lanes=data.roadmap;
+    if(lanes?.projectId!==projectId)return {stale:true};
+    const changes=changesOf.get(lanes);
+    return read(`roadmap:${projectId}:days`,JSON.stringify(days),false,async token=>{
+      try{
+        const read=await api.roadmapDays(projectId,days,{signal:token.signal,background:true});
+        if(!current(token)||data.roadmap!==lanes||changesOf.get(lanes)!==changes)return {stale:true};
+        appendRoadmapDays(data,projectId,read);onRoadmap(lanes);return {stale:false,marked:read.marked??null};
+      }catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
+    });
+  }
+
+  /**
+   * The tasks of one section that a mark counting several stands for: its
+   * done tasks or plans of some days, or its work in progress. Nothing is
+   * kept; the list shows them.
+   * @param {string} projectId @param {{track:string,epic?:string|null,kind:'done'|'plans'|'open',from?:string,to?:string}} query
+   */
+  async function roadmapList(projectId,query){
+    // One list reads at a time: a newer one, or closing it, cancels the one before.
+    return read('roadmap-list',JSON.stringify([projectId,query]),false,async token=>{
+      try{
+        const list=await api.roadmapList(projectId,query,{signal:token.signal});
+        if(!current(token))return {stale:true,items:[],total:0};
+        return {stale:false,items:list.items.map((/** @type {any} */ view)=>mapRoadmapMark(data,{...view,projectId})),total:list.total};
+      }catch(error){if(ignored(token,error))return {stale:true,items:[],total:0};throw error;}
+    });
+  }
+  /** Cancel the list a mark of the Roadmap is reading, as when it closes. */
+  function cancelRoadmapList(){const token=slots.get('roadmap-list');if(token&&!token.done){slots.delete('roadmap-list');token.controller.abort();}}
 
   async function pool(projectId,scope,append=false,cursor,options={}){
     const key=`${projectId}:${scope}`,pageKey=`${projectId}:${toLegacyScope(scope)}`;
@@ -335,7 +426,7 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
   function moreEpicActivity(epicId){const page=data.epicPageInfo[epicId];return page?.activityCursor?epic(epicId,{tasks:false,activity:true,appendActivity:true}):Promise.resolve({done:true});}
 
   return Object.freeze({
-    adoptBoard,board,patchBoard,invalidateBoard(){boardDirty=true;},counts,moreBoard,roadmap,pool,morePool,task,epic,moreEpicTasks,moreEpicActivity,
+    adoptBoard,board,patchBoard,invalidateBoard(){boardDirty=true;},counts,moreBoard,roadmap,patchRoadmap,roadmapStructure,roadmapDays,roadmapList,cancelRoadmapList,pool,morePool,task,epic,moreEpicTasks,moreEpicActivity,
     /** Settles when the reads someone started before this call have finished. */
     idle(){return Promise.allSettled([...foreground]).then(()=>{});},
     /** Drop every read, for a new session. */

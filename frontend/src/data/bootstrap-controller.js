@@ -26,7 +26,9 @@ export function createBootstrapController({ api, data, writes = { readUnchanged:
       controller = new AbortController();
       const work = (async () => {
         try {
-          const ask = () => api.bootstrap({ ...scope, signal: controller.signal });
+          // The Roadmap reads the days its view shows again.
+          const lanes = data.roadmap, roadmap = scope.view === 'roadmap' && lanes && lanes.projectId === scope.projectId ? lanes.shown ?? lanes.window : undefined;
+          const ask = () => api.bootstrap({ ...scope, roadmap, signal: controller.signal });
           // A read that started earlier, as the first one after sign-in does,
           // or a live load, which a change this tab makes meanwhile repeats.
           const projection = await (scope.response ?? (scope.background ? writes.readUnchanged(ask, () => current === generation) : ask()));

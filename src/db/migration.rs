@@ -95,9 +95,17 @@ const MIGRATIONS: &[Migration] = &[
         hook: None,
         foreign_keys_off: true,
     },
+    Migration {
+        version: 10,
+        name: "roadmap_indexes",
+        sql: include_str!("../../migrations/0010_roadmap_indexes.sql"),
+        hook_revision: "",
+        hook: None,
+        foreign_keys_off: false,
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 9;
+pub const CURRENT_SCHEMA_VERSION: i64 = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MigrationOutcome {

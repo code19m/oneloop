@@ -28,7 +28,7 @@ export function renderModal() {
     body = `<h2>${e ? 'Edit epic' : 'New epic'}</h2>
     <form novalidate data-save-shortcut ${UIAction.on('submit', 'saveEpic', UIAction.event, m.id || '')}>
       ${field('Title', `<input class="ctl" name="title" placeholder="Payment integration" value="${esc(e ? e.title : '')}" maxlength="120" required autofocus>`)}
-      ${field('Track', selectHtml('mTrack', { name: 'trackId', value: e ? e.trackId : (m.trackId || ''), placeholder: 'Choose a track', options: trackOptions() }))}
+      ${field('Track', selectHtml('mTrack', { name: 'trackId', value: e ? e.trackId : (m.trackId || ''), placeholder: 'Choose a track', options: trackOptions() }) + (e?.total ? `<div class="hint">${e.total === 1 ? 'Its task moves' : `Its ${e.total} tasks move`} with it to another track.</div>` : ''))}
       <div class="field-row">
         ${field('Start', dateHtml('mStart', { name: 'start', value: e ? e.start : iso(today), max: () => dateValue('mEnd'), maxError: 'Start date cannot be after the end date.' }))}
         ${field('End', dateHtml('mEnd', { name: 'end', value: (e && e.end) || '', clearable: true, min: () => dateValue('mStart'), minError: 'End date cannot be before the start date.', placeholder: 'No end date' }), true)}

@@ -76,28 +76,30 @@ const blocked = 'Instant transfer confirmation sheet';
 // Listed in their order within each column, from the top. The Planning tasks
 // are added later than the rest. A task is on its epic's track, or on `track`
 // without an epic. `status` is where each task ends up; a deadline is in days
-// from today; `checklist` has the task's steps and how many of them are done.
+// from today; `started` and `finished` are how many days ago work on it
+// started and ended; `checklist` has the task's steps and how many of them are
+// done.
 const tasks = [
-  { title: 'Typography and spacing tokens', epic: 'system', status: 'done', assignees: ['priya'] },
-  { title: 'Icon set export for iOS and Android', epic: 'system', status: 'done', assignees: ['priya'] },
-  { title: 'Rate limiting on the payments gateway', track: 'platform', status: 'done', assignees: ['kenji'] },
-  { title: 'Skeleton loading states', epic: 'home', status: 'done', assignees: ['daniel'] },
-  { title: 'Phone number verification', epic: 'onboarding', status: 'done', assignees: ['sofia'] },
-  { title: featured, epic: 'home', status: 'in_progress', assignees: ['daniel'], deadline: 3,
+  { title: 'Typography and spacing tokens', epic: 'system', status: 'done', assignees: ['priya'], finished: 14 },
+  { title: 'Icon set export for iOS and Android', epic: 'system', status: 'done', assignees: ['priya'], finished: 9 },
+  { title: 'Rate limiting on the payments gateway', track: 'platform', status: 'done', assignees: ['kenji'], finished: 11 },
+  { title: 'Skeleton loading states', epic: 'home', status: 'done', assignees: ['daniel'], finished: 7 },
+  { title: 'Phone number verification', epic: 'onboarding', status: 'done', assignees: ['sofia'], finished: 4 },
+  { title: featured, epic: 'home', status: 'in_progress', assignees: ['daniel'], deadline: 3, started: 8,
     description: 'Swipeable balance cards at the top of the accounts home, one per account. The next card '
       + 'peeks in from the edge, and tapping a card opens the account. Three cards for the beta; the rest '
       + 'go behind All accounts.',
     checklist: { done: 4, steps: ['Next card peeks in from the edge', 'Tap a card to open the account',
       'Fit balances over 1,000,000', 'Build on TestFlight', 'Snapshot tests pass'] } },
-  { title: blocked, epic: 'payments', status: 'in_progress', assignees: ['sofia'],
+  { title: blocked, epic: 'payments', status: 'in_progress', assignees: ['sofia'], started: 6,
     description: 'The sheet that confirms an instant transfer: amount, fee, payee and arrival time.' },
-  { title: 'Recent transactions list', epic: 'home', status: 'in_progress', assignees: ['sofia', 'daniel'] },
-  { title: 'Welcome screen illustrations', epic: 'onboarding', status: 'in_progress', assignees: ['priya'] },
-  { title: 'Idempotent transfer requests', epic: 'payments', status: 'in_progress', assignees: ['kenji'] },
-  { title: 'Payee search with fuzzy matching', epic: 'payments', status: 'in_review', assignees: ['kenji'], deadline: 1,
+  { title: 'Recent transactions list', epic: 'home', status: 'in_progress', assignees: ['sofia', 'daniel'], started: 10 },
+  { title: 'Welcome screen illustrations', epic: 'onboarding', status: 'in_progress', assignees: ['priya'], started: 5 },
+  { title: 'Idempotent transfer requests', epic: 'payments', status: 'in_progress', assignees: ['kenji'], started: 12 },
+  { title: 'Payee search with fuzzy matching', epic: 'payments', status: 'in_review', assignees: ['kenji'], deadline: 1, started: 9,
     checklist: { done: 3, steps: ['Index payee names', 'Match names despite typos', 'Rank recent payees first'] } },
-  { title: 'Biometric sign-in on Android', track: 'mobile', status: 'in_review', assignees: ['sofia'] },
-  { title: 'Dark mode for the accounts home', epic: 'home', status: 'in_review', assignees: ['priya', 'daniel'] },
+  { title: 'Biometric sign-in on Android', track: 'mobile', status: 'in_review', assignees: ['sofia'], started: 13 },
+  { title: 'Dark mode for the accounts home', epic: 'home', status: 'in_review', assignees: ['priya', 'daniel'], started: 4 },
   { title: 'Accessibility review of the accounts home', epic: 'home', status: 'planning', assignees: ['priya'], deadline: 9,
     checklist: { done: 0, steps: ['Contrast of the balance cards', 'Screen reader order', 'Larger text sizes'] } },
   { title: 'Card freeze and unfreeze', epic: 'cards', status: 'planning', assignees: ['daniel'] },
@@ -341,6 +343,11 @@ async function backdate(log) {
         .map(column => `"${column.name}" = ${shifted(`"${column.name}"`)}`);
       if (assignments.length) db.exec(`UPDATE "${table}" SET ${assignments.join(', ')}`);
     }
+    // Work started and ended on different days, as a team's does, so the Roadmap's bars have their lengths.
+    const work = db.prepare('UPDATE tasks SET started_at = COALESCE(?, started_at), completed_at = COALESCE(?, completed_at) WHERE title = ?');
+    for (const task of tasks.filter(item => item.started || item.finished)) {
+      work.run(task.started ? now - task.started * DAY - 3 * HOUR : null, task.finished ? now - task.finished * DAY - 5 * HOUR : null, task.title);
+    }
     db.exec('COMMIT');
   } finally {
     db.close();
@@ -373,15 +380,8 @@ async function capture(browser, url, password, taskKey) {
 
   const shots = {
     board: { route: 'board', ready: '.col .card' },
-    roadmap: {
-      route: 'roadmap', ready: '.bar',
-      // Show the timeline from its first day, as after scrolling back.
-      arrange: () => page.evaluate(() => {
-        const timeline = document.getElementById('rmScroll');
-        timeline.scrollLeft = 0;
-        timeline.dispatchEvent(new Event('scroll'));
-      }),
-    },
+    // The Roadmap opens at the scale that fits the work, with that work in view.
+    roadmap: { route: 'roadmap', ready: '.rt-body .rt-bar' },
     task: {
       route: `task/${taskKey}`, ready: '.tl-cmt',
       // The discussion sits below the fold: scroll until the upload area has

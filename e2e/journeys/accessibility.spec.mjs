@@ -1,6 +1,6 @@
 // Accessibility: automated scans, keyboard focus, announcements and layouts.
 import { randomUUID } from 'node:crypto';
-import { test, expect, openApp, command, useTheme, holdResponses, scan } from '../support/test.mjs';
+import { test, expect, fulfillChanged, openApp, command, useTheme, holdResponses, scan } from '../support/test.mjs';
 
 for (const theme of ['light', 'dark']) {
   test(`views and open controls have no serious accessibility violations (${theme})`, { tag: theme === 'light' ? '@smoke' : [] }, async ({ page, instance }) => {
@@ -72,8 +72,7 @@ test('a sensitive action asks for the password in a named dialog once the sign-i
   // server clock 31 minutes ahead makes this fresh sign-in too old to trust.
   await page.route('**/api/**', async route => {
     if (new URL(route.request().url()).pathname === '/api/events') { await route.continue(); return; }
-    const response = await route.fetch();
-    await route.fulfill({ response, headers: { ...response.headers(), date: new Date(Date.now() + 31 * 60_000).toUTCString() } });
+    await fulfillChanged(route, response => ({ response, headers: { ...response.headers(), date: new Date(Date.now() + 31 * 60_000).toUTCString() } }));
   });
   await openApp(page, instance, 'users');
   await page.locator('.user-row').filter({ hasText: 'Prompt Member' }).click();
@@ -134,7 +133,7 @@ test('dialogs, drawer, menu and searchable selector keep keyboard focus', async 
   const countRead = page.waitForResponse(response => response.url().includes(`/api/projects/${project.id}/counts`));
   await page.getByRole('button', { name: 'Roadmap', exact: true }).click();
   await Promise.all([roadmapRead, countRead]);
-  const epic = page.locator('[data-epic]').first();
+  const epic = page.locator('.rt-epic-label[data-epic]').first();
   await expect(epic).toBeVisible();
   await epic.press('Enter');
   const drawer = page.locator('.peek');

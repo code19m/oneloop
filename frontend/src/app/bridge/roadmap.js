@@ -23,22 +23,54 @@ export function installRoadmap(ctx) {
     const moves=!!item&&changes.trackId!==undefined&&changes.trackId!==item.trackId;
     return fire(execute(item?'epic.update':'epic.create',item?{epicId:item.id,...changes}:{projectId:context().projectId,...base},item,item?'Epic updated':'Epic created',{create:!item,form,closeForm:true,reload:moves}));
   };
-  app.closeEpic=(id)=>{const item=epic(id);if(!item)return;const open=data.tasks.filter((entry)=>entry.epicId===id&&entry.state!=='done').length;const confirm=()=>fire(execute('epic.complete',{id:item.id},item,'Epic marked as done',{form:document.querySelector('.modal,.peek'),closeForm:true}));if(open)app.confirm({title:'Open tasks remain',text:`${open} open task${open===1?' stays where it is':'s stay where they are'}.`,action:'Mark as done',confirm});else confirm();};
+  // The epic's counts know all of its tasks; the page holds only some of them.
+  app.closeEpic=(id)=>{const item=epic(id);if(!item)return;const open=item.counted?item.total-item.done:data.tasks.filter((entry)=>entry.epicId===id&&entry.state!=='done').length;const confirm=()=>fire(execute('epic.complete',{id:item.id},item,'Epic marked as done',{form:document.querySelector('.modal,.peek'),closeForm:true}));if(open)app.confirm({title:'Open tasks remain',text:`${open} open task${open===1?' stays where it is':'s stay where they are'}.`,action:'Mark as done',confirm});else confirm();};
   app.reopenEpic=(id)=>{const item=epic(id);if(item)return fire(execute('epic.reopen',{id:item.id},item,'Epic reopened'));};
   // The epic's tasks stay on its track without an epic, so the page reads them again.
-  app.deleteEpic=(id)=>{const item=epic(id);if(!item)return;app.confirm({title:'Delete epic?',text:`“${item.title}” will be deleted. Its tasks stay on ${track(item.trackId)?.name??'its track'} without an epic. You can undo this right after.`,action:'Delete epic',confirm:()=>fire(execute('epic.delete',{id:item.id},item,null,{form:document.querySelector('.modal,.peek'),closeForm:true,reload:true}).then((result)=>ifCurrent(result,()=>offerRestore(result,{id:item.id,item,deleted:'Epic deleted',restored:'Epic restored',operation:'epic.restore'}))))});};
+  app.deleteEpic=(id)=>{
+    const item=epic(id);if(!item)return;
+    // Without its counts, as before the Roadmap read them, the epic may have tasks.
+    const where=track(item.trackId)?.name??'its track',count=item.counted?item.total:null;
+    const kept=count===0?'':` Its ${count===1?'task stays':count?`${count} tasks stay`:'tasks stay'} on ${where} without an epic.`;
+    app.confirm({title:'Delete epic?',text:`“${item.title}” will be deleted.${kept} You can undo this right after.`,action:'Delete epic',confirm:()=>fire(execute('epic.delete',{id:item.id},item,null,{form:document.querySelector('.modal,.peek'),closeForm:true,reload:true}).then((result)=>ifCurrent(result,()=>offerRestore(result,{id:item.id,item,deleted:'Epic deleted',restored:'Epic restored',operation:'epic.restore'}))))});
+  };
   app.openPeek=(id)=>{if(!epic(id))return;openPeek(id);return fire(reads.epic(id).catch(report));};
   app.loadMoreEpicTasks=(id)=>fire(reads.moreEpicTasks(id).catch(report));
   app.loadMoreEpicActivity=(id)=>fire(reads.moreEpicActivity(id).catch(report));
 
   app.saveTrack=(event,id)=>{const form=event.target,values=formValues(event),item=id?track(id):null,name=text(values.get('name'),60);if(!name)return fieldError(form,'name','Give the track a name.');return fire(execute(item?'track.update':'track.create',item?{trackId:item.id,name}:{projectId:context().projectId,name},item,item?'Track renamed':'Track created',{create:!item,form,closeForm:true}));};
-  app.deleteTrack=(id)=>{const item=track(id);if(!item)return;app.confirm({title:'Delete track?',text:`“${item.name}” will be removed.`,action:'Delete track',confirm:()=>fire(execute('track.delete',{id:item.id},item,'Track deleted',{form:document.querySelector('.modal,.peek'),closeForm:true}))});};
+  // Only an empty track can go. Its tasks are counted by the Roadmap's read; the server says the same when they changed meanwhile.
+  app.deleteTrack=(id)=>{
+    const item=track(id);if(!item)return;
+    const counts=data.roadmap?.projectId===item.projectId?data.roadmap.trackCounts[item.id]:null;
+    const contents=[[counts?counts.planning+counts.progress+counts.review+counts.done:0,'task'],[data.epics.filter((entry)=>entry.trackId===item.id).length,'epic']]
+      .filter(([count])=>count).map(([count,noun])=>`${count} ${noun}${count===1?'':'s'}`).join(' and ');
+    if(contents)return app.showBlocked(`“${item.name}” isn’t empty`,`Move or delete its ${contents} first.`);
+    app.confirm({title:'Delete track?',text:`“${item.name}” will be deleted.`,action:'Delete track',confirm:()=>fire(execute('track.delete',{id:item.id},item,'Track deleted',{form:document.querySelector('.modal,.peek'),closeForm:true}))});
+  };
   app.saveMilestone=(event,id)=>{event.preventDefault();if(app.validateFormDates(event.target)===false)return false;const form=event.target,values=formValues(event),item=id?milestone(id):null,base={title:text(values.get('name'),60),description:text(values.get('desc'),500),milestoneDate:String(values.get('date')||'')};if(!base.title)return fieldError(form,'name','Give the milestone a name.');if(!validDate(base.milestoneDate))return fieldError(form,'date','Enter a valid date in YYYY-MM-DD format.');return fire(execute(item?'milestone.update':'milestone.create',item?{milestoneId:item.id,...changedFields('milestone',item.id,base)}:{projectId:context().projectId,...base},item,item?'Milestone updated':'Milestone created',{create:!item,form,closeForm:true}));};
   app.deleteMilestone=(id)=>{const item=milestone(id);if(!item)return;app.confirm({title:'Delete milestone?',text:`“${item.name}” will be removed.`,action:'Delete',confirm:()=>fire(execute('milestone.delete',{id:item.id},item,'Milestone deleted',{form:document.querySelector('.modal,.peek'),closeForm:true}))});};
 
+  // Whether the last read of the Roadmap's days failed, so the next one that comes clears the notice.
+  let daysFailed=false;
   return {
     /** Load the Roadmap again in the background after the instance's date changed. */
     async dateChanged(){return reads.roadmap(context().projectId,{background:true}).catch((/** @type {any} */ error)=>{recovery.refreshFailed(error);throw error;});},
+    /**
+     * Read more days for the Roadmap's lanes, as its view comes to them. One
+     * that fails says the view couldn't refresh, as other reads do, until one
+     * comes again. @param {{from:string,to:string,anchor?:string,marks?:number,cell?:number}} days
+     */
+    roadmapDays(days){
+      return reads.roadmapDays(context().projectId,days).then((result)=>{
+        if(daysFailed&&!result.stale){daysFailed=false;recovery.refreshSucceeded();}
+        return result;
+      },(/** @type {any} */ error)=>{daysFailed=true;recovery.refreshFailed(error);throw error;});
+    },
+    /** The tasks one of the Roadmap's marks counts. @param {{track:string,epic?:string|null,kind:'done'|'plans'|'open',from?:string,to?:string}} list */
+    roadmapList(list){return reads.roadmapList(context().projectId,list);},
+    /** Stop reading the list of the Roadmap's mark that closed. */
+    cancelRoadmapList(){reads.cancelRoadmapList();},
     /** @param {{trackId:string,position:number,optimistic?:boolean}} move */
     async moveTrack(move){const item=track(move.trackId);return execute('track.reorder',{trackId:item.id,position:move.position},item,move.optimistic?null:'Track reordered',{skipNoChange:!!move.optimistic,paint:!move.optimistic});},
   };

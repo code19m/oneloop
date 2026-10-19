@@ -11,7 +11,7 @@ function page(html) {
   const dom = new JSDOM(`<main>${html}</main>`, { pretendToBeVisual: true });
   const w = dom.window, d = w.document, calls = [], errors = [];
   const record = (name, result) => function (...args) { calls.push([name, ...args]); return typeof result === 'function' ? result.apply(this, args) : result; };
-  w.App = { count: 3, saveTask: record('saveTask', false), nav: record('nav', true), updTask: record('updTask'), openTask: record('openTask'), epicHover: record('epicHover'), epicLeave: record('epicLeave') };
+  w.App = { count: 3, saveTask: record('saveTask', false), nav: record('nav', true), updTask: record('updTask'), openTask: record('openTask'), milestoneHover: record('milestoneHover'), epicLeave: record('epicLeave') };
   w.Recovery = { retryLoad: record('Recovery.retryLoad') };
   const remove = installViewActions(d, { onError: (error, element) => errors.push([error.name, element.id]) });
   const click = (element) => { const event = new w.MouseEvent('click', { bubbles: true, cancelable: true }); element.dispatchEvent(event); return event; };
@@ -101,12 +101,12 @@ test('during its call an action sees its element as event.currentTarget, and the
 });
 
 test('focus, blur and hover actions run for their own element only', () => {
-  const t = page(`<div id="outer" tabindex="-1" data-action-focus="epicHover" data-action-blur="epicLeave" data-action-mouseenter="epicHover" data-action-mouseleave="epicLeave" data-args-focus='["outer"]' data-args-mouseenter='["outer"]'>
-    <button id="inner" data-action-focus="epicHover" data-action-blur="epicLeave" data-action-mouseenter="epicHover" data-action-mouseleave="epicLeave" data-args-focus='["inner",true]' data-args-mouseenter='["inner"]' data-args-blur='[{"$":"element"}]'>Inner</button></div>`);
+  const t = page(`<div id="outer" tabindex="-1" data-action-focus="milestoneHover" data-action-blur="epicLeave" data-action-mouseenter="milestoneHover" data-action-mouseleave="epicLeave" data-args-focus='["outer"]' data-args-mouseenter='["outer"]'>
+    <button id="inner" data-action-focus="milestoneHover" data-action-blur="epicLeave" data-action-mouseenter="milestoneHover" data-action-mouseleave="epicLeave" data-args-focus='["inner",true]' data-args-mouseenter='["inner"]' data-args-blur='[{"$":"element"}]'>Inner</button></div>`);
   t.$('inner').focus(); t.$('inner').blur();
   t.$('inner').dispatchEvent(new t.w.MouseEvent('mouseenter')); t.$('inner').dispatchEvent(new t.w.MouseEvent('mouseleave'));
   t.$('outer').dispatchEvent(new t.w.MouseEvent('mouseenter'));
-  assert.deepEqual(t.calls, [['epicHover', 'inner', true], ['epicLeave', t.$('inner')], ['epicHover', 'inner'], ['epicLeave'], ['epicHover', 'outer']]);
+  assert.deepEqual(t.calls, [['milestoneHover', 'inner', true], ['epicLeave', t.$('inner')], ['milestoneHover', 'inner'], ['epicLeave'], ['milestoneHover', 'outer']]);
 });
 
 test('a clicked button, and a role=button that opens a dialog, have focus when their action runs', () => {

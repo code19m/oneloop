@@ -1,5 +1,5 @@
 //! Roadmap reads: tracks, epics with their task counts by local day, and
-//! milestones.
+//! milestones. Its lanes are `lanes`'s.
 
 use jiff::{
     Timestamp, ToSpan,
@@ -40,14 +40,14 @@ pub(super) fn epics(
     let Some(now) = counted_at else {
         return epic_rows(connection, project_id);
     };
+    epics_on(connection, project_id, timezone, local_date(timezone, now)?)
+}
+
+/// The instance's date at `now`.
+pub(super) fn local_date(timezone: &TimeZone, now: i64) -> AppResult<Date> {
     let now = Timestamp::from_second(now)
         .map_err(|error| AppError::internal(format!("read the current time: {error}")))?;
-    epics_on(
-        connection,
-        project_id,
-        timezone,
-        timezone.rules().to_datetime(now).date(),
-    )
+    Ok(timezone.rules().to_datetime(now).date())
 }
 
 fn epic_rows(connection: &rusqlite::Connection, project_id: &str) -> AppResult<Vec<EpicView>> {

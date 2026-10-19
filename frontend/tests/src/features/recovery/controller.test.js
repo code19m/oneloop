@@ -23,8 +23,8 @@ function fixture(overrides={}){
   let expires=0,reloads=0;
   const controller=createRecoveryController({
     data,api:{me:async()=>({}),...overrides.api},gateway:{invalidate(){},hasPending:()=>false,...overrides.gateway},getApp:()=>app,getAuth:()=>({expire(){expires++;}}),
-    reload:async()=>{reloads++;return {};},
-    setTimer:overrides.setTimer??(()=>0),clearTimer:overrides.clearTimer??(()=>{}),online:overrides.online??(()=>true),random:()=>0,
+    reload:overrides.reload??(async()=>{reloads++;return {};}),loadRoute:overrides.loadRoute,
+    setTimer:overrides.setTimer??(()=>0),clearTimer:overrides.clearTimer??(()=>{}),online:overrides.online??(()=>true),random:()=>0,now:overrides.now,
   });
   return {controller,data,app,window,document,get expires(){return expires;},get reloads(){return reloads;}};
 }
@@ -146,6 +146,79 @@ test('late read and reconnect success cannot override a newer browser offline ev
   online=true;
   const freshReconnect=state.controller.reconnect();resolveProbe({});await freshReconnect;
   assert.equal(state.controller.connection,'live');assert.equal(state.reloads,1);
+});
+
+test('a failed read tries again at once only when the connection really comes back: the live updates or the browser, not one request that works after another failed',async()=>{
+  let online=true,saving=0,tries=0;
+  const state=fixture({online:()=>online});
+  state.controller.start();
+  state.controller.whenOnline(()=>{saving++;});state.controller.readFailed('days',()=>{tries++;});
+  const settled=()=>new Promise(resolve=>setImmediate(resolve)),context=()=>state.controller.requestContext();
+  // A server shedding load: a read it answers 503 changes nothing.
+  state.controller.observeResponse({ok:false,error:new ApiError('Busy',{status:503}),requestContext:context()});
+  assert.equal(state.controller.connection,'live');
+  // A write it sheds may or may not have happened: saving waits for the server, which then answers.
+  state.controller.observeResponse({ok:false,error:new ApiError('Busy',{status:503,uncertain:true}),requestContext:context()});
+  assert.equal(state.controller.connection,'offline');
+  state.controller.observeResponse({ok:true,requestContext:context()});await settled();
+  assert.deepEqual([saving,tries],[1,0],'saving works again, but the connection never went');
+  state.controller.liveDisconnected();await settled();
+  state.controller.liveConnected();await settled();
+  assert.deepEqual([saving,tries],[1,1],'the live updates came back');
+  state.controller.liveConnected();await settled();
+  assert.equal(tries,1,'nothing came back');
+  online=false;state.window.dispatchEvent(new state.window.Event('offline'));await settled();
+  online=true;state.window.dispatchEvent(new state.window.Event('online'));await settled();await settled();
+  assert.deepEqual([saving,tries],[2,2],'the browser is online and reaches oneloop');
+  state.controller.readWorked('days');
+  state.controller.liveDisconnected();state.controller.liveConnected();await settled();
+  assert.equal(tries,2,'a read that worked tries no more');
+  state.controller.dispose();
+});
+
+test('a page read a busy server shed loads again by itself after 5, 15 and 60 s while the tab shows, never while it is hidden, with one notice and no bootstrap',async()=>{
+  let visibility='visible',answers=[new ApiError('Busy',{status:503}),new ApiError('Busy',{status:503}),{stale:false}],loads=0,reloads=0;const timers=[];
+  const state=fixture({
+    setTimer:(callback,delay)=>{timers.push({callback,delay});return timers.length;},
+    loadRoute:async()=>{loads++;const answer=answers.shift();if(answer instanceof Error)throw answer;return answer;},
+    reload:async()=>{reloads++;return {};},
+  });
+  Object.defineProperty(state.document,'visibilityState',{configurable:true,get:()=>visibility});
+  state.controller.start();
+  const settled=()=>new Promise(resolve=>setImmediate(resolve));
+  const wait=()=>{const index=timers.findIndex(timer=>[5000,15_000,60_000].includes(timer.delay));const [timer]=timers.splice(index,1);timer.callback();return timer.delay;};
+  state.controller.handleRouteError(new ApiError('Busy',{status:503}));
+  assert.equal(state.controller.pageError,'503');
+  // Hidden, its wait passes and nothing loads; it loads once the tab shows, and is shed again.
+  visibility='hidden';assert.equal(wait(),5000);await settled();
+  assert.equal(loads,0);
+  visibility='visible';state.document.dispatchEvent(new state.window.Event('visibilitychange'));await settled();await settled();
+  assert.deepEqual([loads,state.controller.pageError],[1,'503']);
+  assert.equal(wait(),15_000);await settled();await settled();
+  assert.deepEqual([loads,state.controller.pageError],[2,'503']);
+  assert.equal(wait(),60_000);await settled();await settled();
+  assert.deepEqual([loads,state.controller.pageError,reloads],[3,null,0]);
+  assert.equal(timers.filter(timer=>[5000,15_000,60_000].includes(timer.delay)).length,0,'a load that worked waits no more');
+  state.controller.dispose();
+});
+
+test('a read that keeps failing while sign-in checks work gets no reconnect when the server sheds it, and backed-off ones when it can\'t reach it',async()=>{
+  // A minute of the page: each reload after a reconnect reads the view again, and that read fails.
+  const minute=async(error)=>{
+    let clock=0,reloads=0,state;const timers=[];
+    const fail=()=>state.controller.observeResponse({ok:false,error:error(),requestContext:state.controller.requestContext()});
+    state=fixture({now:()=>clock,api:{me:async()=>({user:{id:'u1'}})},reload:async()=>{reloads++;fail();return {};},
+      setTimer:(callback,delay)=>{timers.push({callback,at:clock+delay});return timers.length;},clearTimer:()=>{}});
+    fail();
+    for(let next;(next=timers.filter(timer=>!timer.done&&timer.at<=60_000).sort((a,b)=>a.at-b.at)[0]);){
+      next.done=true;clock=next.at;await next.callback();await new Promise(resolve=>setImmediate(resolve));
+    }
+    state.controller.dispose();
+    return reloads;
+  };
+  assert.equal(await minute(()=>new ApiError('Busy',{status:503})),0,'a shed read is no lost connection');
+  const unreachable=await minute(()=>new ApiError('Unable to reach oneloop',{code:'network_error'}));
+  assert(unreachable>0&&unreachable<=6,`${unreachable} reloads in a minute: the probes back off`);
 });
 
 test('a success preceding a newer API failure cannot restore writes even while browser stays online',()=>{

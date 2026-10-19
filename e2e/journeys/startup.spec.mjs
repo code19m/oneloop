@@ -312,7 +312,7 @@ test('choosing another project on Page not found opens its page of that kind wit
   const shown = {
     board: page.locator('.board .card-title-button').filter({ hasText: second.task.title }),
     // The epic's task counts come with the project, so no Roadmap read follows.
-    roadmap: page.locator('[data-epic]').filter({ hasText: second.epic.title }).filter({ hasText: '0 done · 1 open' }),
+    roadmap: page.locator('.rt-epic-label[data-epic]').filter({ hasText: second.epic.title }).filter({ hasText: '0/1' }),
   };
   for (const kind of ['board', 'roadmap']) {
     await openApp(page, instance, `${kind}/no-such-project`);

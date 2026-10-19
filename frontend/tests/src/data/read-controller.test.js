@@ -3,6 +3,7 @@ import test from 'node:test';
 import {createCommandGateway} from '../../../src/data/command-gateway.js';
 import {createReadController} from '../../../src/data/read-controller.js';
 import {createLegacyData} from '../../../src/data/projection-store.js';
+import {ApiError} from '../../../src/data/api-client.js';
 import {saveDoneOrder} from '../../../src/data/done-order.js';
 import {settle} from '../../support/helpers.cjs';
 
@@ -246,7 +247,7 @@ test('a stale Board cursor reads the Board again with one more page of that colu
 
 test('reads of different things never cancel each other',async()=>{
   const data=createLegacyData(),requests=held();
-  const reads=createReadController({data,api:{boardView:async()=>boardView(),task:requests.api('task'),counts:requests.api('counts'),pool:requests.api('pool'),roadmap:requests.api('roadmap')}});
+  const reads=createReadController({data,api:{boardView:async()=>boardView(),task:requests.api('task'),counts:requests.api('counts'),pool:requests.api('pool'),roadmapLanes:requests.api('roadmapLanes')}});
   await reads.board('p1');
   const opening=reads.task('BIR-1'),pool=reads.pool('p1','personal'),count=reads.counts('p1'),roadmap=reads.roadmap('p1'),patch=reads.patchBoard('p1',{},[{entityId:'one'}]);
   await settle();
@@ -290,13 +291,15 @@ test('a task on a track or in an epic not loaded yet reads its project\'s Roadma
 test('a task\'s track and epic come from the light Roadmap structure read, in a slot of its own, so the Roadmap\'s read goes on',async()=>{
   const data=createLegacyData(),requests=held();
   data.projects.push({id:'p1',members:[]});
-  const reads=createReadController({data,api:{task:requests.api('task'),roadmap:requests.api('roadmap')}});
+  const reads=createReadController({data,api:{task:requests.api('task'),roadmap:requests.api('roadmap'),roadmapLanes:requests.api('roadmapLanes')}});
   const page=reads.roadmap('p1'),opening=reads.task('BIR-2');await settle();
   requests.calls.find((call)=>call.name==='task').resolve({...task('bir-2','planning'),taskKey:'BIR-2',trackId:'new-track',epicId:null});await settle();
-  const [pageRead,structureRead]=requests.calls.filter((call)=>call.name==='roadmap');
+  const [pageRead,...lanes]=requests.calls.filter((call)=>call.name==='roadmapLanes'),[structureRead,...more]=requests.calls.filter((call)=>call.name==='roadmap');
   assert.equal(pageRead.signal.aborted,false,'the Roadmap\'s read goes on');
   assert.ok(structureRead,'the task reads the structure on its own');
-  for(const call of [pageRead,structureRead])call.resolve({projectId:'p1',tracks:[{id:'new-track',projectId:'p1',name:'Android',position:1,revision:1}],epics:[],milestones:[]});
+  assert.deepEqual([lanes.length,more.length],[0,0],'and no lanes');
+  const tracks=[{id:'new-track',projectId:'p1',name:'Android',position:1,revision:1}];
+  pageRead.resolve({...roadmapRead(),tracks});structureRead.resolve({projectId:'p1',tracks,epics:[],milestones:[]});
   assert.equal((await page).stale,false);assert.equal((await opening).stale,false);
 });
 
@@ -337,7 +340,7 @@ test('a live read that spans a newer projection is dropped and the Board reads a
 
 test('idle waits only for reads someone started',async()=>{
   const data=createLegacyData(),requests=held();
-  const reads=createReadController({data,api:{roadmap:requests.api('roadmap'),counts:requests.api('counts')}});
+  const reads=createReadController({data,api:{roadmapLanes:requests.api('roadmapLanes'),counts:requests.api('counts')}});
   void reads.roadmap('p1',{background:true});const count=reads.counts('p1');
   let settled=false;const idle=reads.idle().then(()=>{settled=true;});
   await settle();assert.equal(settled,false);
@@ -391,7 +394,7 @@ test('a live Roadmap or Pool read never undoes a change the tab makes while it r
   const roadmap=(tracks)=>({projectId:'p1',tracks,epics:[],milestones:[]});
   const changes={
     // The tab moves t2 above t1; the Roadmap shows that at once.
-    'a track moved':{api:'roadmap',open:(reads)=>reads.roadmap('p1'),live:(reads)=>reads.roadmap('p1',{background:true}),
+    'a track moved':{api:'roadmapLanes',open:(reads)=>reads.roadmap('p1'),live:(reads)=>reads.roadmap('p1',{background:true}),
       before:roadmap([track('t1',1),track('t2',2)]),after:roadmap([track('t2',0,2),track('t1',1)]),
       change:(data,gateway)=>{data.tracks.find(entry=>entry.id==='t2').order=0;return gateway.execute('track.reorder',{trackId:'t2',position:0},{expectedRevision:1});},
       saved:{entityType:'track',...track('t2',0,2)},shown:(data)=>[...data.tracks].sort((left,right)=>left.order-right.order).map(entry=>entry.id),expected:['t2','t1']},
@@ -439,4 +442,143 @@ test('a live patch of a card that the tab is moving never puts the card back',as
   cardReads()[1].resolve(card('b','in_progress',0,2,1));
   assert.equal((await patch).stale,false);
   assert.deepEqual(shown(),['progress',1]);
+});
+
+/** Work in progress of track t1's own work. */
+const open=(id)=>({...task(id,'in_progress'),trackId:'t1',epicId:null});
+/** A day of t1's own work with one done task. */
+const doneDay=(from,id)=>({from,to:from,sections:[{trackId:'t1',epicId:null,done:[1],marks:[{id,taskKey:`BIR-${id}`,title:id,status:'done',completedAt:1_790_000_000}]}],marked:{from,to:from}});
+/** What one read of the lanes may ask for, as the server says. */
+const limits={days:400,marks:400,changeDays:3660};
+/** A Roadmap read of `p1`: its lanes with one task in progress, its counts, and the days of `window`. */
+const roadmapRead=(window={from:'2026-06-01',to:'2027-03-01'})=>({projectId:'p1',tracks:[],epics:[],milestones:[],lanes:{sections:[{trackId:'t1',epicId:null,planning:0,inProgress:1,inReview:0,done:9}],overdue:0,firstDay:'2025-01-01',lastDay:null,
+  open:[open('open')],late:[],days:{...window,sections:[]},limits}});
+
+test('the Roadmap reads its lanes and their days in the background, as the page makes them itself',async()=>{
+  const data=createLegacyData(),sent=[];
+  const reads=createReadController({data,api:{
+    roadmapLanes:async(_project,_window,options)=>{sent.push(['lanes',options.background]);return roadmapRead();},
+    roadmapDays:async(_project,days,options)=>{sent.push(['days',options.background]);return {...days,sections:[]};},
+  }});
+  await reads.roadmap('p1');await reads.patchRoadmap('p1',['one']);await reads.roadmapDays('p1',{from:'2026-05-01',to:'2026-05-31'});
+  assert.deepEqual(sent,[['lanes',true],['lanes',true],['days',true]]);
+});
+
+test('a live Roadmap read reads the days the view shows, in one read, however many reads of days the lanes took',async()=>{
+  const data=createLegacyData(),lanes=[],days=[];
+  const api={
+    roadmapLanes:async(_project,window)=>{lanes.push(window);return roadmapRead(window?{from:window.from,to:window.to}:undefined);},
+    roadmapDays:async(_project,wanted)=>{days.push(wanted);return doneDay(wanted.from,`done-${days.length}`);},
+  };
+  const reads=createReadController({data,api});
+  await reads.roadmap('p1');
+  assert.deepEqual([lanes,data.roadmap.window],[[null],{from:'2026-06-01',to:'2027-03-01'}],'first, the days the Roadmap opens with');
+  for(const from of ['2026-05-31','2026-05-30'])assert.deepEqual(await reads.roadmapDays('p1',{from,to:from,anchor:'2026-07-01',marks:400}),{stale:false,marked:{from,to:from}},'with the days whose tasks all came');
+  assert.deepEqual([data.roadmap.window,Object.keys(data.roadmap.marks)],[{from:'2026-05-30',to:'2027-03-01'},['done-1','done-2']]);
+  // The view now shows late May to July.
+  data.roadmap.shown={from:'2026-05-30',to:'2026-07-31',anchor:'2026-07-01'};
+  await reads.roadmap('p1',{background:true});
+  assert.equal(days.length,2,'no days are read again one by one');
+  assert.deepEqual(lanes,[null,{from:'2026-05-30',to:'2026-07-31',anchor:'2026-07-01'}],'one read of the days in view');
+  assert.deepEqual([data.roadmap.open,data.roadmap.window,data.roadmap.shown],[['open'],{from:'2026-05-30',to:'2026-07-31'},{from:'2026-05-30',to:'2026-07-31',anchor:'2026-07-01'}]);
+  assert.deepEqual(data.roadmap.trackCounts,{t1:{planning:0,progress:1,review:0,done:9}});
+  assert.equal((await reads.roadmapDays('p2',{from:'2026-01-01',to:'2026-01-01'})).stale,true,'nothing to read for lanes of another project');
+});
+
+test('a change made elsewhere reads only the tasks it named, with the lanes\' counts and the counts of the days in view',async()=>{
+  const data=createLegacyData(),asked=[];
+  const named=(ids)=>({projectId:'p1',tracks:[],epics:[],milestones:[],lanes:{sections:[{trackId:'t1',epicId:null,planning:1,inProgress:1,inReview:0,done:10}],overdue:0,firstDay:'2025-01-01',lastDay:null,
+    open:[{...open('open'),title:'open renamed'}],late:[],days:{from:'2026-07-01',to:'2026-07-31',sections:[]},tasks:ids.filter((id)=>id!=='open'&&id!=='done-1').map((id)=>task(id,'planning'))}});
+  const api={roadmapLanes:async(_project,lanes)=>{asked.push(lanes);return lanes&&'tasks' in lanes?named(lanes.tasks):roadmapRead();}};
+  const reads=createReadController({data,api});
+  await reads.roadmap('p1');
+  const lanes=data.roadmap;
+  lanes.shown={from:'2026-07-01',to:'2026-07-31',anchor:'2026-07-15'};
+  // Elsewhere, open is renamed and done-1 deleted.
+  assert.equal((await reads.patchRoadmap('p1',['open','done-1','open'],{background:true})).stale,false);
+  assert.deepEqual(asked,[null,{from:'2026-06-01',to:'2027-03-01',marks:0,tasks:['open','done-1'],sections:['t1/']}],'one read of the named tasks and the section that draws open, with counts alone, of every day the lanes hold');
+  assert.equal(data.roadmap,lanes);
+  assert.deepEqual([lanes.open,lanes.window],[['open'],{from:'2026-06-01',to:'2027-03-01'}]);
+  assert.deepEqual(lanes.trackCounts,{t1:{planning:1,progress:1,review:0,done:10}});
+  assert.equal(data.tasks.find((item)=>item.internalId==='open').title,'open renamed');
+  // A named task among the longest overdue: they come again too.
+  lanes.late=[{internalId:'open'}];
+  await reads.patchRoadmap('p1',['open'],{background:true});
+  assert.equal(asked.at(-1).late,true);
+  // More tasks than one read names: the lanes are read again, for the days in view.
+  await reads.patchRoadmap('p1',Array.from({length:51},(_,index)=>`t${index}`));
+  assert.deepEqual(asked.at(-1),{from:'2026-07-01',to:'2026-07-31',anchor:'2026-07-15'});
+  // And so are lanes that hold more days than one read of a change covers.
+  data.roadmap.window={from:'2015-01-01',to:'2027-01-01'};data.roadmap.shown={from:'2026-07-01',to:'2026-07-31',anchor:'2026-07-15'};
+  await reads.patchRoadmap('p1',['open']);
+  assert.deepEqual(asked.at(-1),{from:'2026-07-01',to:'2026-07-31',anchor:'2026-07-15'});
+});
+
+test('a change that took a task the lanes didn\'t hold out of a section reads that section\'s days again, once',async()=>{
+  const data=createLegacyData(),asked=[];
+  const counts=(own,other)=>[{trackId:'t1',epicId:null,planning:0,inProgress:1,inReview:0,done:own},{trackId:'t2',epicId:null,planning:0,inProgress:0,inReview:0,done:other}];
+  const lanesOf=(sections,extra)=>({projectId:'p1',tracks:[],epics:[],milestones:[],lanes:{sections,overdue:0,firstDay:null,lastDay:null,open:[],late:[],days:{from:'2026-06-01',to:'2027-03-01',sections:[]},limits,...extra}});
+  const answers=[lanesOf(counts(9,3),{open:[open('open')]}),lanesOf(counts(10,2),{tasks:[{...task('x','done'),trackId:'t1',epicId:null}]}),lanesOf(counts(10,1),{tasks:[]})];
+  const reads=createReadController({data,api:{roadmapLanes:async(_project,lanes)=>{asked.push(lanes);return answers[asked.length-1];}}});
+  await reads.roadmap('p1');
+  // Elsewhere, x, which the lanes never held, moved from t2's own work to t1's and was done.
+  assert.equal((await reads.patchRoadmap('p1',['x'],{background:true})).stale,false);
+  assert.deepEqual(asked.slice(1).map((lanes)=>[lanes.tasks,lanes.sections]),[[['x'],[]],[[],['t2/']]],'t1 came with x; t2 lost a done task, so its days come next');
+  assert.deepEqual(data.roadmap.trackCounts.t2.done,1,'a second read has the counts of then');
+});
+
+test('a read of more days asked for before a change made elsewhere is dropped, as it may miss the change',async()=>{
+  const data=createLegacyData(),requests=held();
+  const reads=createReadController({data,api:{roadmapLanes:async(_project,lanes)=>lanes?.tasks?{...roadmapRead(),lanes:{...roadmapRead().lanes,open:[],tasks:[]}}:roadmapRead(),roadmapDays:requests.api('roadmapDays')}});
+  await reads.roadmap('p1');
+  const days=reads.roadmapDays('p1',{from:'2026-05-31',to:'2026-05-31'});
+  await reads.patchRoadmap('p1',['x'],{background:true});
+  requests.calls[0].resolve(doneDay('2026-05-31','missed'));
+  assert.equal((await days).stale,true);
+  assert.deepEqual([data.roadmap.window,data.roadmap.marks],[{from:'2026-06-01',to:'2027-03-01'},{}]);
+  // One asked for after the change lands.
+  const again=reads.roadmapDays('p1',{from:'2026-05-31',to:'2026-05-31'});
+  requests.calls[1].resolve(doneDay('2026-05-31','seen'));
+  assert.equal((await again).stale,false);
+  assert.deepEqual(Object.keys(data.roadmap.marks),['seen']);
+});
+
+test('one list of a Roadmap mark reads at a time: a newer list, or closing it, cancels the one before',async()=>{
+  const data=createLegacyData(),requests=held();
+  const reads=createReadController({data,api:{roadmapList:requests.api('roadmapList')}});
+  const first=reads.roadmapList('p1',{track:'t1',kind:'done',from:'2026-09-01',to:'2026-09-02'});
+  const second=reads.roadmapList('p1',{track:'t1',kind:'done',from:'2026-09-03',to:'2026-09-04'});
+  assert.deepEqual(requests.calls.map(call=>call.signal.aborted),[true,false]);
+  requests.calls[0].reject(new ApiError('Request cancelled',{code:'aborted'}));
+  assert.equal((await first).stale,true);
+  requests.calls[1].resolve({items:[{id:'d1',taskKey:'BIR-1',trackId:'t1',epicId:null,title:'Done',status:'done',completedAt:1_790_000_000}],total:1});
+  const list=await second;
+  assert.deepEqual([list.stale,list.items.map(item=>item.id),list.total],[false,['BIR-1'],1]);
+  const closed=reads.roadmapList('p1',{track:'t1',kind:'open'});
+  reads.cancelRoadmapList();
+  assert.equal(requests.calls[2].signal.aborted,true);
+  requests.calls[2].reject(new ApiError('Request cancelled',{code:'aborted'}));
+  assert.equal((await closed).stale,true);
+});
+
+test('a read of more days that a newer read of the Roadmap overtakes adds nothing',async()=>{
+  const data=createLegacyData(),requests=held();
+  const reads=createReadController({data,api:{roadmapLanes:async()=>roadmapRead(),roadmapDays:requests.api('roadmapDays')}});
+  await reads.roadmap('p1');
+  const days=reads.roadmapDays('p1',{from:'2026-05-31',to:'2026-05-31'});
+  await reads.roadmap('p1');
+  requests.calls[0].resolve(doneDay('2026-05-31','late'));
+  assert.equal((await days).stale,true);
+  assert.deepEqual([data.roadmap.window,data.roadmap.marks],[{from:'2026-06-01',to:'2027-03-01'},{}]);
+});
+
+test('the tracks, epics and milestones of another project come in one read without its lanes',async()=>{
+  const data=createLegacyData(),called=[];
+  const reads=createReadController({data,api:{roadmap:async(projectId)=>{called.push(['roadmap',projectId]);return {projectId,tracks:[{id:'r2',projectId,name:'Other',position:0,revision:1}],epics:[],milestones:[]};},roadmapLanes:async()=>{called.push(['roadmapLanes']);}}});
+  await reads.roadmap('p1').catch(()=>{});called.length=0;
+  data.roadmap={projectId:'p1',open:['kept']};
+  assert.equal((await reads.roadmapStructure('p2')).stale,false);
+  assert.deepEqual(called,[['roadmap','p2']]);
+  assert.deepEqual(data.tracks.map(track=>track.id),['r2']);
+  assert.deepEqual(data.roadmap,{projectId:'p1',open:['kept']},'the lanes on screen stay');
 });

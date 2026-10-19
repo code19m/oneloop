@@ -82,6 +82,19 @@ export async function failUntilRetry(page, pattern, failure, { gate } = {}) {
   });
 }
 
+/**
+ * Answer a route with the server's response, changed by `change` (what
+ * `route.fulfill` takes). A request the page no longer waits for, as a read a
+ * newer one replaced or one still in flight when the test ends and its page
+ * closes, has no one left to answer; any other failure still fails the test.
+ */
+export async function fulfillChanged(route, change) {
+  const gone = (error) => /Route is already handled|has been closed|Request context disposed/.test(error.message);
+  let response;
+  try { response = await route.fetch(); } catch (error) { if (gone(error)) return; throw error; }
+  try { await route.fulfill(await change(response)); } catch (error) { if (!gone(error)) throw error; }
+}
+
 /** Hold matching server responses until released; writes still reach the real backend. */
 export async function holdResponses(page, pattern) {
   let release, entered, released = false;

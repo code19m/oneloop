@@ -236,7 +236,7 @@ async fn browser_role_matrix_uses_current_identity_across_service_boundaries() {
             "{name}: task"
         );
         assert_eq!(
-            domain.roadmap(&actor, "p1".into()).await.is_ok(),
+            domain.roadmap(&actor, "p1".into(), None).await.is_ok(),
             readable,
             "{name}: roadmap"
         );

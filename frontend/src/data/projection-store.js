@@ -1,6 +1,6 @@
 // @ts-check
 
-import {secondsToMilliseconds} from './time.js';
+import {formatInstant, secondsToMilliseconds} from './time.js';
 import {refreshPageWindow} from './page-window.js';
 import {byStatus, toLegacyScope, toLegacyStatus} from './wire.js';
 
@@ -18,6 +18,7 @@ export function createLegacyData() {
     tasks: [], pool: [], notifications: [], browserSessions: [], appGrants: [], session: null,
     inboxUnreadCount: 0, boardPageInfo: null, projectTaskCounts: {}, poolPageInfo: {}, bootstrapView:null, bootstrapProjectId:null, syncCursor:null,
     epicPageInfo: {}, adminUsers: { ids: [], nextCursor: null, loaded: false },
+    roadmap: /** @type {RoadmapLanes|null} */ (null),
   };
 }
 
@@ -231,14 +232,194 @@ export function mergeAdminUsersPage(data, accounts, {append=false,nextCursor=nul
   return data.adminUsers;
 }
 
-export function replaceRoadmap(data, projection) {
+/**
+ * A project's tracks, epics and milestones, and its Roadmap's lanes when the
+ * read has them: for the days of a view, or, after a change made elsewhere,
+ * for the tasks it `named`, with the `sections` whose work in progress they
+ * were drawn in.
+ * @param {any} data @param {any} projection @param {string[]} [named] @param {string[]} [sections]
+ */
+export function replaceRoadmap(data, projection, named = [], sections = []) {
   const projectId=projection.projectId ?? projection.tracks?.[0]?.projectId ?? projection.epics?.[0]?.projectId ?? projection.milestones?.[0]?.projectId;
   if(!projectId)return data;
-  replace(data.tracks,[...data.tracks.filter((item)=>item.projectId!==projectId),...(projection.tracks??[]).map(mapTrack)]);
   const history=new Map(data.epics.map((/** @type {ReturnType<typeof mapEpic>} */ item)=>[item.id,item.activity]));
-  replace(data.epics,[...data.epics.filter((item)=>item.projectId!==projectId),...(projection.epics??[]).map((/** @type {{id:string}} */ view)=>({...mapEpic(view),activity:history.get(view.id)??[]}))]);
+  const epics=(projection.epics??[]).map((/** @type {{id:string}} */ view)=>({...mapEpic(view),activity:history.get(view.id)??[]}));
+  // A read of the tasks a change named has the epics it changed alone, and leaves the tracks and milestones be.
+  if(projection.lanes?.tasks){
+    const changed=new Set(epics.map((/** @type {{id:string}} */ epic)=>epic.id));
+    replace(data.epics,[...data.epics.filter((item)=>!changed.has(item.id)),...epics]);
+    patchRoadmapLanes(data,projectId,projection.lanes,named,sections);
+    return data;
+  }
+  replace(data.tracks,[...data.tracks.filter((item)=>item.projectId!==projectId),...(projection.tracks??[]).map(mapTrack)]);
+  replace(data.epics,[...data.epics.filter((item)=>item.projectId!==projectId),...epics]);
   replace(data.milestones,[...data.milestones.filter((item)=>item.projectId!==projectId),...(projection.milestones??[]).map(mapMilestone)]);
+  if(projection.lanes)replaceRoadmapLanes(data,projectId,projection.lanes);
   return data;
+}
+
+/** The most tasks one read of the lanes' changed tasks names. */
+export const NAMED_TASKS_LIMIT = 50;
+
+/**
+ * @typedef {{planning:number,progress:number,review:number,done:number}} StatusCounts
+ * @typedef {{done:number,plans:number,blocked:number}} DayCounts
+ * @typedef {{internalId:string,id:string,projectId:string,trackId:string,epicId:string|null,title:string,state:string,deadline:string|null,startedAt:number|null,completedAt:number|null,assignees:string[],block:{}|null,day:string|null}} RoadmapMark
+ * @typedef {{from:string,to:string,anchor?:string,cell?:number}} RoadmapDaysWanted
+ * @typedef {{projectId:string,window:{from:string,to:string},shown:RoadmapDaysWanted|null,sections:Record<string,StatusCounts>,trackCounts:Record<string,StatusCounts>,overdue:number,firstDay:string|null,lastDay:string|null,open:string[],late:RoadmapMark[],days:Record<string,Record<string,DayCounts>>,marks:Record<string,RoadmapMark>,limits:{days:number,marks:number,changeDays:number}}} RoadmapLanes
+ * What the Roadmap's lanes draw and count. `open` is the work in progress
+ * they draw, which `data.tasks` holds. `days` counts each section's done
+ * tasks and dated plans by day for the days of `window`, and `marks` holds,
+ * by ID, the task of a day that has one, as far as the reads gave them.
+ * `shown` is the days the view shows, with some to spare, which a read of
+ * the lanes asks for again, and `limits` what one read may ask for, as the
+ * server says. `sections` counts each track's own work, keyed
+ * `trackId/`, and each epic, keyed `trackId/epicId`.
+ */
+
+/** The key of a track's own work, or of one of its epics, in `sections` and `days`. @param {string} trackId @param {string|null|undefined} epicId */
+export const sectionKey = (trackId, epicId) => `${trackId}/${epicId ?? ''}`;
+
+/** The day `count` days after `day`, both `YYYY-MM-DD`. @param {string} day @param {number} count */
+const dayAfter = (day, count) => new Date(Date.parse(`${day}T00:00:00Z`) + count * 86400000).toISOString().slice(0, 10);
+
+/** Put a read's tasks among the projection's, each with the details it already had. */
+function mergeTasks(data, taskViews) {
+  const byId=new Map(data.tasks.map((item)=>[item.internalId,item]));
+  for(const view of taskViews)byId.set(view.id,retainTaskDetails(byId.get(view.id),mapTask(view)));
+  replace(data.tasks,[...byId.values()]);
+}
+
+/**
+ * A task as the lanes' marks show it, from a mark or a task of a read: on
+ * the day it was done, or is due.
+ * @param {any} data @param {any} view @returns {RoadmapMark}
+ */
+export function mapRoadmapMark(data, view) {
+  const state=toLegacyStatus(view.status),completedAt=secondsToMilliseconds(view.completedAt)??null;
+  return {
+    internalId:view.id,id:view.taskKey,projectId:view.projectId??data.roadmap?.projectId,trackId:view.trackId,epicId:view.epicId??null,title:view.title,state,
+    deadline:view.deadline??null,startedAt:secondsToMilliseconds(view.startedAt)??null,completedAt,assignees:[...(view.assigneeIds??[])],
+    block:view.blocked||view.activeBlock?{}:null,
+    day:state==='done'?(completedAt===null?null:formatInstant(completedAt,data.timeZone||'UTC',()=>{}).slice(0,10)):view.deadline??null,
+  };
+}
+
+/**
+ * The Roadmap's lanes from a Roadmap read.
+ * @param {any} data @param {string} projectId @param {any} timeline
+ */
+function replaceRoadmapLanes(data, projectId, timeline) {
+  mergeTasks(data,timeline.open);
+  const previous=data.roadmap?.projectId===projectId?data.roadmap:null;
+  /** @type {RoadmapLanes} */
+  const lanes={
+    projectId,window:{from:timeline.days.from,to:timeline.days.to},shown:previous?.shown??null,
+    open:timeline.open.map((/** @type {{id:string}} */ view)=>view.id),late:[],days:{},marks:{},limits:timeline.limits,
+    ...laneCounts(timeline),
+  };
+  data.roadmap=lanes;
+  lanes.late=timeline.late.map((/** @type {any} */ view)=>mapRoadmapMark(data,view));
+  applyDays(data,lanes,timeline.days,true);
+  return lanes;
+}
+
+/**
+ * Add a read of days to the Roadmap's lanes of `projectId`. Days next to
+ * the ones they hold join them; others, as after a jump, take their place.
+ * @param {any} data @param {string} projectId @param {any} days
+ */
+export function appendRoadmapDays(data, projectId, days) {
+  const lanes=data.roadmap;
+  if(lanes?.projectId!==projectId)return null;
+  const next=dayAfter(lanes.window.to,1)>=days.from&&dayAfter(days.to,1)>=lanes.window.from;
+  applyDays(data,lanes,days,!next);
+  return lanes;
+}
+
+/**
+ * The days of a read in the lanes: what they held of those days goes, and
+ * with `alone`, everything they held.
+ * @param {any} data @param {RoadmapLanes} lanes @param {any} days @param {boolean} alone
+ */
+function applyDays(data, lanes, days, alone) {
+  const {from,to}=days;
+  if(alone){lanes.days={};lanes.marks={};lanes.window={from,to};}
+  else{
+    lanes.window={from:from<lanes.window.from?from:lanes.window.from,to:to>lanes.window.to?to:lanes.window.to};
+    for(const counts of Object.values(lanes.days))for(const day of Object.keys(counts))if(day>=from&&day<=to)delete counts[day];
+    for(const [id,mark] of Object.entries(lanes.marks))if(mark.day&&mark.day>=from&&mark.day<=to)delete lanes.marks[id];
+  }
+  addDays(data,lanes,days);
+}
+
+/** Each section's counts and marks of a read of days, in the lanes. @param {any} data @param {RoadmapLanes} lanes @param {any} days */
+function addDays(data, lanes, days) {
+  for(const section of days.sections){
+    const held=lanes.days[sectionKey(section.trackId,section.epicId)]??={};
+    const done=section.done??[],plans=section.plans??[],blocked=section.blocked??[];
+    for(let index=0;index<Math.max(done.length,plans.length);index++){
+      if(done[index]||plans[index])held[dayAfter(days.from,index)]={done:done[index]??0,plans:plans[index]??0,blocked:blocked[index]??0};
+    }
+    // The tasks of its days with one: the section names their track and epic.
+    for(const view of section.marks??[])lanes.marks[view.id]=mapRoadmapMark(data,{...view,trackId:section.trackId,epicId:section.epicId});
+  }
+}
+
+/**
+ * The sections a read of named tasks changed: the ones it names, and the
+ * ones its tasks are in now. Their work in progress and days came again.
+ * @param {any} timeline @param {string[]} sections
+ */
+export function changedSections(timeline, sections) {
+  return new Set([...sections,...[...timeline.open,...(timeline.tasks??[])].map((/** @type {any} */ view)=>sectionKey(view.trackId,view.epicId))]);
+}
+
+/**
+ * A change made elsewhere in the Roadmap's lanes: their counts, and their
+ * longest overdue when they came, the tasks it `named`, and the work in
+ * progress and the days the lanes hold of the `sections` it may have
+ * changed and of the ones the named tasks are in now. The other sections
+ * stay as they are.
+ * @param {any} data @param {string} projectId @param {any} timeline @param {string[]} named @param {string[]} sections
+ */
+function patchRoadmapLanes(data, projectId, timeline, named, sections) {
+  const lanes=data.roadmap;
+  if(lanes?.projectId!==projectId)return null;
+  mergeTasks(data,[...timeline.open,...timeline.tasks]);
+  const changed=changedSections(timeline,sections),renamed=new Set(named),byId=new Map(data.tasks.map((item)=>[item.internalId,item]));
+  lanes.open=[...lanes.open.filter((id)=>{const task=byId.get(id);return task&&!renamed.has(id)&&!changed.has(sectionKey(task.trackId,task.epicId));}),...timeline.open.map((/** @type {{id:string}} */ view)=>view.id)];
+  const {from,to}=timeline.days;
+  for(const key of changed)for(const day of Object.keys(lanes.days[key]??{}))if(day>=from&&day<=to)delete lanes.days[key][day];
+  addDays(data,lanes,timeline.days);
+  // The days come as counts alone: a mark the lanes hold stays while its day still has that one task.
+  for(const [id,mark] of Object.entries(lanes.marks)){
+    const counts=mark.day?lanes.days[sectionKey(mark.trackId,mark.epicId)]?.[mark.day]:null;
+    if(renamed.has(id)||!counts||(mark.state==='done'?counts.done:counts.plans)!==1)delete lanes.marks[id];
+  }
+  for(const view of timeline.tasks)if(view.status==='done'||view.status==='planning'&&view.deadline)lanes.marks[view.id]=mapRoadmapMark(data,view);
+  Object.assign(lanes,laneCounts(timeline));
+  // The longest overdue come when they may have changed.
+  if(timeline.late)lanes.late=timeline.late.map((/** @type {any} */ view)=>mapRoadmapMark(data,view));
+  return lanes;
+}
+
+/**
+ * What a read of the lanes counts: each section by status, each track by
+ * adding its sections up, what is overdue, and the days the project's work
+ * spans.
+ * @param {{sections:{trackId:string,epicId:string|null,planning:number,inProgress:number,inReview:number,done:number}[],overdue:number,firstDay:string|null,lastDay:string|null}} timeline
+ */
+function laneCounts(timeline) {
+  /** @type {Record<string,StatusCounts>} */ const sections={};
+  /** @type {Record<string,StatusCounts>} */ const trackCounts={};
+  for(const counts of timeline.sections){
+    const mapped={planning:counts.planning,progress:counts.inProgress,review:counts.inReview,done:counts.done};
+    sections[sectionKey(counts.trackId,counts.epicId)]=mapped;
+    const track=trackCounts[counts.trackId]??={planning:0,progress:0,review:0,done:0};
+    for(const [status,count] of Object.entries(mapped))track[/** @type {keyof StatusCounts} */ (status)]+=count;
+  }
+  return {sections,trackCounts,overdue:timeline.overdue,firstDay:timeline.firstDay??null,lastDay:timeline.lastDay??null};
 }
 
 export function replacePoolPage(data, projectId, scope, itemViews, append=false) {
@@ -316,6 +497,7 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
   replace(data.pool,data.pool.filter(item=>data.projects.some(project=>project.id===item.projectId)&&(item.scope!=='mine'||item.ownerId===(identity?.id??identity?.userId))));
   data.inboxUnreadCount=Number(bootstrap.inboxUnreadCount??0);
   data.boardPageInfo=null;
+  data.roadmap=null;
   data.projectTaskCounts={};
   data.poolPageInfo={};
   data.bootstrapView=bootstrap.view??null;data.syncCursor=bootstrap.syncCursor??null;
@@ -329,6 +511,7 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
     const {doneOrder,...filter}=bootstrap.boardFilter??{};
     setBoardPageInfo(data,projectId,{...filter,...(doneOrder==='completed'?{doneOrder}:{})},pages);
   }
+  if(projectId&&bootstrap.roadmap)replaceRoadmapLanes(data,projectId,bootstrap.roadmap);
   if(projectId&&bootstrap.poolCounts)for(const scope of ['personal','team']){
     const page=setPoolPageInfo(data,projectId,scope,{total:bootstrap.poolCounts[scope]??0});page.loaded=false;
   }

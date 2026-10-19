@@ -1,7 +1,8 @@
 //! The bootstrap: what the client needs to show its first view.
 
 use super::board::{board_columns, board_counts_connection};
-use super::roadmap::{epics, milestones, tracks};
+use super::lanes::timeline;
+use super::roadmap::{epics, local_date, milestones, tracks};
 use super::*;
 
 fn unread_notification_count(connection: &rusqlite::Connection, actor: &Actor) -> AppResult<i64> {
@@ -76,6 +77,7 @@ pub(super) fn bootstrap_snapshot(
         board_filter: None,
         board_counts: None,
         board_pages: Default::default(),
+        roadmap: None,
         pool_counts: Default::default(),
         sync_cursor: crate::collaboration::sync_cursor(connection)?,
     };
@@ -83,10 +85,25 @@ pub(super) fn bootstrap_snapshot(
         result.memberships = memberships(connection, project_id)?;
         result.users = users(connection, actor, project_id)?;
         result.tracks = tracks(connection, project_id)?;
-        // Only the Roadmap shows epic task counts.
+        // Only the Roadmap shows epic task counts, and draws tasks on its lanes.
         let counted_at = (result.view == "roadmap").then(unix_now).transpose()?;
         result.epics = epics(connection, project_id, time_zone, counted_at)?;
         result.milestones = milestones(connection, project_id)?;
+        if let Some(now) = counted_at {
+            result.roadmap = Some(
+                timeline(
+                    connection,
+                    project_id,
+                    time_zone,
+                    local_date(time_zone, now)?,
+                    &LanesQuery {
+                        window: query.roadmap.clone(),
+                        ..LanesQuery::default()
+                    },
+                )?
+                .0,
+            );
+        }
         let counts = if result.view == "board" {
             require_project(connection, actor, project_id, Need::Read, false)?;
             // The pages a Board read gives for the address's filter.

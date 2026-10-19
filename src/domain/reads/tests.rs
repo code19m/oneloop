@@ -1,6 +1,10 @@
 use super::board::{
     BLOCKED_COUNT_SQL, CHECKLIST_COUNTS_SQL, NEWEST_DONE_AFTER_SQL, NEWEST_DONE_SQL,
-    UNDATED_DONE_SQL,
+    TASK_ASSIGNEES_SQL, TASK_BLOCKS_SQL, TASK_MENTIONS_SQL, TASK_VIEWS_SQL, UNDATED_DONE_SQL,
+};
+use super::lanes::{
+    DONE_DAYS_SQL, LATE_PLANS_SQL, MARKS_SQL, NAMED_SQL, OPEN_SQL, OVERDUE_SQL, PLAN_DAYS_SQL,
+    REACH_SQL, SECTION_COUNTS_SQL, SECTION_DONE_SQL, SECTION_OPEN_SQL, SECTION_PLANS_SQL, timeline,
 };
 use super::roadmap::{EPIC_SUMMARY_SQL, epics_on, local_midnight};
 use super::*;
@@ -209,6 +213,54 @@ fn a_task_is_found_by_its_id_or_key_through_their_indexes_whatever_the_statistic
 }
 
 #[test]
+fn the_cards_of_a_page_are_read_by_their_ids_whatever_the_statistics() {
+    // No statistics; and those the server gathers for one project of 450
+    // tasks whose deleted tasks each have their own `deleted_at`
+    // (`analyzed_tracks`), which make few tasks look live.
+    let (_empty_root, empty) = crate::db::migrated_connection();
+    let (_root, analyzed) = analyzed_tracks();
+    let ids = r#"["t1","t2"]"#;
+    for (name, c) in [("no statistics", &empty), ("analyzed", &analyzed)] {
+        for (sql, wanted) in [
+            (
+                TASK_VIEWS_SQL,
+                "USING INDEX sqlite_autoindex_tasks_1 (id=?)",
+            ),
+            (
+                TASK_ASSIGNEES_SQL,
+                "USING INDEX sqlite_autoindex_task_assignees_1 (task_id=?)",
+            ),
+            (
+                TASK_BLOCKS_SQL,
+                "USING INDEX task_blocks_one_open_idx (task_id=?)",
+            ),
+            (
+                TASK_MENTIONS_SQL,
+                "USING INDEX task_blocks_one_open_idx (task_id=?)",
+            ),
+            (
+                CHECKLIST_COUNTS_SQL,
+                "USING INDEX sqlite_autoindex_task_checklist_items_2 (task_id=?)",
+            ),
+        ] {
+            let plan = if sql.contains("?2") {
+                query_plan_with(c, sql, params![ids, false])
+            } else {
+                query_plan_with(c, sql, params![ids])
+            };
+            // Each table found by the IDs, none read whole or skipped through.
+            let scans = plan
+                .lines()
+                .any(|step| step.contains("SCAN") && !step.contains("VIRTUAL TABLE"));
+            assert!(
+                plan.contains(wanted) && !scans && !plan.contains("ANY("),
+                "{name}: {sql}\n{plan}"
+            );
+        }
+    }
+}
+
+#[test]
 fn checklist_counts_read_only_the_items_of_the_page() {
     let (_root, c) = crate::db::migrated_connection();
     let plan = query_plan(&c, CHECKLIST_COUNTS_SQL);
@@ -222,18 +274,23 @@ fn checklist_counts_read_only_the_items_of_the_page() {
 /// their own `deleted_at`, and the statistics the server gathers for it. They
 /// make SQLite think few tasks aren't deleted, so it reads a whole column by
 /// `tasks_project_status_idx` unless a read names the track index. A read of
-/// a track's tasks shows its plan here.
+/// a track's tasks shows its plan here. Every task has a deadline, and done
+/// tasks a completion time, as the Roadmap reads them.
 fn analyzed_tracks() -> (tempfile::TempDir, rusqlite::Connection) {
     let (root, c) = crate::db::migrated_connection();
     c.execute_batch("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','ONE',1,1);
-        INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('a','p','A',0,1,1),('b','p','B',1,1,1),('c','p','C',2,1,1);").unwrap();
+        INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('a','p','A',0,1,1),('b','p','B',1,1,1),('c','p','C',2,1,1);
+        INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at) VALUES('ea','p','a','A work','2026-01-01',0,1,1),('eb','p','b','B work','2026-01-01',1,1,1),('ec','p','c','C work','2026-01-01',2,1,1);").unwrap();
     let statuses = ["planning", "in_progress", "in_review", "done"];
     for n in 0..450_i64 {
         let deleted = (n >= 400).then_some(n);
+        let track = ["a", "b", "c"][n as usize % 3];
+        // Every fifth task is in its track's epic.
+        let epic = (n % 5 == 0).then(|| format!("e{track}"));
         c.execute(
-            "INSERT INTO tasks(id,project_id,track_id,task_number,task_key,title,status,position,created_at,updated_at,deleted_at)
-             VALUES(?1,'p',?2,?3,?1,'Task',?4,?3,1,1,?5)",
-            params![format!("t{n}"), ["a", "b", "c"][n as usize % 3], n + 1, statuses[n as usize % 4], deleted],
+            "INSERT INTO tasks(id,project_id,track_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,deleted_at,deadline,completed_at)
+             VALUES(?1,'p',?2,?3,?4,?1,'Task',?5,?4,1,1,?6,?7,CASE WHEN ?5='done' THEN 1781000000+?4 END)",
+            params![format!("t{n}"), track, epic, n + 1, statuses[n as usize % 4], deleted, format!("2026-{:02}-10", n % 12 + 1)],
         )
         .unwrap();
     }
@@ -267,7 +324,7 @@ fn reads_of_a_tracks_tasks_use_the_track_index_whatever_the_statistics() {
     let plan = query_plan_with(&c, TRACK_CONTENTS_SQL, params!["p", "a"]);
     assert!(
         plan.contains(
-            "SEARCH tasks USING INDEX tasks_project_track_status_idx (project_id=? AND track_id=?)"
+            "SEARCH tasks USING COVERING INDEX tasks_project_track_status_idx (project_id=? AND track_id=?)"
         ),
         "{plan}"
     );
@@ -297,4 +354,163 @@ fn reads_of_a_tracks_tasks_use_the_track_index_whatever_the_statistics() {
         plan.contains("SEARCH t USING INDEX tasks_project_track_status_idx (project_id=? AND track_id=? AND status=?)"),
         "{plan}"
     );
+}
+
+#[test]
+fn roadmap_reads_use_their_indexes_whatever_the_statistics() {
+    for analyzed in [false, true] {
+        let (_root, c) = if analyzed {
+            analyzed_tracks()
+        } else {
+            crate::db::migrated_connection()
+        };
+        for (sql, parameters, expected) in [
+            (
+                SECTION_COUNTS_SQL,
+                params!["p"],
+                &[
+                    "SEARCH tasks USING COVERING INDEX tasks_project_track_status_idx (project_id=?)",
+                ][..],
+            ),
+            (
+                OVERDUE_SQL,
+                params!["p", "2026-06-10"],
+                &[
+                    "SEARCH tasks USING COVERING INDEX tasks_dated_plans_idx (project_id=? AND deadline>? AND deadline<?)",
+                    "SEARCH tasks USING INDEX tasks_project_status_idx (project_id=? AND deleted_at=? AND status=?)",
+                ],
+            ),
+            (
+                REACH_SQL,
+                params!["p"],
+                &[
+                    "SEARCH tasks USING COVERING INDEX tasks_project_done_completed_idx (project_id=? AND completed_at>?)",
+                    "SEARCH tasks USING COVERING INDEX tasks_dated_plans_idx (project_id=? AND deadline>?)",
+                ],
+            ),
+            (
+                NAMED_SQL,
+                params!["p", r#"["t1","t2"]"#],
+                &["SEARCH t USING INDEX sqlite_autoindex_tasks_1 (id=?)"],
+            ),
+            (
+                OPEN_SQL,
+                params!["p"],
+                &[
+                    "SEARCH t USING INDEX tasks_project_status_idx (project_id=? AND deleted_at=? AND status=?)",
+                    "SEARCH b USING INDEX task_blocks_one_open_idx (task_id=?)",
+                ],
+            ),
+            (
+                SECTION_OPEN_SQL,
+                params!["p", "a", "ea"],
+                &[
+                    "SEARCH t USING INDEX tasks_project_track_status_idx (project_id=? AND track_id=? AND status=? AND epic_id=? AND deleted_at=?)",
+                ],
+            ),
+            (
+                LATE_PLANS_SQL,
+                params!["p", "2026-06-10", 20],
+                &[
+                    "SEARCH tasks USING COVERING INDEX tasks_dated_plans_idx (project_id=? AND deadline>? AND deadline<?)",
+                ],
+            ),
+            (
+                DONE_DAYS_SQL,
+                params!["p", 1781000000, 1782000000],
+                &[
+                    "SEARCH tasks USING COVERING INDEX tasks_project_done_completed_idx (project_id=? AND completed_at>? AND completed_at<?)",
+                ],
+            ),
+            (
+                PLAN_DAYS_SQL,
+                params!["p", "2026-01-01", "2026-12-31"],
+                &[
+                    "SEARCH t USING COVERING INDEX tasks_dated_plans_idx (project_id=? AND deadline>? AND deadline<?)",
+                ],
+            ),
+            (
+                SECTION_DONE_SQL,
+                params!["p", "a", "ea", 1781000000, 1782000000],
+                &[
+                    "SEARCH tasks USING COVERING INDEX tasks_project_done_completed_idx (project_id=? AND completed_at>? AND completed_at<?)",
+                ],
+            ),
+            (
+                SECTION_PLANS_SQL,
+                params!["p", "a", "ea", "2026-01-01", "2026-12-31"],
+                &[
+                    "SEARCH tasks USING COVERING INDEX tasks_dated_plans_idx (project_id=? AND deadline>? AND deadline<?)",
+                ],
+            ),
+            (
+                MARKS_SQL,
+                params![r#"["t1","t2"]"#],
+                &["SEARCH t USING INDEX sqlite_autoindex_tasks_1 (id=?)"],
+            ),
+        ] {
+            let plan = query_plan_with(&c, sql, parameters);
+            for step in expected {
+                assert!(plan.contains(step), "{analyzed}: {sql}\n{plan}");
+            }
+            assert!(
+                !plan.contains("SCAN tasks") && !plan.contains("TEMP B-TREE"),
+                "{analyzed}: {sql}\n{plan}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_roadmap_read_runs_the_same_statements_for_any_number_of_tracks_and_tasks() {
+    let (_small_root, small) = crate::db::migrated_connection();
+    small.execute_batch("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','ONE',1,1);
+        INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('a','p','A',0,1,1);
+        INSERT INTO tasks(id,project_id,track_id,task_number,task_key,title,status,position,created_at,updated_at,deadline,completed_at)
+        VALUES('t1','p','a',1,'ONE-1','Task','in_progress',0,1,1,NULL,NULL),('t2','p','a',2,'ONE-2','Task','planning',0,1,1,'2026-01-10',NULL),
+              ('t3','p','a',3,'ONE-3','Task','done',0,1,1,NULL,1781000000);").unwrap();
+    let (_large_root, large) = analyzed_tracks();
+    // Days with one task each, whose tasks come with the counts.
+    large.execute_batch("INSERT INTO tasks(id,project_id,track_id,task_number,task_key,title,status,position,created_at,updated_at,deadline,completed_at)
+        VALUES('alone-done','p','a',1001,'ONE-1001','Task','done',0,1,1,NULL,1772400000),('alone-plan','p','a',1002,'ONE-1002','Task','planning',0,1,1,'2026-03-02',NULL);").unwrap();
+    let today = date(2026, 6, 10);
+    let zone = TimeZone::built_in("UTC").unwrap();
+    let query = LanesQuery {
+        window: RoadmapWindow {
+            from: Some("2026-01-01".into()),
+            marks: Some(400),
+            cell: Some(3),
+            ..RoadmapWindow::default()
+        },
+        ..LanesQuery::default()
+    };
+    let run = |c: &rusqlite::Connection| {
+        let mut read = None;
+        let sql = statements(c, || {
+            read = Some(timeline(c, "p", &zone, today, &query).unwrap().0)
+        });
+        (sql.len(), read.unwrap())
+    };
+    let (small_count, small_read) = run(&small);
+    let (large_count, large_read) = run(&large);
+    let marks = |read: &crate::domain::RoadmapTimeline| -> usize {
+        read.days
+            .sections
+            .iter()
+            .map(|section| section.marks.len())
+            .sum()
+    };
+    assert_eq!(
+        (
+            small_read.open.len(),
+            small_read.days.sections.len(),
+            marks(&small_read)
+        ),
+        (1, 1, 2)
+    );
+    // Each track's own work and its epic; three bars at most in each.
+    assert_eq!(large_read.sections.len(), 6);
+    assert!(large_read.open.len() <= 18);
+    assert_eq!(marks(&large_read), 2);
+    assert_eq!(small_count, large_count);
 }

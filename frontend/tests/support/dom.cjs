@@ -199,7 +199,7 @@ function wire(dom, { api: answers = {}, reads: readAnswers = {}, reloadBootstrap
       w.DATA.boardPageInfo = { ...w.DATA.boardPageInfo, projectId, filters: normalizeBoardFilters(filters) };
       return app().context().view === 'board' ? app().refreshBoard() : app().refreshCounts();
     },
-    counts: () => app().refreshCounts(), roadmap: () => app().refreshRoadmap(),
+    counts: () => app().refreshCounts(), roadmap: () => app().refreshRoadmap(), roadmapStructure: () => app().refreshRoadmap(),
     pool: () => app().refreshPool(), morePool: () => app().refreshPool(),
     epic: () => app().refreshEpic(), moreEpicTasks: () => app().refreshEpic(), moreEpicActivity: () => app().refreshEpic(),
     task() {}, moreBoard() {},
@@ -207,6 +207,11 @@ function wire(dom, { api: answers = {}, reads: readAnswers = {}, reloadBootstrap
   const reads = {
     calls: readCalls, cancel() {}, invalidateBoard() {}, idle: async () => {}, adoptBoard: () => false,
     ...Object.fromEntries(Object.entries(repaint).map(([name, paint]) => [name, async (...args) => { readCalls.push([name, ...args]); paint(...args); return { stale: false }; }])),
+    // Days of the Roadmap read as the read controller says: all the tasks of the days a read asked about came.
+    roadmapDays: async (...args) => { readCalls.push(['roadmapDays', ...args]); const days = args[1]; return { stale: false, marked: days?.marks ? { from: days.from, to: days.to } : null }; },
+    // A list of the Roadmap's marks: none, unless a test answers.
+    roadmapList: async (...args) => { readCalls.push(['roadmapList', ...args]); return { items: [], total: 0 }; },
+    cancelRoadmapList: () => { readCalls.push(['cancelRoadmapList']); },
     ...readAnswers,
   };
   // The tests end sessions themselves, so expiry leaves the projection alone.

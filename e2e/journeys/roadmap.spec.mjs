@@ -1,69 +1,100 @@
-// The Roadmap: summary, zoom, tracks and the epic drawer.
+// The Roadmap: each track's lane of work, zoom and scales, tracks, keys and the epic drawer.
 import { test, expect, openApp, holdResponses, command, useTheme } from '../support/test.mjs';
 
-test('Roadmap shows its summary without work counters', { tag: '@smoke' }, async ({ page, instance }) => {
+/** The date `offset` days from today, as the API takes it. */
+const day = offset => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+/** The seeded track's lane. */
+const laneOf = (page, name) => page.locator('.lane').filter({ has: page.getByRole('heading', { name, exact: true }) });
+
+test('each track\'s lane shows its work, and a teammate\'s changes reach it', { tag: '@smoke' }, async ({ page, instance }) => {
   await useTheme(page, 'dark');
+  const { track, epic, task } = instance.projects[0];
   await openApp(page, instance, 'roadmap');
   await expect(page.getByRole('heading', { name: 'Roadmap', exact: true })).toBeVisible();
-  const summary = page.getByRole('group', { name: 'Roadmap summary' });
-  await expect(summary).toContainText(/Tracks.*Epics.*Milestones/);
-  await expect(summary).not.toContainText(/Open|Done|live/i);
-  await expect(page.locator('#rmScroll')).toBeVisible();
+  const lane = laneOf(page, track.name);
+  await expect(lane.locator('.lane-figure')).toHaveText('1 planned');
+  // The seeded epic has only an undated plan: its header alone, after Today.
+  await expect(lane.locator(`.rt-epic-label[data-epic="${epic.id}"]`)).toHaveText(`${epic.title}0/1`);
+  await expect(page.locator('.rt-stat-late')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
+  // A teammate starts the task, late: it shows as a bar with the error icon, and the header counts it.
+  const [moved] = (await command(instance.writer, 'task.move', { taskId: task.id, status: 'in_progress' }, task.revision)).entities;
+  const [dated] = (await command(instance.writer, 'task.update', { taskId: task.id, deadline: day(-2) }, moved.revision)).entities;
+  const bar = lane.locator(`.rt-bar[data-task="${task.taskKey}"]`);
+  await expect(bar).toHaveClass(/rt-late/);
+  await expect(bar.locator('.rt-icon-late')).toBeVisible();
+  await expect(lane.locator('.lane-figure')).toHaveText('1 in progress');
+  await expect(page.getByRole('button', { name: /^Overdue: 1 task/ })).toBeVisible();
+  // A rename reads only the task it names, with the lanes' counts, and the lane changes in place.
+  const reads = [];
+  page.on('request', request => { const url = new URL(request.url()); if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/events')) reads.push(url); });
+  await page.evaluate(() => { window.shownScroller = document.getElementById('rmScroll'); });
+  await command(instance.writer, 'task.update', { taskId: task.id, title: 'Renamed by a teammate' }, dated.revision);
+  await expect(bar.locator('.rt-title')).toHaveText('Renamed by a teammate');
+  expect(reads.map(url => [url.pathname, url.searchParams.get('tasks')])).toEqual([[`/api/projects/${task.projectId}/roadmap/lanes`, task.id]]);
+  expect(await page.evaluate(() => document.getElementById('rmScroll') === window.shownScroller)).toBe(true);
 });
 
-test('an epic created on the Roadmap shows its empty counts at once', async ({ page, instance }) => {
+test('an epic created on the Roadmap shows at once with its dates and its progress, and its New task fills in the epic and its track', async ({ page, instance }) => {
+  const { project, track } = instance.projects[0];
+  // A second track, so the epic's track is not the only one there is to fill in.
+  await command(instance.api, 'track.create', { projectId: project.id, name: 'Second track' });
   await openApp(page, instance, 'roadmap');
   await page.getByRole('button', { name: 'Epic', exact: true }).click();
   const dialog = page.locator('.modal');
   await dialog.locator('[name="title"]').fill('Fresh epic');
   await dialog.getByRole('button', { name: /^Track / }).click();
   await page.locator('.pop-opt').filter({ hasText: instance.projects[0].track.name }).click();
-  await dialog.locator('[data-date-key="mStart"] .date-text').fill('2026-10-01');
-  await dialog.locator('[data-date-key="mEnd"] .date-text').fill('2026-10-31');
+  await dialog.locator('[data-date-key="mStart"] .date-text').fill(day(3));
+  await dialog.locator('[data-date-key="mEnd"] .date-text').fill(day(30));
   await dialog.getByRole('button', { name: 'Create epic', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   // Its own hint brings no Roadmap read, so the counts come with the result.
-  const bar = page.locator('[data-epic]').filter({ hasText: 'Fresh epic' });
-  await expect(bar.locator('.m')).toContainText('0/0 · starts');
-  await expect(bar).not.toContainText('Loading task counts');
+  const header = page.locator('.rt-epic-label').filter({ hasText: 'Fresh epic' });
+  await expect(header).toContainText('0/0');
+  await expect(header.locator('.rt-epic-dates')).toBeVisible();
+  // Its details offer New task, which opens the task form with the epic and its track.
+  await header.click();
+  await page.locator('.peek').getByRole('button', { name: 'New task', exact: true }).click();
+  const task = page.getByRole('dialog', { name: 'New task' });
+  await expect(task.getByRole('button', { name: /^Track / })).toContainText(track.name);
+  await expect(task.getByRole('button', { name: /^Epic / })).toContainText('Fresh epic');
+  await task.locator('input[name="title"]').fill('Task in the fresh epic');
+  await task.getByRole('button', { name: 'Create task', exact: true }).click();
+  await expect(task).toHaveCount(0);
+  await expect(header).toContainText('0/1');
 });
 
-test('Roadmap spacing and zoom preserve readable rows and the shell', async ({ page, instance, browserName, allowedConsoleErrors }, testInfo) => {
+test('a zoom keeps the Roadmap in place, months follow it, and both themes draw', async ({ page, instance, browserName, allowedConsoleErrors }, testInfo) => {
   const { project, track } = instance.projects[0];
-  for (let i = 0; i < 4; i++) await command(instance.api, 'epic.create', { projectId: project.id, trackId: track.id, title: `Overlapping epic ${i}`, startDate: '2026-09-24', endDate: '2026-10-24' });
-  await openApp(page, instance, 'roadmap');
-  const beforeSpacing = Number(await page.locator('#rmScroll').getAttribute('data-bar-height'));
-  // WCAG text spacing, as a stylesheet: the app's policy refuses inline style elements.
-  await page.route('**/e2e-text-spacing.css', route => route.fulfill({ contentType: 'text/css', body: '* { line-height:1.5 !important; letter-spacing:.12em !important; word-spacing:.16em !important; }' }));
-  await page.addStyleTag({ url: `${instance.url}/e2e-text-spacing.css` });
-  await expect.poll(async () => Number(await page.locator('#rmScroll').getAttribute('data-bar-height'))).toBeGreaterThan(beforeSpacing);
-  const geometry = await page.locator('.bar').evaluateAll(bars => bars.map(bar => ({ h: bar.clientHeight, sh: bar.scrollHeight, top: bar.offsetTop, bottom: bar.offsetTop + bar.offsetHeight })));
-  expect(geometry.length).toBeGreaterThan(3);
-  for (const bar of geometry) expect(bar.sh).toBeLessThanOrEqual(bar.h);
-  const sorted = geometry.sort((a, b) => a.top - b.top);
-  for (let i = 1; i < sorted.length; i++) expect(sorted[i].top).toBeGreaterThanOrEqual(sorted[i - 1].bottom + 7);
+  for (let i = 0; i < 3; i++) {
+    const [made] = (await command(instance.api, 'task.create', { projectId: project.id, trackId: track.id, title: `Work ${i}`, deadline: day(10 + i * 3) })).entities;
+    await command(instance.api, 'task.move', { taskId: made.id, status: 'in_progress' }, made.revision);
+  }
+  await openApp(page, instance, `roadmap/${project.id}?scale=months`);
+  await expect(page.locator('.rt-bar')).toHaveCount(3);
   await page.evaluate(() => {
     window.originalSidebar = document.querySelector('.sidebar');
     window.originalScroll = document.getElementById('rmScroll');
-    window.originalBar = document.querySelector('.bar');
-    window.initialWidth = window.originalBar.offsetWidth;
+    window.originalLane = document.querySelector('.lane');
+    window.initialWidth = document.querySelector('.rm-canvas').offsetWidth;
     for (let i = 0; i < 5; i++) window.originalScroll.dispatchEvent(new WheelEvent('wheel', { ctrlKey: true, deltaY: -10, clientX: 800, bubbles: true, cancelable: true }));
   });
-  // The zoom resizes the Roadmap in place: the same scroller and bars, wider, inside the same shell.
-  await expect.poll(() => page.evaluate(() => window.originalBar.offsetWidth > window.initialWidth)).toBe(true);
-  const unchanged = () => page.evaluate(() => document.getElementById('rmScroll') === window.originalScroll && window.originalBar.isConnected && document.querySelector('.sidebar') === window.originalSidebar);
+  // The zoom redraws the marks in place: the same scroller and lanes, wider, inside the same shell.
+  await expect.poll(() => page.evaluate(() => document.querySelector('.rm-canvas').offsetWidth > window.initialWidth)).toBe(true);
+  const unchanged = () => page.evaluate(() => document.getElementById('rmScroll') === window.originalScroll && window.originalLane.isConnected && document.querySelector('.sidebar') === window.originalSidebar);
   expect(await unchanged()).toBe(true);
-  // Month cells follow the zoom through CSS: each spans its days times the pixels per day.
-  const months = await page.locator('.rm-month-grid .rm-month').evaluateAll(cells => cells.map(cell => [cell.getBoundingClientRect().width, Number(cell.style.getPropertyValue('--n')) * Number(cell.parentElement.style.getPropertyValue('--ppd'))]));
-  expect(months.length).toBeGreaterThan(0);
-  for (const [width, expected] of months) expect(Math.abs(width - expected)).toBeLessThan(1);
+  await expect(page.locator('.rt-bar')).toHaveCount(3);
+  // Month lines follow the zoom through CSS: each sits at its day times the pixels per day.
+  const lines = await page.locator('.rm-month-line').evaluateAll(cells => cells.map(cell => [cell.offsetLeft, Number(getComputedStyle(cell).getPropertyValue('--rm-rail').trim().replace('px', '')) + Number(cell.style.getPropertyValue('--d')) * Number(cell.parentElement.style.getPropertyValue('--ppd'))]));
+  expect(lines.length).toBeGreaterThan(0);
+  for (const [left, expected] of lines) expect(Math.abs(left - expected)).toBeLessThan(1);
   // Playwright's WebKit screenshots insert a style element to sync animations, which the policy refuses.
   if (browserName === 'webkit') allowedConsoleErrors.push(/Refused to apply a stylesheet because its hash, its nonce, or 'unsafe-inline'/);
   for (const theme of ['light', 'dark']) {
     await page.mouse.move(1, 1);
     await page.keyboard.press('Escape');
-    await page.evaluate(theme => { App.setTheme(theme); const sc = document.getElementById('rmScroll'); sc.scrollLeft = 0; sc.dispatchEvent(new Event('scroll')); }, theme);
+    await page.evaluate(theme => App.setTheme(theme), theme);
     expect(await page.locator('.rail-cell').first().evaluate(el => getComputedStyle(el).backdropFilter)).toBe('none');
     await page.screenshot({ path: testInfo.outputPath(`roadmap-${theme}.png`), animations: 'disabled' });
   }
@@ -72,12 +103,12 @@ test('Roadmap spacing and zoom preserve readable rows and the shell', async ({ p
 });
 
 test('Weeks, Months and Quarters zoom the Roadmap in place and keep today in view', async ({ page, instance }) => {
-  await openApp(page, instance, 'roadmap');
+  await openApp(page, instance, `roadmap/${instance.projects[0].project.id}?scale=months`);
   const scale = page.getByRole('group', { name: 'Timeline scale' });
   await expect(scale.getByRole('button', { name: 'Months' })).toHaveAttribute('aria-pressed', 'true');
   const todayShows = async () => {
-    const [pill, view] = await Promise.all([page.locator('.today-pill').boundingBox(), page.locator('#rmScroll').boundingBox()]);
-    return pill.x >= view.x && pill.x + pill.width <= view.x + view.width;
+    const [label, view] = await Promise.all([page.locator('.rt-today').boundingBox(), page.locator('#rmScroll').boundingBox()]);
+    return label.x >= view.x && label.x + label.width <= view.x + view.width;
   };
   await scale.getByRole('button', { name: 'Weeks' }).click();
   await expect(scale.getByRole('button', { name: 'Weeks' })).toHaveAttribute('aria-pressed', 'true');
@@ -93,17 +124,15 @@ test('Weeks, Months and Quarters zoom the Roadmap in place and keep today in vie
 test.describe('with Reduce motion', () => {
   test.use({ reducedMotion: 'reduce' });
 
-  test('a scale change keeps today, then the selected epic, where they were', async ({ page, instance }) => {
+  test('a scale change keeps today, then the focused task, where they were', async ({ page, instance }) => {
     const { project, track } = instance.projects[0];
-    const day = offset => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
     // A long epic leaves room to scroll on both sides of today, even at Quarters.
     await command(instance.api, 'epic.create', { projectId: project.id, trackId: track.id, title: 'Platform migration', startDate: day(-365), endDate: day(365) });
-    // Four weeks fit the view at Weeks and are wider than the shortest bar at Quarters.
-    await command(instance.api, 'epic.create', { projectId: project.id, trackId: track.id, title: 'Holiday freeze', startDate: day(70), endDate: day(98) });
-    await openApp(page, instance, 'roadmap');
+    const [made] = (await command(instance.api, 'task.create', { projectId: project.id, trackId: track.id, title: 'Holiday freeze', deadline: day(40) })).entities;
+    await command(instance.api, 'task.move', { taskId: made.id, status: 'in_progress' }, made.revision);
+    await openApp(page, instance, `roadmap/${project.id}?scale=months`);
     const scale = page.getByRole('group', { name: 'Timeline scale' });
     const left = locator => locator.evaluate(element => element.getBoundingClientRect().left);
-    const middle = locator => locator.evaluate(element => { const box = element.getBoundingClientRect(); return (box.left + box.right) / 2; });
     const keeps = async (measure, label) => {
       const before = await measure();
       for (const name of ['Weeks', 'Quarters', 'Months']) {
@@ -113,88 +142,194 @@ test.describe('with Reduce motion', () => {
       }
     };
     await page.getByRole('button', { name: 'Today', exact: true }).click();
-    await keeps(() => left(page.locator('.today-pill')), 'today');
-    const bar = page.locator('[data-epic]').filter({ hasText: 'Holiday freeze' });
+    await keeps(() => left(page.locator('.rt-today')), 'today');
+    const bar = page.locator(`.rt-bar[data-task="${made.taskKey}"]`);
     await bar.focus();
-    await bar.evaluate(element => element.scrollIntoView({ block: 'nearest', inline: 'center' }));
-    await keeps(() => middle(bar), 'the selected epic');
+    await keeps(() => left(page.locator(`.rt-bar[data-task="${made.taskKey}"]`)), 'the focused task');
   });
 });
 
-test('a track\'s name keeps clear of its grip and ⋮, takes two lines at most, and shows in full in its tip', async ({ page, instance }) => {
+test('the keyboard reaches each lane\'s grip, menu and timeline, moves along it, opens a task, and steps through what is overdue', async ({ page, instance }) => {
+  const { project, track, task } = instance.projects[0];
+  const [late] = (await command(instance.api, 'task.create', { projectId: project.id, trackId: track.id, title: 'Late work', deadline: day(-3) })).entities;
+  await command(instance.api, 'task.move', { taskId: late.id, status: 'in_progress' }, late.revision);
+  await command(instance.api, 'task.update', { taskId: task.id, deadline: day(14) }, task.revision);
+  await openApp(page, instance, `roadmap/${project.id}?scale=months`);
+  const lane = laneOf(page, track.name);
+  await lane.getByRole('button', { name: `Reorder ${track.name}` }).focus();
+  await page.keyboard.press('Tab');
+  await expect(lane.getByRole('button', { name: `Manage ${track.name} track` })).toBeFocused();
+  // The timeline is one stop; it starts on the work in progress, whose card shows.
+  await page.keyboard.press('Tab');
+  const bar = lane.locator(`.rt-bar[data-task="${late.taskKey}"]`);
+  await expect(bar).toBeFocused();
+  await expect(bar).toHaveAccessibleName(/^Late work, In Progress, started .+, due .+, 3 days late$/);
+  await expect(page.locator('#task-tooltip')).toContainText('3d late');
+  // The lane's own work comes first, then its epic and the epic's work.
+  await page.keyboard.press('End');
+  await expect(lane.locator(`.rt-planned[data-task="${task.taskKey}"]`)).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await expect(lane.locator('.rt-epic-label')).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(bar).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(lane.getByRole('button', { name: `Manage ${track.name} track` })).toBeFocused();
+  // "Overdue 1" focuses the late task and shows its card.
+  await page.getByRole('button', { name: /^Overdue: 1 task/ }).click();
+  await expect(bar).toBeFocused();
+  await expect(page.locator('#task-tooltip')).toContainText('Late work');
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.tp-title')).toHaveValue('Late work');
+});
+
+test('done work of one day is a count whose list the server gives, and a teammate\'s track rename reads no lanes', async ({ page, instance }) => {
+  const { project, track } = instance.projects[0];
+  const shipped = [];
+  for (let i = 0; i < 3; i++) {
+    const [made] = (await command(instance.api, 'task.create', { projectId: project.id, trackId: track.id, title: `Shipped ${i}` })).entities;
+    shipped.push((await command(instance.api, 'task.move', { taskId: made.id, status: 'done' }, made.revision)).entities[0]);
+  }
+  await openApp(page, instance, `roadmap/${project.id}?scale=months`);
+  const lane = laneOf(page, track.name);
+  // Three done today: the lanes count them, and hold none of them.
+  const count = lane.locator('.rt-count-done');
+  await expect(count).toHaveText('3');
+  const lists = [];
+  page.on('request', request => { const url = new URL(request.url()); if (url.pathname.endsWith('/roadmap/list')) lists.push(url); });
+  await count.click();
+  const list = page.locator('#roadmap-list');
+  await expect(list.locator('.tid')).toHaveText(shipped.map(task => task.taskKey).reverse());
+  expect(lists.map(url => [url.searchParams.get('track'), url.searchParams.get('kind')])).toEqual([[track.id, 'done']]);
+  await page.keyboard.press('Escape');
+  await expect(list).toHaveCount(0);
+  await expect(count).toBeFocused();
+  // A teammate renames the track: the Roadmap reads its tracks, epics and milestones, a few KiB, and no lanes.
+  const reads = [];
+  page.on('response', async response => { const url = new URL(response.url()); if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/events')) reads.push([url.pathname, (await response.body()).length]); });
+  await command(instance.writer, 'track.update', { trackId: track.id, name: 'Renamed track' }, track.revision);
+  await expect(page.getByRole('heading', { name: 'Renamed track', exact: true })).toBeVisible();
+  await expect.poll(() => reads.length).toBe(1);
+  expect(reads[0][0]).toBe(`/api/projects/${project.id}/roadmap`);
+  expect(reads[0][1]).toBeLessThan(8 * 1024);
+  // A row of the list opens its task, which the page doesn't hold, with Enter.
+  await laneOf(page, 'Renamed track').locator('.rt-count-done').click();
+  await list.getByRole('button', { name: new RegExp(shipped[1].taskKey) }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.tp-title')).toHaveValue('Shipped 1');
+  expect(page.url()).toContain(`#/task/${shipped[1].taskKey}`);
+});
+
+test('a done dot, a plan\'s ring and Overdue\'s late plan open their task with a click or Enter, and Back focuses them again', async ({ page, instance }) => {
+  const { project, track } = instance.projects[0];
+  const [made] = (await command(instance.api, 'task.create', { projectId: project.id, trackId: track.id, title: 'Shipped alone' })).entities;
+  const [shipped] = (await command(instance.api, 'task.move', { taskId: made.id, status: 'done' }, made.revision)).entities;
+  const [plan] = (await command(instance.api, 'task.create', { projectId: project.id, trackId: track.id, title: 'Missed plan', deadline: day(-9) })).entities;
+  await openApp(page, instance, `roadmap/${project.id}?scale=months`);
+  const lane = laneOf(page, track.name);
+  // Each is drawn on its own, and its task comes once its day is read.
+  const dot = lane.locator(`.rt-done[data-task="${shipped.taskKey}"]`), ring = lane.locator(`.rt-planned[data-task="${plan.taskKey}"]`);
+  await dot.click();
+  await expect(page.locator('.tp-title')).toHaveValue('Shipped alone');
+  // Back focuses the mark the task opened from.
+  await page.goBack();
+  await expect(dot).toBeFocused();
+  await ring.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.tp-title')).toHaveValue('Missed plan');
+  await page.goBack();
+  await expect(ring).toBeFocused();
+  // "Overdue 1" focuses the late plan, and Enter opens it.
+  await page.getByRole('button', { name: /^Overdue: 1 task/ }).click();
+  await expect(ring).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.tp-title')).toHaveValue('Missed plan');
+  // While its page shows, the plan loses its date, and with it its ring: Back focuses the lane's timeline.
+  await command(instance.api, 'task.update', { taskId: plan.id, deadline: null }, plan.revision);
+  await page.goBack();
+  await expect(ring).toHaveCount(0);
+  await expect(lane.locator('.rt-body')).toBeFocused();
+});
+
+test('a task of another project opened from the Roadmap reads that project\'s tracks and epics alone, not its lanes', async ({ page, instance }) => {
+  const { task } = instance.projects[1];
+  await openApp(page, instance, `roadmap/${instance.projects[0].project.id}`);
+  await expect(page.locator('.rt-body [data-nav]').first()).toBeAttached();
+  const reads = [];
+  page.on('response', async response => { const url = new URL(response.url()); if (url.pathname.includes('/roadmap')) reads.push([url.pathname, (await response.body()).length]); });
+  await page.evaluate(key => { location.hash = `#/task/${key}`; }, task.taskKey);
+  await expect(page.getByRole('textbox', { name: 'Task title', exact: true })).toHaveValue(task.title);
+  await expect.poll(() => reads.length).toBe(1);
+  expect(reads[0][0]).toBe(`/api/projects/${instance.projects[1].project.id}/roadmap`);
+  expect(reads[0][1]).toBeLessThan(2 * 1024);
+});
+
+test('at Quarters, the titles of plans spread over more than a year load, in reads the server allows', async ({ page, instance }) => {
+  const { project, track } = instance.projects[0];
+  const plans = [];
+  for (const offset of [-150, -40, 60, 160, 260, 350]) {
+    plans.push((await command(instance.api, 'task.create', { projectId: project.id, trackId: track.id, title: `Plan ${offset}`, deadline: day(offset) })).entities[0]);
+  }
+  const spans = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.endsWith('/roadmap/days')) spans.push((Date.parse(url.searchParams.get('to')) - Date.parse(url.searchParams.get('from'))) / 86_400_000);
+  });
+  await openApp(page, instance, `roadmap/${project.id}?scale=quarters`);
+  const lane = laneOf(page, track.name);
+  for (const plan of plans) await expect(lane.locator(`.rt-planned[data-task="${plan.taskKey}"]`)).toHaveCount(1);
+  await expect(lane.locator('.rt-pending, .rt-unloaded')).toHaveCount(0);
+  expect(spans.length).toBeGreaterThan(0);
+  expect(spans.every(span => span < 400)).toBe(true);
+  await expect(page.locator('.connection-notice')).toHaveCount(0);
+  await expect(page.locator('#toast-region .toast')).toHaveCount(0);
+});
+
+test('a track\'s name keeps clear of its grip and ⋮ on one line, and shows in full in its tip', async ({ page, instance }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const { project } = instance.projects[0], long = 'Platform and infrastructure for every region and partner';
   for (const name of ['Internationalization', 'Customer support tools', long, 'Billing', 'Data', 'Mobile']) await command(instance.api, 'track.create', { projectId: project.id, name });
   await openApp(page, instance, 'roadmap');
+  // The grip and ⋮ show where the pointer or focus is.
   const names = await page.locator('.lane').evaluateAll(lanes => lanes.map(lane => {
     const name = lane.querySelector('.name'), box = name.getBoundingClientRect(), controls = lane.querySelector('.head-ctl').getBoundingClientRect(), text = document.createRange();
     text.selectNodeContents(name);
-    const shown = [...text.getClientRects()].filter(line => line.bottom <= box.bottom + 1);
-    return { name: name.textContent, lines: new Set(shown.map(line => Math.round(line.top))).size, covered: shown.some(line => line.right > controls.left && line.left < controls.right && line.bottom > controls.top && line.top < controls.bottom) };
+    const shown = [...text.getClientRects()].filter(line => line.bottom <= box.bottom + 1 && line.left < box.right);
+    return { name: name.textContent, lines: new Set(shown.map(line => Math.round(line.top))).size, covered: box.right > controls.left };
   }));
   expect(names.length).toBe(7);
-  expect(names.filter(name => name.covered || name.lines > 2)).toEqual([]);
-  const tip = page.locator('#app-tip'), lane = name => page.locator('.lane').filter({ has: page.getByRole('heading', { name, exact: true }) });
-  await lane(long).locator('.name').hover();
+  expect(names.filter(name => name.covered || name.lines > 1)).toEqual([]);
+  const tip = page.locator('#app-tip');
+  await laneOf(page, long).locator('.name').hover();
   await expect(tip).toHaveText(long);
   await page.mouse.move(1, 1);
   await expect(tip).toHaveCount(0);
   // Keyboard focus reaches the grip from the ⋮ beside it.
-  await lane(long).getByRole('button', { name: `Manage ${long} track` }).focus();
+  await laneOf(page, long).getByRole('button', { name: `Manage ${long} track` }).focus();
   await page.keyboard.press('Shift+Tab');
-  await expect(lane(long).getByRole('button', { name: `Reorder ${long}` })).toBeFocused();
+  await expect(laneOf(page, long).getByRole('button', { name: `Reorder ${long}` })).toBeFocused();
   await expect(tip).toHaveText(long);
-  await lane('Billing').getByRole('button', { name: 'Manage Billing track' }).focus();
+  await laneOf(page, 'Billing').getByRole('button', { name: 'Manage Billing track' }).focus();
   await page.keyboard.press('Shift+Tab');
-  await expect(lane('Billing').getByRole('button', { name: 'Reorder Billing' })).toBeFocused();
+  await expect(laneOf(page, 'Billing').getByRole('button', { name: 'Reorder Billing' })).toBeFocused();
   await expect(tip, 'a name that fits needs no tip').toHaveCount(0);
 });
 
-test('a zoom gives far lanes their new height at once, and a lane grown by its name keeps its bars centered on whole pixels', async ({ page, instance }) => {
+test('marks scrolled under the rail stay behind it', async ({ page, instance }) => {
+  // The lanes hold still instead of sliding when the Roadmap's read draws them again.
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  const { project } = instance.projects[0], long = 'Platform and infrastructure for every region and partner';
-  const day = offset => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
-  // Two weeks back to back take two rows at Months and one at Weeks; 25 lanes reach far below the view.
-  for (let i = 0; i < 24; i++) {
-    const [track] = (await command(instance.api, 'track.create', { projectId: project.id, name: i ? `Track ${i + 2}` : long })).entities;
-    for (const week of [0, 1]) await command(instance.api, 'epic.create', { projectId: project.id, trackId: track.id, title: `Week ${week + 1}`, startDate: day(7 * week), endDate: day(7 * week + 6) });
-  }
-  await openApp(page, instance, 'roadmap');
-  const lanes = page.locator('#rmScroll .lane'), scale = page.getByRole('group', { name: 'Timeline scale' });
-  await expect(lanes).toHaveCount(25);
-  const frames = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
-  const heights = () => lanes.evaluateAll(all => all.map(lane => lane.getBoundingClientRect().height));
-  const scrollTo = place => page.locator('#rmScroll').evaluate((view, place) => {
-    view.scrollTop = place === 'end' ? view.scrollHeight : 0;
-    return [...view.querySelectorAll('.lane')].at(-1).getBoundingClientRect().top;
-  }, place);
-  // Every lane is drawn once at Months, then the person goes back up and zooms to Weeks.
-  await scrollTo('end');
-  await frames();
-  await scrollTo('top');
-  await frames();
-  const months = await heights();
-  await scale.getByRole('button', { name: 'Weeks' }).click();
-  await expect(scale.getByRole('button', { name: 'Weeks' })).toHaveAttribute('aria-pressed', 'true');
-  const weeks = await heights();
-  // Lanes far below the view take their new height at once, so nothing moves when they come into view.
-  const last = await scrollTo('end');
-  await frames();
-  expect(await lanes.last().evaluate(lane => lane.getBoundingClientRect().top), 'the view stays put').toBe(last);
-  await page.evaluate(() => App.refreshRoadmap());
-  expect(weeks, 'heights as a fresh drawing gives them').toEqual(await heights());
-  expect(weeks.at(-1), 'the zoom made the far lanes shorter').toBeLessThan(months.at(-1));
-  expect(weeks.filter(height => !Number.isInteger(height)), 'whole-pixel lanes').toEqual([]);
-  await scrollTo('top');
-  // The name's two lines make its lane taller than one row needs; its bars stay in the middle.
-  const grown = lanes.filter({ has: page.getByRole('heading', { name: long, exact: true }) });
-  const { height, gaps } = await grown.evaluate(lane => {
-    const box = lane.getBoundingClientRect();
-    return { height: box.height, gaps: [...lane.querySelectorAll('.bar')].map(bar => { const b = bar.getBoundingClientRect(); return [b.top - box.top, box.bottom - b.bottom]; }) };
+  const { project, track } = instance.projects[0];
+  // A long epic leaves room to scroll today under the rail.
+  await command(instance.api, 'epic.create', { projectId: project.id, trackId: track.id, title: 'Platform migration', startDate: day(-365), endDate: day(365) });
+  await openApp(page, instance, `roadmap/${project.id}?scale=months`);
+  // Today's label and line scroll to the middle of the rail.
+  const covered = await page.evaluate(() => {
+    const scroll = document.getElementById('rmScroll'), label = document.querySelector('.rt-today'), rail = document.querySelector('.rm-axis .rail-cell');
+    const middle = box => box.left + box.width / 2;
+    scroll.scrollLeft += middle(label.getBoundingClientRect()) - middle(rail.getBoundingClientRect());
+    const box = label.getBoundingClientRect(), x = middle(box), lane = document.querySelector('.lane').getBoundingClientRect();
+    return [rail.contains(document.elementFromPoint(x, box.top + box.height / 2)), document.querySelector('.lane .rail-cell').contains(document.elementFromPoint(x, lane.top + lane.height / 2))];
   });
-  expect(height, 'the name needs more than one row').toBeGreaterThan(88);
-  expect(gaps.length).toBe(2);
-  for (const [above, below] of gaps) expect(Math.abs(above - below), `bar gaps ${above} and ${below}`).toBeLessThanOrEqual(1);
+  expect(covered).toEqual([true, true]);
 });
 
 test.describe('on a phone', () => {
@@ -217,46 +352,24 @@ test.describe('on a phone', () => {
     await expect(page.getByRole('group', { name: 'Timeline scale' })).toBeHidden();
   });
 
-  test('a short lane\'s name stays clear of its grip and ⋮, and its rail cell fits in the lane', async ({ page, instance }) => {
+  test('each track\'s head sits above its lane, its 32 px grip and menu clear of its name', async ({ page, instance }) => {
     const { project } = instance.projects[0];
-    // Seven tracks make every lane as short as a lane gets.
-    for (const name of ['Platform and infrastructure', 'Customer support tools', 'Growth experiments', 'Internationalization', 'Billing', 'Data']) await command(instance.api, 'track.create', { projectId: project.id, name });
+    for (const name of ['Platform and infrastructure for every region', 'Billing']) await command(instance.api, 'track.create', { projectId: project.id, name });
     await openApp(page, instance, 'roadmap');
     const lanes = await page.locator('.lane').evaluateAll(all => all.map(lane => {
-      const head = lane.querySelector('.lane-head').getBoundingClientRect(), controls = lane.querySelector('.head-ctl').getBoundingClientRect(), text = document.createRange();
-      text.selectNodeContents(lane.querySelector('.name'));
-      const covered = [...text.getClientRects()].some(line => line.right > controls.left && line.left < controls.right && line.bottom > controls.top && line.top < controls.bottom);
-      const fits = [...lane.querySelector('.lane-head').children].every(child => { const box = child.getBoundingClientRect(); return box.top >= head.top && box.bottom <= head.bottom; });
-      return { name: lane.querySelector('.name').textContent, covered, fits };
+      const head = lane.querySelector('.lane-head').getBoundingClientRect(), body = lane.querySelector('.rt-body').getBoundingClientRect();
+      const name = lane.querySelector('.name').getBoundingClientRect(), grip = lane.querySelector('.grip').getBoundingClientRect();
+      return { above: head.bottom <= body.top + 1, clear: name.right <= grip.left, grip: [grip.width, grip.height], fits: head.right <= innerWidth };
     }));
-    expect(lanes.length).toBe(7);
-    expect(lanes.filter(lane => lane.covered || !lane.fits)).toEqual([]);
-  });
-
-  test('marks scrolled under the rail stay behind it, also on its row lines', async ({ page, instance }) => {
-    // The lanes hold still instead of sliding when the Roadmap's read draws them again.
-    await page.emulateMedia({ reducedMotion: 'reduce' });
-    const { project } = instance.projects[0];
-    await command(instance.api, 'track.create', { projectId: project.id, name: 'Second track' });
-    await openApp(page, instance, 'roadmap');
-    // Today's pill and line scroll to the middle of the rail, where Track is.
-    const covered = await page.evaluate(() => {
-      const scroll = document.getElementById('rmScroll'), pill = document.querySelector('.today-pill'), rail = document.querySelector('.rm-axis .rail-cell');
-      const middle = box => box.left + box.width / 2;
-      scroll.scrollLeft += middle(pill.getBoundingClientRect()) - middle(rail.getBoundingClientRect());
-      const box = pill.getBoundingClientRect(), x = middle(box);
-      // The axis's line and the line between the lanes are their rail cells' too. The last lane's meets the month row.
-      const lines = [...document.querySelectorAll('.rm-axis, .lane')].slice(0, -1).map(row => row.querySelector('.rail-cell').contains(document.elementFromPoint(x, row.getBoundingClientRect().bottom - 1)));
-      return [rail.contains(document.elementFromPoint(x, box.top + box.height / 2)), ...lines];
-    });
-    expect(covered).toEqual([true, true, true]);
+    expect(lanes.length).toBe(3);
+    for (const lane of lanes) expect(lane).toEqual({ above: true, clear: true, grip: [32, 32], fits: true });
   });
 });
 
 test('a teammate renaming a task updates the open epic drawer', async ({ page, instance }) => {
   const { epic, task } = instance.projects[0];
   await openApp(page, instance, 'roadmap');
-  await page.locator(`[data-epic="${epic.id}"]`).press('Enter');
+  await page.locator(`.rt-epic-label[data-epic="${epic.id}"]`).press('Enter');
   const rows = page.locator('.peek .task-row');
   await expect(rows).toContainText(task.title);
   await command(instance.writer, 'task.update', { taskId: task.id, title: 'Renamed by a teammate' }, task.revision);
@@ -324,7 +437,7 @@ test('late epic reads keep drawer focus and unsent editor text', async ({ page, 
   const countRead = page.waitForResponse(response => response.url().includes(`/api/projects/${project.id}/counts`));
   await page.getByRole('button', { name: 'Roadmap', exact: true }).click();
   await Promise.all([roadmapRead, countRead]);
-  const epic = page.locator(`[data-epic="${source.id}"]`), drawer = page.locator('.peek');
+  const epic = page.locator(`.rt-epic-label[data-epic="${source.id}"]`), drawer = page.locator('.peek');
   const pattern = `**/api/epics/${source.id}/tasks?*`;
   const first = await holdResponses(page, pattern);
   try {
