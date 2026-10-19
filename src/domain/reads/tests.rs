@@ -1,6 +1,6 @@
 use super::board::{
     BLOCKED_COUNT_SQL, CHECKLIST_COUNTS_SQL, NEWEST_DONE_AFTER_SQL, NEWEST_DONE_SQL,
-    UNDATED_DONE_SQL,
+    TASK_ASSIGNEES_SQL, TASK_BLOCKS_SQL, TASK_MENTIONS_SQL, TASK_VIEWS_SQL, UNDATED_DONE_SQL,
 };
 use super::lanes::{
     DONE_DAYS_SQL, LATE_PLANS_SQL, MARKS_SQL, NAMED_SQL, OPEN_SQL, OVERDUE_SQL, PLAN_DAYS_SQL,
@@ -209,6 +209,54 @@ fn a_task_is_found_by_its_id_or_key_through_their_indexes_whatever_the_statistic
             plan.matches("SEARCH tasks USING INDEX").count() == 2 && !plan.contains("SCAN"),
             "{statistics}\n{plan}"
         );
+    }
+}
+
+#[test]
+fn the_cards_of_a_page_are_read_by_their_ids_whatever_the_statistics() {
+    // No statistics; and those the server gathers for one project of 450
+    // tasks whose deleted tasks each have their own `deleted_at`
+    // (`analyzed_tracks`), which make few tasks look live.
+    let (_empty_root, empty) = crate::db::migrated_connection();
+    let (_root, analyzed) = analyzed_tracks();
+    let ids = r#"["t1","t2"]"#;
+    for (name, c) in [("no statistics", &empty), ("analyzed", &analyzed)] {
+        for (sql, wanted) in [
+            (
+                TASK_VIEWS_SQL,
+                "USING INDEX sqlite_autoindex_tasks_1 (id=?)",
+            ),
+            (
+                TASK_ASSIGNEES_SQL,
+                "USING INDEX sqlite_autoindex_task_assignees_1 (task_id=?)",
+            ),
+            (
+                TASK_BLOCKS_SQL,
+                "USING INDEX task_blocks_one_open_idx (task_id=?)",
+            ),
+            (
+                TASK_MENTIONS_SQL,
+                "USING INDEX task_blocks_one_open_idx (task_id=?)",
+            ),
+            (
+                CHECKLIST_COUNTS_SQL,
+                "USING INDEX sqlite_autoindex_task_checklist_items_2 (task_id=?)",
+            ),
+        ] {
+            let plan = if sql.contains("?2") {
+                query_plan_with(c, sql, params![ids, false])
+            } else {
+                query_plan_with(c, sql, params![ids])
+            };
+            // Each table found by the IDs, none read whole or skipped through.
+            let scans = plan
+                .lines()
+                .any(|step| step.contains("SCAN") && !step.contains("VIRTUAL TABLE"));
+            assert!(
+                plan.contains(wanted) && !scans && !plan.contains("ANY("),
+                "{name}: {sql}\n{plan}"
+            );
+        }
     }
 }
 

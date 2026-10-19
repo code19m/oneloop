@@ -402,6 +402,25 @@ fn checklist_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChecklistItem
     })
 }
 
+/// The card fields of the tasks `?1` (a JSON list of IDs) names, each found
+/// by its ID. As `id IN (…)`, statistics of a project whose deleted tasks
+/// each have their own `deleted_at` made SQLite skip through
+/// `tasks_project_status_idx` instead, reading every live task.
+pub(super) const TASK_VIEWS_SQL: &str = "SELECT t.id,t.project_id,t.epic_id,t.task_number,t.task_key,t.title,CASE WHEN ?2 \
+    THEN t.description ELSE NULL END,t.status,t.position,t.deadline,t.created_at,t.updated_at,t.revision,t.completed_at,\
+    t.completion_order,t.checklist_version,t.track_id,t.started_at FROM json_each(?1) j CROSS JOIN tasks t ON t.id=j.value \
+    WHERE t.deleted_at IS NULL";
+/// Their assignees, in the order they were assigned.
+pub(super) const TASK_ASSIGNEES_SQL: &str = "SELECT task_id,user_id FROM task_assignees WHERE task_id IN (SELECT value FROM \
+    json_each(?1)) ORDER BY assigned_at,user_id";
+/// Their open blocks.
+pub(super) const TASK_BLOCKS_SQL: &str = "SELECT task_id,id,reason,created_by,created_at,revision FROM task_blocks WHERE task_id \
+    IN (SELECT value FROM json_each(?1)) AND resolved_at IS NULL";
+/// The mentions in their open blocks' reasons.
+pub(super) const TASK_MENTIONS_SQL: &str = "SELECT b.task_id,m.kind,m.user_id,m.start_offset,m.end_offset,m.label FROM \
+    block_mentions m JOIN task_blocks b ON b.id=m.block_id WHERE b.task_id IN (SELECT value \
+    FROM json_each(?1)) AND b.resolved_at IS NULL ORDER BY m.start_offset,m.id";
+
 /// One bounded set of queries for a page, preserving the caller's order.
 pub(super) fn task_views(
     connection: &rusqlite::Connection,
@@ -413,9 +432,7 @@ pub(super) fn task_views(
     }
     let encoded =
         serde_json::to_string(ids).map_err(|error| AppError::internal(error.to_string()))?;
-    let mut statement=connection.prepare_cached("SELECT id,project_id,epic_id,task_number,task_key,title,CASE WHEN ?2 THEN description \
-                     ELSE NULL END,status,position,deadline,created_at,updated_at,revision,completed_at,completion_order,checklist_version,\
-                     track_id,started_at FROM tasks WHERE id IN (SELECT value FROM json_each(?1)) AND deleted_at IS NULL")?;
+    let mut statement = connection.prepare_cached(TASK_VIEWS_SQL)?;
     let mut tasks = statement
         .query_map(params![encoded, details], |r| {
             Ok(TaskView {
@@ -453,10 +470,7 @@ pub(super) fn task_views(
         })?
         .map(|row| row.map(|task| (task.id.clone(), task)))
         .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
-    let mut statement = connection.prepare_cached(
-        "SELECT task_id,user_id FROM task_assignees WHERE task_id IN (SELECT value FROM \
-                     json_each(?1)) ORDER BY assigned_at,user_id",
-    )?;
+    let mut statement = connection.prepare_cached(TASK_ASSIGNEES_SQL)?;
     for row in statement.query_map([&encoded], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
     })? {
@@ -465,10 +479,7 @@ pub(super) fn task_views(
             task.assignee_ids.push(user);
         }
     }
-    let mut statement = connection.prepare_cached(
-        "SELECT task_id,id,reason,created_by,created_at,revision FROM task_blocks WHERE task_id \
-                     IN (SELECT value FROM json_each(?1)) AND resolved_at IS NULL",
-    )?;
+    let mut statement = connection.prepare_cached(TASK_BLOCKS_SQL)?;
     for row in statement.query_map([&encoded], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -503,9 +514,7 @@ pub(super) fn task_views(
         }
     }
     // Mentions are needed when opening an existing blocker editor from a card.
-    let mut statement=connection.prepare_cached("SELECT b.task_id,m.kind,m.user_id,m.start_offset,m.end_offset,m.label FROM \
-                     block_mentions m JOIN task_blocks b ON b.id=m.block_id WHERE b.task_id IN (SELECT value \
-                     FROM json_each(?1)) AND b.resolved_at IS NULL ORDER BY m.start_offset,m.id")?;
+    let mut statement = connection.prepare_cached(TASK_MENTIONS_SQL)?;
     for row in statement.query_map([&encoded], |r| {
         Ok((
             r.get::<_, String>(0)?,
