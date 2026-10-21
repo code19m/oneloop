@@ -6,7 +6,7 @@ use oneloop::{
     db,
     files::{
         AttachmentPatch, AttachmentReorder, AttachmentRestore, AttachmentUpload, FileService,
-        FileStore, NewAttachment, PreviewKind, ReadMode,
+        FileStore, HtmlPreview, NewAttachment, PreviewKind, ReadMode,
     },
 };
 use tempfile::TempDir;
@@ -1292,13 +1292,8 @@ async fn html_previews_files_up_to_10_mib_that_arrive_in_chunks() {
     .await;
     assert_eq!(html.preview_kind, Some(PreviewKind::Html));
     assert!(html.html_preview_url.is_some());
-    assert_eq!(
-        service
-            .html_preview_bytes(&fixture.viewer, &html.id)
-            .await
-            .unwrap(),
-        page
-    );
+    let preview = service.html_preview(&fixture.viewer, &html.id, None).await;
+    assert!(matches!(preview, Ok(HtmlPreview::Page { bytes, .. }) if bytes == page));
 
     page.push(b' ');
     let large = upload(
@@ -1315,7 +1310,7 @@ async fn html_previews_files_up_to_10_mib_that_arrive_in_chunks() {
     assert_eq!(large.html_preview_url, None);
     assert!(large.download_url.is_some());
     assert!(matches!(
-        service.html_preview_bytes(&fixture.viewer, &large.id).await,
+        service.html_preview(&fixture.viewer, &large.id, None).await,
         Err(AppError::NotFound { .. })
     ));
 }

@@ -101,6 +101,20 @@ fn next_state(state: u8, ch: u8) -> Option<u8> {
     })
 }
 
+/// A cleaned page for the preview frame, or word that the browser's copy of it
+/// is current.
+#[derive(Debug)]
+pub enum HtmlPreview {
+    NotModified(String),
+    Page { bytes: Vec<u8>, etag: String },
+}
+
+/// The validator of the cleaned page of a file with this checksum. Another
+/// release may clean pages differently, so it doesn't reuse older copies.
+pub(crate) fn html_preview_etag(checksum: &str) -> String {
+    format!("\"{checksum}-html-{}\"", crate::build_info::VERSION)
+}
+
 /// Sanitize HTML for the sandboxed preview frame, at most two files at once,
 /// attachments and Knowledge files together.
 pub(crate) async fn sanitized_html_preview(bytes: Vec<u8>) -> AppResult<Vec<u8>> {

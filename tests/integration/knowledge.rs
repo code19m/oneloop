@@ -637,13 +637,35 @@ async fn files_follow_the_attachment_safety_rules() {
         b"#!/bin/sh\necho ready\n"
     );
 
+    let preview_url = "/api/projects/p1/knowledge/preview/html?path=page.html";
+    let preview = fixture.get(&fixture.member, preview_url).await;
+    assert_eq!(preview.status(), StatusCode::OK);
+    assert_eq!(
+        preview.headers()[header::CACHE_CONTROL],
+        "private, no-cache"
+    );
+    let etag = preview.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let current = fixture
+        .get_with(&fixture.member, preview_url, &[("if-none-match", &etag)])
+        .await;
+    assert_eq!(current.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(
+        current.headers()["content-security-policy"],
+        crate::files::http::PREVIEW_POLICY
+    );
+    // **Reload preview** gets a new copy, which caches don't keep.
     let preview = fixture
-        .get(
+        .get_with(
             &fixture.member,
-            "/api/projects/p1/knowledge/preview/html?path=page.html&reload=1",
+            &format!("{preview_url}&reload=1"),
+            &[("if-none-match", &etag)],
         )
         .await;
     assert_eq!(preview.status(), StatusCode::OK);
+    assert_eq!(
+        preview.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
     assert_eq!(
         preview.headers()["content-security-policy"],
         crate::files::http::PREVIEW_POLICY

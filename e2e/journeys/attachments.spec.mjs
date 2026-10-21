@@ -1,6 +1,7 @@
 // Attachments and their previews: Markdown, HTML, PDF and images.
 import { randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
+import { crc32, deflateSync } from 'node:zlib';
 import { test, expect, openApp, holdResponses } from '../support/test.mjs';
 
 const pdf = readFileSync(new URL('../support/fixtures/document.pdf', import.meta.url));
@@ -138,6 +139,67 @@ test('HTML previews run no scripts and load nothing from other sites, framed or 
   expect(page.url()).toBe(original);
   expect(direct.url()).toBe(src);
   await direct.close();
+});
+
+/** A PNG of `size` × `size` pixels of noise, which doesn't compress: about 120 KB for 200. */
+function noisePng(size, seed) {
+  const chunk = (type, data) => {
+    const length = Buffer.alloc(4), body = Buffer.concat([Buffer.from(type), data]), check = Buffer.alloc(4);
+    length.writeUInt32BE(data.length); check.writeUInt32BE(crc32(body));
+    return Buffer.concat([length, body, check]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(size, 0); header.writeUInt32BE(size, 4); header[8] = 8; header[9] = 2;
+  const rows = Buffer.alloc(size * (size * 3 + 1));
+  for (let index = 0, state = seed; index < rows.length; index++) {
+    state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+    rows[index] = index % (size * 3 + 1) === 0 ? 0 : state >>> 24;
+  }
+  return Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), chunk('IHDR', header), chunk('IDAT', deflateSync(rows)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+test('a 3 MiB HTML report with embedded screenshots previews, and opens again from the cache', async ({ page, instance, browserName, allowedConsoleErrors }) => {
+  allowedConsoleErrors.push(/Content Security Policy|Content-Security-Policy|content security policy|violates.*policy|sandbox|Sandbox|Blocked script/i);
+  const shots = Array.from({ length: 20 }, (_, index) => `<h2>Step ${index + 1}</h2><img alt="Screenshot ${index + 1}" src="data:image/png;base64,${noisePng(200, index + 1).toString('base64')}">`);
+  const report = `<!doctype html><title>Daily report</title><h1 id="status">Static</h1><img alt="Outside" src="${outside}/image.png"><script>document.getElementById('status').textContent='Script ran'</script>${shots.join('\n')}`;
+  expect(report.length).toBeGreaterThan(3 * 1024 * 1024);
+  const escapes = [], previews = [];
+  page.context().on('request', request => { if (request.url().startsWith(outside)) escapes.push(request); });
+  page.on('requestfinished', request => { if (request.url().includes('/preview/html')) previews.push(request); });
+  // Whether the server sent the page, rather than 304 for the browser's copy.
+  // Chromium reports such a copy with no body, Firefox with its 304.
+  const sentPage = async request => (await request.response()).status() !== 304 && (await request.sizes()).responseBodySize > 0;
+  await openApp(page, instance);
+  await attach(page, 'report.html', 'text/html', report);
+  const title = page.locator('.attachment-title').filter({ hasText: 'report.html' });
+  const view = page.frameLocator('iframe.html-preview');
+  const shown = async () => {
+    await expect(page.locator('iframe.html-preview')).toHaveAttribute('sandbox', '');
+    await expect(view.getByRole('img', { name: 'Screenshot 20' })).toHaveJSProperty('naturalWidth', 200);
+    await expect(view.locator('#status')).toHaveText('Static');
+  };
+  await title.click();
+  await shown();
+  expect(await sent(escapes)).toEqual([]);
+  await expect.poll(() => previews.length).toBe(1);
+  // WebKit reports the copy it checked with the server as a new response, so
+  // only the other browsers show what the server sent.
+  if (browserName === 'webkit') return;
+  expect(await sentPage(previews[0])).toBe(true);
+
+  // Opening the file again checks the browser's copy and downloads nothing.
+  await page.getByRole('button', { name: 'Close file preview' }).click();
+  await title.click();
+  await shown();
+  await expect.poll(() => previews.length).toBe(2);
+  expect(await sentPage(previews[1])).toBe(false);
+
+  // **Reload preview** gets a new copy.
+  await page.getByRole('button', { name: 'Reload preview' }).click();
+  await shown();
+  await expect.poll(() => previews.length).toBe(3);
+  expect(new URL(previews[2].url()).searchParams.get('reload')).toBe('1');
+  expect(await sentPage(previews[2])).toBe(true);
 });
 
 test('Markdown strips app actions and SVG navigation while keeping math, diagrams and footnotes', async ({ page, instance }) => {

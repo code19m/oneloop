@@ -58,7 +58,7 @@ pub(super) async fn synced_project(
 }
 
 #[test]
-fn an_html_preview_reads_no_bytes_of_other_files() {
+fn an_html_preview_reads_no_bytes_of_other_files_or_for_a_current_copy() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static CONTENT_READS: AtomicUsize = AtomicUsize::new(0);
     let (_root, mut connection) = crate::db::migrated_connection();
@@ -97,15 +97,18 @@ fn an_html_preview_reads_no_bytes_of_other_files() {
     );
     let transaction = connection.transaction().unwrap();
     assert!(matches!(
-        html_preview_bytes(&transaction, "p", "data.bin"),
+        html_preview_bytes(&transaction, "p", "data.bin", None),
         Err(AppError::NotFound {
             resource: "preview"
         })
     ));
     assert_eq!(CONTENT_READS.load(Ordering::Relaxed), 0);
+    let (etag, bytes) = html_preview_bytes(&transaction, "p", "page.html", None).unwrap();
+    assert_eq!(bytes.unwrap(), b"<p>hi</p>");
+    assert_eq!(CONTENT_READS.load(Ordering::Relaxed), 1);
     assert_eq!(
-        html_preview_bytes(&transaction, "p", "page.html").unwrap(),
-        b"<p>hi</p>"
+        html_preview_bytes(&transaction, "p", "page.html", Some(&etag)).unwrap(),
+        (etag, None)
     );
     assert_eq!(CONTENT_READS.load(Ordering::Relaxed), 1);
 }
@@ -132,11 +135,8 @@ async fn html_that_older_syncs_stored_without_a_preview_previews_at_once() {
         .unwrap();
     let view = service.view(&people[0], "p").await.unwrap();
     assert_eq!(view.files[0].kind, Some(PreviewKind::Html));
-    assert_eq!(
-        service
-            .html_preview(&people[0], "p", "report.html")
-            .await
-            .unwrap(),
-        page
-    );
+    let preview = service
+        .html_preview(&people[0], "p", "report.html", None)
+        .await;
+    assert!(matches!(preview, Ok(HtmlPreview::Page { bytes, .. }) if bytes == page));
 }

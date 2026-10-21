@@ -50,13 +50,12 @@ struct FileQuery {
     path: String,
 }
 
-/// The preview frame adds `reload` so a restart always fetches again.
+/// **Reload preview** adds `reload`, so the page is read and cleaned again.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PreviewQuery {
     path: String,
-    #[serde(default, rename = "reload")]
-    _reload: Option<String>,
+    reload: Option<String>,
 }
 
 async fn view(
@@ -119,11 +118,15 @@ async fn html_preview(
     headers: HeaderMap,
 ) -> AppResult<Response> {
     file_response::require_safe_destination(&headers)?;
-    let bytes = state
+    let reload = query.reload.is_some();
+    let validator = (!reload)
+        .then(|| file_response::validator(&headers))
+        .flatten();
+    let preview = state
         .knowledge
-        .html_preview(&actor, &project_id, &query.path)
+        .html_preview(&actor, &project_id, &query.path, validator)
         .await?;
-    Ok(file_response::html_preview(bytes))
+    Ok(file_response::html_preview(preview, reload))
 }
 
 async fn file(

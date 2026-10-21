@@ -15,8 +15,8 @@ use crate::{
     auth::Actor,
     clock::unix_now,
     files::{
-        AttachmentView, BlobState, MAX_HTML_PREVIEW_BYTES, MAX_TEXT_PREVIEW_BYTES, PreviewKind,
-        StoredFile, sanitized_html_preview,
+        AttachmentView, BlobState, HtmlPreview, MAX_HTML_PREVIEW_BYTES, MAX_TEXT_PREVIEW_BYTES,
+        PreviewKind, StoredFile, html_preview_etag, sanitized_html_preview,
     },
 };
 
@@ -49,7 +49,10 @@ impl FileService {
             .db
             .snapshot(move |connection| readable(connection, &actor_tx, &id, mode))
             .await?;
-        let etag = file_etag(&stored.attachment.checksum, mode == ReadMode::Source);
+        let etag = match mode {
+            ReadMode::HtmlPreview => html_preview_etag(&stored.attachment.checksum),
+            _ => file_etag(&stored.attachment.checksum, mode == ReadMode::Source),
+        };
         if etag_matches(validator.as_deref(), &etag) {
             self.keep_temporary(&stored.attachment).await?;
             return Ok(ConditionalRead::NotModified(etag));
@@ -110,14 +113,21 @@ impl FileService {
             .await
     }
 
-    pub async fn html_preview_bytes(
+    /// The cleaned page of an HTML attachment. A `validator` that matches
+    /// answers without reading or cleaning the file again.
+    pub async fn html_preview(
         &self,
         actor: &Actor,
         attachment_id: &str,
-    ) -> AppResult<Vec<u8>> {
-        let read = self
-            .open_for_read(actor, attachment_id, ReadMode::HtmlPreview)
-            .await?;
+        validator: Option<String>,
+    ) -> AppResult<HtmlPreview> {
+        let read = match self
+            .open_for_read_conditional(actor, attachment_id, ReadMode::HtmlPreview, validator)
+            .await?
+        {
+            ConditionalRead::Modified(read) => *read,
+            ConditionalRead::NotModified(etag) => return Ok(HtmlPreview::NotModified(etag)),
+        };
         let mut bytes = Vec::with_capacity(read.size as usize);
         read.file
             .take(MAX_HTML_PREVIEW_BYTES + 1)
@@ -128,7 +138,10 @@ impl FileService {
                 resource: "preview",
             });
         }
-        sanitized_html_preview(bytes).await
+        Ok(HtmlPreview::Page {
+            bytes: sanitized_html_preview(bytes).await?,
+            etag: read.etag,
+        })
     }
 }
 

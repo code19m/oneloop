@@ -35,7 +35,7 @@ use crate::{
     auth::{Actor, ActorSource, refresh_actor_connection},
     blocking::{Lane, PerPerson},
     collaboration::ActivityInput,
-    files::{MAX_TEXT_PREVIEW_BYTES, PreviewKind},
+    files::{HtmlPreview, MAX_TEXT_PREVIEW_BYTES, PreviewKind},
 };
 use catalog::Catalog;
 
@@ -426,26 +426,34 @@ impl KnowledgeService {
             .await
     }
 
-    /// Sanitized HTML for the sandboxed preview frame.
+    /// Sanitized HTML for the sandboxed preview frame. A `validator` that
+    /// matches answers without reading or cleaning the file again.
     pub async fn html_preview(
         &self,
         actor: &Actor,
         project_id: &str,
         path: &str,
-    ) -> AppResult<Vec<u8>> {
+        validator: Option<String>,
+    ) -> AppResult<HtmlPreview> {
         actor.require_ready()?;
         let path = requested_path(path)?;
         let actor = actor.clone();
         let project_id = project_id.to_owned();
-        let bytes = self
+        let (etag, bytes) = self
             .inner
             .db
             .snapshot(move |connection| {
                 authorize_read(connection, &actor, &project_id)?;
-                html_preview_bytes(connection, &project_id, &path)
+                html_preview_bytes(connection, &project_id, &path, validator.as_deref())
             })
             .await?;
-        crate::files::sanitized_html_preview(bytes).await
+        Ok(match bytes {
+            Some(bytes) => HtmlPreview::Page {
+                bytes: crate::files::sanitized_html_preview(bytes).await?,
+                etag,
+            },
+            None => HtmlPreview::NotModified(etag),
+        })
     }
 }
 
@@ -537,28 +545,48 @@ fn is_manager(actor: &Actor) -> bool {
     actor.is_admin && matches!(actor.source, ActorSource::BrowserSession { .. })
 }
 
-/// The bytes of an HTML file to preview. The file's kind is checked first, so
-/// a request for another file, up to 10 MiB, never loads it.
-fn html_preview_bytes(connection: &Connection, project_id: &str, path: &str) -> AppResult<Vec<u8>> {
-    let (rowid, media_type, kind, size): (i64, String, Option<String>, i64) = connection
-        .query_row(
-            "SELECT rowid,media_type,preview_kind,size FROM knowledge_files
-             WHERE project_id=?1 AND path=?2",
-            params![project_id, path],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .optional()?
-        .ok_or(AppError::NotFound { resource: "file" })?;
+/// The preview validator of an HTML file, and its bytes unless `validator`
+/// matches. The file's kind and validator are checked first, so a request for
+/// another file, up to 10 MiB, or for a current copy never loads the bytes.
+fn html_preview_bytes(
+    connection: &Connection,
+    project_id: &str,
+    path: &str,
+    validator: Option<&str>,
+) -> AppResult<(String, Option<Vec<u8>>)> {
+    let (rowid, media_type, kind, size, checksum): (i64, String, Option<String>, i64, String) =
+        connection
+            .query_row(
+                "SELECT rowid,media_type,preview_kind,size,checksum FROM knowledge_files
+                 WHERE project_id=?1 AND path=?2",
+                params![project_id, path],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or(AppError::NotFound { resource: "file" })?;
     if preview_kind(kind.as_deref(), &media_type, size) != Some(PreviewKind::Html) {
         return Err(AppError::NotFound {
             resource: "preview",
         });
     }
-    Ok(connection.query_row(
+    let etag = crate::files::html_preview_etag(&checksum);
+    if crate::files::etag_matches(validator, &etag) {
+        return Ok((etag, None));
+    }
+    let bytes = connection.query_row(
         "SELECT content FROM knowledge_files WHERE rowid=?1",
         [rowid],
         |row| row.get(0),
-    )?)
+    )?;
+    Ok((etag, Some(bytes)))
 }
 
 /// The preview of a stored file of `size` bytes, from the kind its sync

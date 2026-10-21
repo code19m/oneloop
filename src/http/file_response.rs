@@ -14,7 +14,7 @@ use tokio_util::io::ReaderStream;
 
 use crate::{
     AppError, AppResult,
-    files::{ConditionalRead, FileRead},
+    files::{ConditionalRead, FileRead, HtmlPreview},
 };
 
 /// How the browser treats a file.
@@ -170,20 +170,29 @@ pub(crate) async fn conditional(read: ConditionalRead, request: &HeaderMap) -> A
 /// embedded as data. The app's own `frame-src 'self'` stops the framed page
 /// from navigating to other sites; without scripts, the page opened on its own
 /// navigates only when someone follows a link.
-pub(crate) fn html_preview(bytes: Vec<u8>) -> Response {
-    let mut response = Response::new(Body::from(bytes));
+///
+/// Caches keep the page and check it with the server before each use, as for
+/// other previews. A `reload` gets a new copy, which caches don't keep.
+pub(crate) fn html_preview(preview: HtmlPreview, reload: bool) -> Response {
+    let (mut response, etag) = match preview {
+        HtmlPreview::NotModified(etag) => (StatusCode::NOT_MODIFIED.into_response(), etag),
+        HtmlPreview::Page { bytes, etag } => {
+            let mut response = Response::new(Body::from(bytes));
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/html; charset=utf-8"),
+            );
+            (response, etag)
+        }
+    };
     let headers = response.headers_mut();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/html; charset=utf-8"),
-    );
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("private, no-store"),
-    );
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
+    protect(
+        headers,
+        if reload {
+            Caching::NoStore
+        } else {
+            Caching::Revalidate(etag)
+        },
     );
     headers.insert(
         header::REFERRER_POLICY,

@@ -390,6 +390,62 @@ async fn a_deleted_attachment_comes_back_through_its_restore_endpoint() {
     assert!(restored.download_url.is_some());
 }
 
+#[tokio::test]
+async fn html_previews_revalidate_without_cleaning_again_and_reload_sends_a_new_copy() {
+    let f = Fixture::new().await;
+    let (_, bytes) = f
+        .upload("cached-preview", "report.html", b"<p>Report</p>")
+        .await;
+    let attachment: AttachmentView = serde_json::from_slice(&bytes).unwrap();
+    let url = attachment.html_preview_url.unwrap();
+    let get = |uri: String, cookie: &str, etag: Option<&header::HeaderValue>| {
+        let mut request = Request::builder()
+            .uri(uri)
+            .header(header::COOKIE, cookie)
+            .header("sec-fetch-dest", "iframe");
+        if let Some(etag) = etag {
+            request = request.header(header::IF_NONE_MATCH, etag);
+        }
+        f.app.clone().oneshot(request.body(Body::empty()).unwrap())
+    };
+    let first = get(url.clone(), &f.manager_cookie, None).await.unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(first.headers()[header::CACHE_CONTROL], "private, no-cache");
+    let etag = first.headers()[header::ETAG].clone();
+    assert_eq!(body_bytes(first).await, &b"<p>Report</p>"[..]);
+
+    // A current copy is answered from the snapshot: the file is not opened.
+    f.db.transaction(|tx| {
+        tx.execute_batch("CREATE TRIGGER forbid_new_read_lease BEFORE INSERT ON file_leases BEGIN SELECT RAISE(ABORT,'unexpected read lease'); END;")?; Ok(())
+    }).await.unwrap();
+    let current = get(url.clone(), &f.manager_cookie, Some(&etag))
+        .await
+        .unwrap();
+    assert_eq!(current.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(current.headers()[header::ETAG], etag);
+    assert_eq!(current.headers()["content-security-policy"], PREVIEW_POLICY);
+    assert!(body_bytes(current).await.is_empty());
+    let hidden = get(url.clone(), &f.outsider_cookie, Some(&etag))
+        .await
+        .unwrap();
+    assert_eq!(hidden.status(), StatusCode::NOT_FOUND);
+    f.db.transaction(|tx| {
+        tx.execute_batch("DROP TRIGGER forbid_new_read_lease")?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    let reload = get(format!("{url}?reload=1"), &f.manager_cookie, Some(&etag))
+        .await
+        .unwrap();
+    assert_eq!(reload.status(), StatusCode::OK);
+    assert_eq!(reload.headers()[header::CACHE_CONTROL], "private, no-store");
+    assert!(!reload.headers().contains_key(header::ETAG));
+    assert_eq!(reload.headers()["content-security-policy"], PREVIEW_POLICY);
+    assert_eq!(body_bytes(reload).await, &b"<p>Report</p>"[..]);
+}
+
 /// The policy of every attachment and Knowledge HTML preview.
 pub(crate) const PREVIEW_POLICY: &str = "sandbox; default-src 'none'; style-src 'unsafe-inline'; \
      img-src data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";

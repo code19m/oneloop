@@ -321,18 +321,30 @@ async fn source_attachment(
     file_response::conditional(read, &headers).await
 }
 
+/// **Reload preview** adds `reload`, so the page is read and cleaned again.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreviewQuery {
+    reload: Option<String>,
+}
+
 async fn html_preview(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Path(attachment_id): Path<String>,
+    ApiQuery(query): ApiQuery<PreviewQuery>,
     headers: HeaderMap,
 ) -> AppResult<Response> {
     file_response::require_safe_destination(&headers)?;
-    let bytes = state
+    let reload = query.reload.is_some();
+    let validator = (!reload)
+        .then(|| file_response::validator(&headers))
+        .flatten();
+    let preview = state
         .files
-        .html_preview_bytes(&actor, &attachment_id)
+        .html_preview(&actor, &attachment_id, validator)
         .await?;
-    Ok(file_response::html_preview(bytes))
+    Ok(file_response::html_preview(preview, reload))
 }
 
 async fn upload_avatar(
