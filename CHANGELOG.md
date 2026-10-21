@@ -6,6 +6,33 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-rc.8] - 2026-10-22
+
+The eighth release candidate. HTML previews of attachments and Knowledge files
+now show files up to 10 MiB, such as reports with many screenshots inside, and
+a preview that can't be shown says why. Opening a preview again usually shows
+the browser's copy instead of downloading it again. This release also updates
+rustls-webpki for a security advisory. Read the upgrade notes before you
+upgrade; if you upgrade from an older release candidate, read the upgrade
+notes of each release after yours too.
+
+### Upgrade notes
+
+- From 0.1.0-rc.7, the database doesn't change: it stays at schema 10. Stop
+  oneloop, install the new version and start it. If you run
+  `oneloop db migrate --backup-dir <directory>` as usual, it prints
+  `database in <data folder> is current (schema 10)` and changes nothing.
+- From 0.1.0-rc.6 or older, read the upgrade notes of 0.1.0-rc.7 too. Stop
+  oneloop, install the new version, and run
+  `oneloop db migrate --backup-dir <directory>`. It saves a backup first, then
+  upgrades the database to schema 10.
+- HTML previews now use temporary disk space in the data folder while they are
+  sent, about the size of the file, and need free disk space above
+  `ONELOOP_DISK_MIN_FREE`, as uploads do. A preview that would leave less says
+  that the server is low on disk space. If the data folder is often near that
+  limit, free some space or give it more. Production setup says what previews
+  cost in memory and disk space.
+
 ### Changed
 
 - HTML previews of attachments and Knowledge files now show files up to
@@ -34,6 +61,13 @@ All notable changes to oneloop are recorded here. The format follows
 
 - Updated rustls-webpki to 0.103.16 (RUSTSEC-2026-0382). oneloop uses it when
   it fetches the metadata document of an AI assistant that connects.
+
+### Distribution
+
+- Docker: `ghcr.io/code19m/oneloop:0.1.0-rc.8`, for linux/amd64 and
+  linux/arm64
+- From source:
+  `cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.8 --locked`
 
 ## [0.1.0-rc.7] - 2026-10-19
 
@@ -1103,7 +1137,8 @@ report what you find.
 - Browser testing covers current Chromium, Firefox and WebKit. Phones and
   tablets have had less testing than desktop browsers.
 
-[Unreleased]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.7...HEAD
+[Unreleased]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.8...HEAD
+[0.1.0-rc.8]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.7...v0.1.0-rc.8
 [0.1.0-rc.7]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.6...v0.1.0-rc.7
 [0.1.0-rc.6]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.5...v0.1.0-rc.6
 [0.1.0-rc.5]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.4...v0.1.0-rc.5
