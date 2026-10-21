@@ -137,7 +137,11 @@ impl KnowledgeService {
                             let kind: Option<String> = row.get(1)?;
                             let file = TextFile {
                                 path: path.clone(),
-                                kind: preview_kind(kind.as_deref(), &row.get::<_, String>(2)?),
+                                kind: preview_kind(
+                                    kind.as_deref(),
+                                    &row.get::<_, String>(2)?,
+                                    size,
+                                ),
                                 size,
                                 updated_at: row.get(3)?,
                                 title: None,

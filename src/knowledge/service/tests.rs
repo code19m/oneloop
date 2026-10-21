@@ -109,3 +109,34 @@ fn an_html_preview_reads_no_bytes_of_other_files() {
     );
     assert_eq!(CONTENT_READS.load(Ordering::Relaxed), 1);
 }
+
+#[tokio::test]
+async fn html_that_older_syncs_stored_without_a_preview_previews_at_once() {
+    // Syncs before 0.1.0-rc.8 stored HTML files over 1 MiB without a kind.
+    let (_root, service, people) = synced_project(Vec::new(), &["admin"]).await;
+    let mut page = b"<!doctype html><p>Report</p>".to_vec();
+    page.resize(2 * 1024 * 1024, b' ');
+    let content = page.clone();
+    service
+        .inner
+        .db
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO knowledge_files(project_id,path,size,media_type,preview_kind,checksum,updated_at,content)
+                 VALUES('p','report.html',?1,'text/html',NULL,'sum',1,?2)",
+                params![content.len() as i64, content],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let view = service.view(&people[0], "p").await.unwrap();
+    assert_eq!(view.files[0].kind, Some(PreviewKind::Html));
+    assert_eq!(
+        service
+            .html_preview(&people[0], "p", "report.html")
+            .await
+            .unwrap(),
+        page
+    );
+}

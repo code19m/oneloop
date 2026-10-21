@@ -33,8 +33,7 @@ use tokio::{
 
 use super::{
     AttachmentView, BlobState, FILE_LEASE_SECONDS, FileStore, MAX_ATTACHMENTS_PER_TASK,
-    MAX_HTML_PREVIEW_BYTES, MAX_TEXT_PREVIEW_BYTES, PreviewKind, StoredFile,
-    detect::preview_kind_from_metadata,
+    MAX_TEXT_PREVIEW_BYTES, PreviewKind, StoredFile, detect::preview_kind_from_metadata,
 };
 use crate::{
     AppError, AppResult, Db,
@@ -332,8 +331,8 @@ fn stored_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredFile> {
     let size = row.get::<_, i64>(4)?.max(0) as u64;
     let media: String = row.get(5)?;
     let state: BlobState = row.get(12)?;
-    let preview = preview_kind_from_metadata(&name, &media)
-        .filter(|kind| *kind != PreviewKind::Html || size <= MAX_HTML_PREVIEW_BYTES);
+    // Decided at each read, so a new limit applies to files uploaded before.
+    let preview = preview_kind_from_metadata(&name, &media).filter(|kind| kind.fits(size));
     let available = state == BlobState::Available;
     let thumbnail = available && thumbnail::makes_thumbnail(&media);
     Ok(StoredFile {

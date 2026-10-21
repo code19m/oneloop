@@ -132,7 +132,7 @@ impl KnowledgeService {
                         Ok((
                             row.get::<_, i64>(0)?,
                             row.get::<_, String>(1)?,
-                            preview_kind(row.get::<_, Option<String>>(2)?.as_deref(), &row.get::<_, String>(3)?),
+                            preview_kind(row.get::<_, Option<String>>(2)?.as_deref(), &row.get::<_, String>(3)?, row.get(4)?),
                             row.get::<_, i64>(4)?,
                             row.get::<_, bool>(5)?,
                         ))

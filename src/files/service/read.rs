@@ -156,10 +156,7 @@ fn readable(
     let (allowed, resource) = match mode {
         ReadMode::Content => (kind.is_some_and(PreviewKind::is_inline_media), "preview"),
         ReadMode::Source => (kind.is_some_and(PreviewKind::has_source), "source"),
-        ReadMode::HtmlPreview => (
-            kind == Some(PreviewKind::Html) && stored.attachment.size <= MAX_HTML_PREVIEW_BYTES,
-            "preview",
-        ),
+        ReadMode::HtmlPreview => (kind == Some(PreviewKind::Html), "preview"),
         ReadMode::Download => (true, "attachment"),
     };
     if !allowed {

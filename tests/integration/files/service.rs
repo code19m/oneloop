@@ -6,7 +6,7 @@ use oneloop::{
     db,
     files::{
         AttachmentPatch, AttachmentReorder, AttachmentRestore, AttachmentUpload, FileService,
-        FileStore, NewAttachment, ReadMode,
+        FileStore, NewAttachment, PreviewKind, ReadMode,
     },
 };
 use tempfile::TempDir;
@@ -1240,7 +1240,7 @@ async fn attachment_order_replays_without_a_second_revision_or_activity_change()
 }
 
 #[tokio::test]
-async fn text_detection_checks_the_whole_file_and_oversized_html_is_download_only() {
+async fn text_detection_checks_the_whole_file() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
     let mut disguised_binary = vec![b'a'; 1024 * 1024 + 32];
@@ -1269,21 +1269,55 @@ async fn text_detection_checks_the_whole_file_and_oversized_html_is_download_onl
                 .is_err()
         );
     }
+}
 
-    let mut large_html = b"<!doctype html><p>safe</p>".to_vec();
-    large_html.resize(1024 * 1024 + 1, b' ');
+#[tokio::test]
+async fn html_previews_files_up_to_10_mib_that_arrive_in_chunks() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service(100 * 1024 * 1024);
+    // A character split across the first mebibyte, which the upload keeps in
+    // memory, and across two of its chunks.
+    let mut page = b"<!doctype html><p>safe</p>".to_vec();
+    page.resize(1024 * 1024 - 1, b' ');
+    page.extend_from_slice("é".as_bytes());
+    page.resize(10 * 1024 * 1024, b' ');
     let html = upload(
         &service,
         &fixture.manager,
-        "large-html",
-        "large.html",
-        &large_html,
+        "html-limit",
+        "report.html",
+        &page,
         false,
     )
     .await;
-    assert_eq!(html.preview_kind, None);
-    assert_eq!(html.html_preview_url, None);
-    assert!(html.download_url.is_some());
+    assert_eq!(html.preview_kind, Some(PreviewKind::Html));
+    assert!(html.html_preview_url.is_some());
+    assert_eq!(
+        service
+            .html_preview_bytes(&fixture.viewer, &html.id)
+            .await
+            .unwrap(),
+        page
+    );
+
+    page.push(b' ');
+    let large = upload(
+        &service,
+        &fixture.manager,
+        "html-over-limit",
+        "large.html",
+        &page,
+        false,
+    )
+    .await;
+    assert_eq!(large.media_type, "text/html");
+    assert_eq!(large.preview_kind, None);
+    assert_eq!(large.html_preview_url, None);
+    assert!(large.download_url.is_some());
+    assert!(matches!(
+        service.html_preview_bytes(&fixture.viewer, &large.id).await,
+        Err(AppError::NotFound { .. })
+    ));
 }
 
 #[tokio::test]

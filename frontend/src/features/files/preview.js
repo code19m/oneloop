@@ -180,8 +180,9 @@ function renderHTML(host,file){
   const current=cachedSource(file.id);if(current){showHTML(host,file,current);return;}
   sourceFor(file,file.sourceUrl).then(source=>{if(preview?.fileId!==file.id)return;if(!source){setTrustedHTML(host,'<div class="preview-unavailable">Preview unavailable. Download the original file.</div>');return;}showHTML(host,file,source);}).catch(()=>{if(preview?.fileId===file.id)setTrustedHTML(host,'<div class="preview-unavailable">Preview unavailable. Download the original file.</div>');});
 }
+// The server decides whether a page has a preview: `htmlView` shows it only
+// with the file's preview address.
 function showHTML(host,file,source){
-  if(source.buffer.byteLength>1024*1024){setTrustedHTML(host,'<div class="preview-unavailable">HTML preview is limited to 1 MiB. Download the original file to view it.</div>');return;}
   htmlView(host,file,new TextDecoder().decode(source.buffer));
 }
 

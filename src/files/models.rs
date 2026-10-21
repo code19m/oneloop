@@ -4,7 +4,7 @@ pub const MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 pub const MAX_ATTACHMENTS_PER_TASK: i64 = 25;
 pub const MAX_AVATAR_BYTES: u64 = 5 * 1024 * 1024;
 pub const MAX_TEXT_PREVIEW_BYTES: u64 = 200 * 1024;
-pub const MAX_HTML_PREVIEW_BYTES: u64 = 1024 * 1024;
+pub const MAX_HTML_PREVIEW_BYTES: u64 = 10 * 1024 * 1024;
 pub const ACCESS_GRACE_SECONDS: i64 = 24 * 60 * 60;
 pub const UPLOAD_RESERVATION_SECONDS: i64 = 60 * 60;
 pub const FILE_LEASE_SECONDS: i64 = 10 * 60;
@@ -50,6 +50,12 @@ impl PreviewKind {
     /// Text, Markdown and HTML, which have a source view.
     pub fn has_source(self) -> bool {
         matches!(self, Self::Text | Self::Markdown | Self::Html)
+    }
+
+    /// Whether a file of `size` bytes gets this preview. Only HTML has a
+    /// limit, because the server cleans the whole page before it is shown.
+    pub fn fits(self, size: u64) -> bool {
+        self != Self::Html || size <= MAX_HTML_PREVIEW_BYTES
     }
 }
 

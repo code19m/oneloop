@@ -328,7 +328,7 @@ impl KnowledgeService {
                         Ok(KnowledgeFile {
                             path: row.get(0)?,
                             size: row.get(1)?,
-                            kind: preview_kind(row.get::<_, Option<String>>(2)?.as_deref(), &row.get::<_, String>(5)?),
+                            kind: preview_kind(row.get::<_, Option<String>>(2)?.as_deref(), &row.get::<_, String>(5)?, row.get(1)?),
                             updated_at: row.get(3)?,
                             version: row.get(4)?,
                         })
@@ -390,7 +390,7 @@ impl KnowledgeService {
                     )
                     .optional()?
                     .ok_or(AppError::NotFound { resource: "file" })?;
-                let kind = preview_kind(kind.as_deref(), &media_type);
+                let kind = preview_kind(kind.as_deref(), &media_type, size);
                 let allowed = match mode {
                     FileMode::Content => kind.is_some_and(PreviewKind::is_inline_media),
                     FileMode::Text => kind.is_some_and(PreviewKind::has_source),
@@ -540,17 +540,16 @@ fn is_manager(actor: &Actor) -> bool {
 /// The bytes of an HTML file to preview. The file's kind is checked first, so
 /// a request for another file, up to 10 MiB, never loads it.
 fn html_preview_bytes(connection: &Connection, project_id: &str, path: &str) -> AppResult<Vec<u8>> {
-    let (rowid, media_type, kind): (i64, String, Option<String>) = connection
+    let (rowid, media_type, kind, size): (i64, String, Option<String>, i64) = connection
         .query_row(
-            "SELECT rowid,media_type,preview_kind FROM knowledge_files
+            "SELECT rowid,media_type,preview_kind,size FROM knowledge_files
              WHERE project_id=?1 AND path=?2",
             params![project_id, path],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()?
         .ok_or(AppError::NotFound { resource: "file" })?;
-    // Only files up to the HTML preview limit are classified as HTML.
-    if preview_kind(kind.as_deref(), &media_type) != Some(PreviewKind::Html) {
+    if preview_kind(kind.as_deref(), &media_type, size) != Some(PreviewKind::Html) {
         return Err(AppError::NotFound {
             resource: "preview",
         });
@@ -562,11 +561,20 @@ fn html_preview_bytes(connection: &Connection, project_id: &str, path: &str) -> 
     )?)
 }
 
-fn preview_kind(value: Option<&str>, media_type: &str) -> Option<PreviewKind> {
-    let kind = PreviewKind::from_stored(value?)?;
+/// The preview of a stored file of `size` bytes, from the kind its sync
+/// detected.
+fn preview_kind(value: Option<&str>, media_type: &str, size: i64) -> Option<PreviewKind> {
+    let kind = match value {
+        Some(value) => PreviewKind::from_stored(value)?,
+        // Syncs before 0.1.0-rc.8 stored HTML over 1 MiB without a kind. The
+        // HTML limit applies when a file is read, as for attachments.
+        None if media_type == "text/html" => PreviewKind::Html,
+        None => return None,
+    };
     // Older snapshots could label binary .md files as Markdown. Every read,
     // listing and catalog must reject that persisted classification.
-    (!kind.has_source() || media_type.starts_with("text/")).then_some(kind)
+    ((!kind.has_source() || media_type.starts_with("text/")) && kind.fits(size.max(0) as u64))
+        .then_some(kind)
 }
 
 fn requested_path(path: &str) -> AppResult<String> {
