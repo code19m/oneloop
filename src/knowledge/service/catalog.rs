@@ -129,10 +129,12 @@ impl KnowledgeService {
                 )?;
                 let listed = statement
                     .query_map(params![project, INDEXED_FILE_BYTES], |row| {
+                        let path = row.get::<_, String>(1)?;
+                        let kind = preview_kind(&path, row.get::<_, Option<String>>(2)?.as_deref(), &row.get::<_, String>(3)?, row.get(4)?);
                         Ok((
                             row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            preview_kind(row.get::<_, Option<String>>(2)?.as_deref(), &row.get::<_, String>(3)?, row.get(4)?),
+                            path,
+                            kind,
                             row.get::<_, i64>(4)?,
                             row.get::<_, bool>(5)?,
                         ))

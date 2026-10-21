@@ -12,7 +12,7 @@ pub(crate) use preview::{html_preview_etag, html_preview_turn, sanitized_html_pr
 mod service;
 mod storage;
 
-pub(crate) use detect::classify_bytes;
+pub(crate) use detect::{classify_bytes, preview_kind_from_metadata};
 pub use models::*;
 pub use service::{
     AttachmentUpload, AvatarSlot, FileRead, FileRuntimeReport, FileService, LeasedFile,

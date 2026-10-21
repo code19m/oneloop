@@ -325,10 +325,11 @@ impl KnowledgeService {
                 )?;
                 let files = statement
                     .query_map([&project_id], |row| {
+                        let path: String = row.get(0)?;
                         Ok(KnowledgeFile {
-                            path: row.get(0)?,
+                            kind: preview_kind(&path, row.get::<_, Option<String>>(2)?.as_deref(), &row.get::<_, String>(5)?, row.get(1)?),
+                            path,
                             size: row.get(1)?,
-                            kind: preview_kind(row.get::<_, Option<String>>(2)?.as_deref(), &row.get::<_, String>(5)?, row.get(1)?),
                             updated_at: row.get(3)?,
                             version: row.get(4)?,
                         })
@@ -390,7 +391,7 @@ impl KnowledgeService {
                     )
                     .optional()?
                     .ok_or(AppError::NotFound { resource: "file" })?;
-                let kind = preview_kind(kind.as_deref(), &media_type, size);
+                let kind = preview_kind(&path, kind.as_deref(), &media_type, size);
                 let allowed = match mode {
                     FileMode::Content => kind.is_some_and(PreviewKind::is_inline_media),
                     FileMode::Text => kind.is_some_and(PreviewKind::has_source),
@@ -585,7 +586,7 @@ fn html_preview_file(
             )
             .optional()?
             .ok_or(AppError::NotFound { resource: "file" })?;
-    if preview_kind(kind.as_deref(), &media_type, size) != Some(PreviewKind::Html) {
+    if preview_kind(path, kind.as_deref(), &media_type, size) != Some(PreviewKind::Html) {
         return Err(AppError::NotFound {
             resource: "preview",
         });
@@ -607,13 +608,18 @@ fn html_preview_file(
 
 /// The preview of a stored file of `size` bytes, from the kind its sync
 /// detected.
-fn preview_kind(value: Option<&str>, media_type: &str, size: i64) -> Option<PreviewKind> {
+fn preview_kind(
+    path: &str,
+    value: Option<&str>,
+    media_type: &str,
+    size: i64,
+) -> Option<PreviewKind> {
     let kind = match value {
         Some(value) => PreviewKind::from_stored(value)?,
         // Syncs before 0.1.0-rc.8 stored HTML over 1 MiB without a kind. The
         // HTML limit applies when a file is read, as for attachments.
-        None if media_type == "text/html" => PreviewKind::Html,
-        None => return None,
+        None => crate::files::preview_kind_from_metadata(path, media_type)
+            .filter(|kind| *kind == PreviewKind::Html)?,
     };
     // Older snapshots could label binary .md files as Markdown. Every read,
     // listing and catalog must reject that persisted classification.

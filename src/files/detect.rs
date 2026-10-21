@@ -6,7 +6,7 @@ use std::path::Path;
 use super::PreviewKind;
 use crate::{AppError, AppResult};
 
-pub(super) fn preview_kind_from_metadata(name: &str, media: &str) -> Option<PreviewKind> {
+pub(crate) fn preview_kind_from_metadata(name: &str, media: &str) -> Option<PreviewKind> {
     if media.starts_with("image/") {
         Some(PreviewKind::Image)
     } else if media == "application/pdf" {
