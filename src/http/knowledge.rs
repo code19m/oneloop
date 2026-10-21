@@ -119,9 +119,7 @@ async fn html_preview(
 ) -> AppResult<Response> {
     file_response::require_safe_destination(&headers)?;
     let reload = query.reload.is_some();
-    let validator = (!reload)
-        .then(|| file_response::validator(&headers))
-        .flatten();
+    let validator = file_response::preview_validator(&headers, reload);
     let preview = state
         .knowledge
         .html_preview(&actor, &project_id, &query.path, validator)

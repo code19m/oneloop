@@ -43,6 +43,12 @@ pub(crate) fn validator(request: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The validator of an HTML preview request. **Reload preview** asks for a
+/// new copy, so its request has none.
+pub(crate) fn preview_validator(request: &HeaderMap, reload: bool) -> Option<String> {
+    if reload { None } else { validator(request) }
+}
+
 /// Refuses requests that would load a file as code or a plugin.
 pub(crate) fn require_safe_destination(request: &HeaderMap) -> AppResult<()> {
     if request
