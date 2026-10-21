@@ -3,7 +3,7 @@
 //! up the memory each job needs.
 
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -76,46 +76,57 @@ impl Turn {
     }
 }
 
-/// One place per person for work that waits for a lane, so no one person can
-/// take every place in its queue.
+/// A few places per person for work that waits for a lane or holds a
+/// resource, so no one person can take every place in its queue.
 #[derive(Clone)]
 pub(crate) struct PerPerson {
-    people: Arc<Mutex<HashSet<String>>>,
+    /// The places each person holds.
+    people: Arc<Mutex<HashMap<String, usize>>>,
+    /// The places one person may hold at once.
+    each: usize,
     /// The most people with a place at once.
     max: usize,
 }
 
 /// A person's place, until it is dropped.
 pub(crate) struct Place {
-    people: Arc<Mutex<HashSet<String>>>,
+    people: Arc<Mutex<HashMap<String, usize>>>,
     user_id: String,
 }
 
 /// Why a person gets no place.
 pub(crate) enum Taken {
-    /// They have one already.
+    /// They hold all of theirs already.
     Mine,
     /// All places are taken.
     Full,
 }
 
 impl PerPerson {
+    /// One place each, for at most `max` people.
     pub(crate) fn new(max: usize) -> Self {
+        Self::with_places(1, max)
+    }
+
+    /// `each` places each, for at most `max` people.
+    pub(crate) fn with_places(each: usize, max: usize) -> Self {
         Self {
             people: Arc::default(),
+            each,
             max,
         }
     }
 
     pub(crate) fn claim(&self, user_id: &str) -> Result<Place, Taken> {
         let mut people = self.people.lock().expect("per-person lock");
-        if people.contains(user_id) {
+        let held = people.get(user_id).copied().unwrap_or(0);
+        if held >= self.each {
             return Err(Taken::Mine);
         }
-        if people.len() >= self.max {
+        if held == 0 && people.len() >= self.max {
             return Err(Taken::Full);
         }
-        people.insert(user_id.to_owned());
+        people.insert(user_id.to_owned(), held + 1);
         Ok(Place {
             people: self.people.clone(),
             user_id: user_id.to_owned(),
@@ -125,16 +136,33 @@ impl PerPerson {
 
 impl Drop for Place {
     fn drop(&mut self) {
-        self.people
-            .lock()
-            .expect("per-person lock")
-            .remove(&self.user_id);
+        let mut people = self.people.lock().expect("per-person lock");
+        if let Some(held) = people.get_mut(&self.user_id) {
+            *held -= 1;
+            if *held == 0 {
+                people.remove(&self.user_id);
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_person_holds_up_to_their_places_and_people_up_to_the_most() {
+        let places = PerPerson::with_places(3, 2);
+        let mine: Vec<Place> = (0..3).map(|_| places.claim("a").ok().unwrap()).collect();
+        assert!(matches!(places.claim("a"), Err(Taken::Mine)));
+        let other = places.claim("b").ok().unwrap();
+        assert!(matches!(places.claim("c"), Err(Taken::Full)));
+        drop(other);
+        drop(places.claim("c").ok().unwrap());
+        let mut mine = mine;
+        mine.pop();
+        assert!(places.claim("a").is_ok());
+    }
 
     #[tokio::test]
     async fn a_turn_lasts_until_its_job_ends_even_when_its_request_does() {

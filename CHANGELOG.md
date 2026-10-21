@@ -12,9 +12,10 @@ All notable changes to oneloop are recorded here. The format follows
   10 MiB instead of 1 MiB, such as reports with many screenshots inside the
   file. Files uploaded or synced before preview at once. While a preview is
   sent, its prepared page waits in a temporary file in the data folder
-  instead of in memory, and each person has one attachment page and one
-  Knowledge page prepared or sent at a time. Production setup says what
-  previews cost in memory and disk space.
+  instead of in memory. Previews now need free disk space above
+  `ONELOOP_DISK_MIN_FREE`, as uploads do, and each person can have three
+  attachment pages and three Knowledge pages being sent at once. Production
+  setup says what previews cost in memory and disk space.
 - Opening an HTML preview again usually shows the browser's copy when the file
   hasn't changed, instead of downloading it again. **Reload preview** still
   gets a new copy from the server.

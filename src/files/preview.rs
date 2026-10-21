@@ -15,7 +15,7 @@ use tokio::io::{AsyncRead, ReadBuf};
 use crate::{
     AppError, AppResult,
     blocking::{Lane, PerPerson, Place, Turn},
-    disk::{DiskAdmission, DiskReservation},
+    disk::DiskAdmission,
 };
 
 const NOT_UTF8: &[u8] =
@@ -140,12 +140,11 @@ pub(crate) fn html_preview_etag(checksum: &str) -> String {
 /// A cleaned page in a file that has no name, so its disk space returns
 /// when the page is dropped, however its response ends. A response reads it
 /// one buffer at a time, so a slow client holds no more of it in memory. The
-/// page keeps its person's place, so no one holds more than one at a time.
+/// page keeps one of its person's places for pages being sent.
 pub struct CleanedPage {
     file: tokio::fs::File,
     len: u64,
-    _space: DiskReservation,
-    _place: Place,
+    _sending: Place,
 }
 
 impl CleanedPage {
@@ -171,36 +170,62 @@ impl AsyncRead for CleanedPage {
 /// How long a preview waits for its turn before it is told to try again.
 const QUEUE_WAIT: Duration = Duration::from_secs(5);
 
-/// A turn to read and clean one page, and its person's place in the queue.
+/// Pages one person may have being sent at once: enough for a second tab or
+/// device, and for an old connection that stalled.
+const PAGES_SENT_EACH: usize = 3;
+
+/// What a person hears when all their places are taken.
+const STILL_LOADING: &str = "your other HTML previews are still loading; try again shortly";
+
+/// The people with HTML previews under way, of attachments or of Knowledge
+/// files.
+#[derive(Clone)]
+pub(crate) struct Previewers {
+    /// One page each that waits for its turn or is cleaned.
+    preparing: PerPerson,
+    /// Pages from their first wait until their response ends.
+    sending: PerPerson,
+}
+
+impl Default for Previewers {
+    fn default() -> Self {
+        Self {
+            preparing: PerPerson::new(usize::MAX),
+            sending: PerPerson::with_places(PAGES_SENT_EACH, usize::MAX),
+        }
+    }
+}
+
+/// A turn to read and clean one page, and its person's places.
 pub(crate) struct PreviewTurn {
-    _place: Place,
+    preparing: Place,
+    sending: Place,
     turn: Turn,
 }
 
 /// A turn to read and clean a page for `user_id`, one of `previewers`.
 /// Attachments and Knowledge files share two turns, so however many previews
-/// open at once, at most two pages are in memory. Each person has one
-/// preview of each that waits, is cleaned or is being sent, and a preview
-/// that waits five seconds is told to try again.
+/// open at once, at most two pages are in memory. Each person has one page of
+/// each that waits or is cleaned, and three that are being sent; a page that
+/// waits five seconds is told to try again.
 pub(crate) async fn html_preview_turn(
-    previewers: &PerPerson,
+    previewers: &Previewers,
     user_id: &str,
 ) -> AppResult<PreviewTurn> {
     static PREVIEWS: LazyLock<Lane> = LazyLock::new(|| Lane::new("HTML preview", 2));
-    let place = previewers.claim(user_id).map_err(|_| {
-        AppError::Unavailable(
-            "your previous HTML preview is still loading; try again shortly".into(),
-        )
-    })?;
+    let still_loading = |_| AppError::Unavailable(STILL_LOADING.into());
+    let sending = previewers.sending.claim(user_id).map_err(still_loading)?;
+    let preparing = previewers.preparing.claim(user_id).map_err(still_loading)?;
     let turn = PREVIEWS.turn_within(QUEUE_WAIT).await?;
     Ok(PreviewTurn {
-        _place: place,
+        preparing,
+        sending,
         turn,
     })
 }
 
-/// Cleans `bytes`, read in `turn`, into a page in the `folder` for previews.
-/// The page takes disk space from `disk` until it is dropped.
+/// Cleans `bytes`, read in `turn`, into a page in the `folder` for previews,
+/// if `disk` has room for it.
 pub(crate) async fn cleaned_html_preview(
     turn: PreviewTurn,
     bytes: Vec<u8>,
@@ -208,17 +233,18 @@ pub(crate) async fn cleaned_html_preview(
     disk: DiskAdmission,
 ) -> AppResult<CleanedPage> {
     let PreviewTurn {
-        _place: place,
+        preparing,
+        sending,
         turn,
     } = turn;
-    let (file, len, space) = turn
+    let (file, len) = turn
         .run(move || clean_into_file(&bytes, &folder, &disk))
         .await??;
+    drop(preparing);
     Ok(CleanedPage {
         file: tokio::fs::File::from_std(file),
         len,
-        _space: space,
-        _place: place,
+        _sending: sending,
     })
 }
 
@@ -226,7 +252,7 @@ fn clean_into_file(
     bytes: &[u8],
     folder: &Path,
     disk: &DiskAdmission,
-) -> AppResult<(std::fs::File, u64, DiskReservation)> {
+) -> AppResult<(std::fs::File, u64)> {
     // Each escaped `<` grows by three bytes; nothing else grows.
     let brackets = bytes.iter().filter(|byte| **byte == b'<').count();
     let most = bytes.len() + 3 * brackets + NOT_UTF8.len();
@@ -238,7 +264,10 @@ fn clean_into_file(
     drop(out);
     let len = file.stream_position()?;
     file.rewind()?;
-    Ok((file, len, space))
+    // The written file now takes its space, which the free-space floor sees,
+    // so keeping the reservation would count the page twice.
+    drop(space);
+    Ok((file, len))
 }
 
 /// A new private file in `folder` whose name is removed at once. If a crash

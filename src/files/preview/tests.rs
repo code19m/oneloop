@@ -61,39 +61,56 @@ fn cleaning_holds_one_byte_per_byte_of_the_file_whatever_its_tags() {
 }
 
 #[tokio::test]
-async fn a_cleaned_page_leaves_no_name_in_the_previews_folder() {
+async fn a_cleaned_page_has_no_name_and_its_disk_space_counts_once() {
     let folder = tempfile::tempdir().unwrap();
-    let disk = DiskAdmission::new(folder.path(), 0, Default::default());
-    let source = b"<p>Report</p><iframe src=x></iframe>".to_vec();
-    let turn = html_preview_turn(&PerPerson::new(usize::MAX), "reader")
+    let reservations = crate::disk::Reservations::default();
+    let disk = DiskAdmission::new(folder.path(), 0, reservations.clone());
+    // A page of `<` grows four times: 4 MiB on disk.
+    let source = vec![b'<'; 1024 * 1024];
+    let turn = html_preview_turn(&Previewers::default(), "reader")
         .await
         .unwrap();
-    let mut page = cleaned_html_preview(turn, source.clone(), folder.path().into(), disk)
+    let mut page = cleaned_html_preview(turn, source, folder.path().into(), disk)
         .await
         .unwrap();
     assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 0);
+    // The written file already lowers the free space that the floor is
+    // compared with, so a reservation kept too would count the page again.
+    let free = fs4::available_space(folder.path()).unwrap();
+    let floor = DiskAdmission::new(folder.path(), free - 2 * 1024 * 1024, reservations);
+    assert_eq!(floor.deficit(0).unwrap(), 0);
     let mut text = Vec::new();
     tokio::io::AsyncReadExt::read_to_end(&mut page, &mut text)
         .await
         .unwrap();
-    assert_eq!(text, b"<p>Report</p>");
+    assert_eq!(text, "&lt;".repeat(1024 * 1024).as_bytes());
     assert_eq!(page.len(), text.len() as u64);
 }
 
 #[tokio::test]
-async fn each_person_has_one_preview_that_waits_is_cleaned_or_is_sent() {
+async fn each_person_has_one_page_that_waits_or_is_cleaned_and_three_being_sent() {
     let folder = tempfile::tempdir().unwrap();
     let disk = DiskAdmission::new(folder.path(), 0, Default::default());
-    let previewers = PerPerson::new(usize::MAX);
+    let clean = |turn| {
+        cleaned_html_preview(
+            turn,
+            b"<p>Report</p>".to_vec(),
+            folder.path().into(),
+            disk.clone(),
+        )
+    };
+    let previewers = Previewers::default();
     let busy = |turn: AppResult<PreviewTurn>| matches!(turn, Err(AppError::Unavailable(_)));
-    let turn = html_preview_turn(&previewers, "reader").await.unwrap();
+    let first = html_preview_turn(&previewers, "reader").await.unwrap();
     assert!(busy(html_preview_turn(&previewers, "reader").await));
     drop(html_preview_turn(&previewers, "other").await.unwrap());
-    let page = cleaned_html_preview(turn, b"<p>Report</p>".to_vec(), folder.path().into(), disk)
-        .await
-        .unwrap();
+    let mut pages = vec![clean(first).await.unwrap()];
+    for _ in 0..2 {
+        let turn = html_preview_turn(&previewers, "reader").await.unwrap();
+        pages.push(clean(turn).await.unwrap());
+    }
     assert!(busy(html_preview_turn(&previewers, "reader").await));
-    drop(page);
+    pages.pop();
     drop(html_preview_turn(&previewers, "reader").await.unwrap());
 }
 

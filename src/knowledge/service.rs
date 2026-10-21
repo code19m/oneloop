@@ -74,8 +74,7 @@ pub(super) struct Inner {
     /// People with a search that runs or waits. Each has one at most, so no
     /// one can fill the queue.
     searchers: PerPerson,
-    /// People with an HTML preview that waits or is cleaned, one each.
-    html_previewers: PerPerson,
+    html_previewers: crate::files::Previewers,
 }
 
 /// The Knowledge page: sync state and the file list. Only administrators
@@ -298,7 +297,7 @@ impl KnowledgeService {
                 readers: Lane::new("knowledge reader", 1),
                 searches: Lane::new("knowledge search", 1),
                 searchers: PerPerson::new(usize::MAX),
-                html_previewers: PerPerson::new(usize::MAX),
+                html_previewers: Default::default(),
             }),
         }
     }
