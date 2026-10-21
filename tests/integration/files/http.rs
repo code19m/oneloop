@@ -390,6 +390,150 @@ async fn a_deleted_attachment_comes_back_through_its_restore_endpoint() {
     assert!(restored.download_url.is_some());
 }
 
+#[tokio::test]
+async fn html_previews_revalidate_without_cleaning_again_and_reload_sends_a_new_copy() {
+    let f = Fixture::new().await;
+    let (_, bytes) = f
+        .upload("cached-preview", "report.html", b"<p>Report</p>")
+        .await;
+    let attachment: AttachmentView = serde_json::from_slice(&bytes).unwrap();
+    let url = attachment.html_preview_url.unwrap();
+    let get = |uri: String, cookie: &str, etag: Option<&header::HeaderValue>| {
+        let mut request = Request::builder()
+            .uri(uri)
+            .header(header::COOKIE, cookie)
+            .header("sec-fetch-dest", "iframe");
+        if let Some(etag) = etag {
+            request = request.header(header::IF_NONE_MATCH, etag);
+        }
+        f.app.clone().oneshot(request.body(Body::empty()).unwrap())
+    };
+    let first = get(url.clone(), &f.manager_cookie, None).await.unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(first.headers()[header::CACHE_CONTROL], "private, no-cache");
+    let etag = first.headers()[header::ETAG].clone();
+    assert_eq!(body_bytes(first).await, &b"<p>Report</p>"[..]);
+
+    // A current copy is answered from the snapshot: the file is not opened.
+    f.db.transaction(|tx| {
+        tx.execute_batch("CREATE TRIGGER forbid_new_read_lease BEFORE INSERT ON file_leases BEGIN SELECT RAISE(ABORT,'unexpected read lease'); END;")?; Ok(())
+    }).await.unwrap();
+    let current = get(url.clone(), &f.manager_cookie, Some(&etag))
+        .await
+        .unwrap();
+    assert_eq!(current.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(current.headers()[header::ETAG], etag);
+    assert_eq!(current.headers()["content-security-policy"], PREVIEW_POLICY);
+    assert!(body_bytes(current).await.is_empty());
+    let hidden = get(url.clone(), &f.outsider_cookie, Some(&etag))
+        .await
+        .unwrap();
+    assert_eq!(hidden.status(), StatusCode::NOT_FOUND);
+    f.db.transaction(|tx| {
+        tx.execute_batch("DROP TRIGGER forbid_new_read_lease")?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    let reload = get(format!("{url}?reload=1"), &f.manager_cookie, Some(&etag))
+        .await
+        .unwrap();
+    assert_eq!(reload.status(), StatusCode::OK);
+    assert_eq!(reload.headers()[header::CACHE_CONTROL], "private, no-store");
+    assert!(!reload.headers().contains_key(header::ETAG));
+    assert_eq!(reload.headers()["content-security-policy"], PREVIEW_POLICY);
+    assert_eq!(body_bytes(reload).await, &b"<p>Report</p>"[..]);
+}
+
+#[tokio::test]
+async fn html_preview_errors_are_pages_the_frame_shows_that_say_why() {
+    let f = Fixture::new().await;
+    let (_, bytes) = f
+        .upload("busy-preview", "report.html", b"<p>Report</p>")
+        .await;
+    let attachment: AttachmentView = serde_json::from_slice(&bytes).unwrap();
+    let url = format!("{}?reload=1", attachment.html_preview_url.unwrap());
+    let get = |uri: String| {
+        f.app.clone().oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, &f.manager_cookie)
+                .header("sec-fetch-dest", "iframe")
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+    // Three pages of one person are being sent, as their bodies aren't read.
+    let mut sending = Vec::new();
+    for _ in 0..3 {
+        let response = get(url.clone()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        sending.push(response);
+    }
+    let busy = get(url.clone()).await.unwrap();
+    assert_eq!(busy.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(busy.headers()[header::RETRY_AFTER], "1");
+    let missing = get("/api/attachments/missing/preview/html".into())
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    for (response, problem) in [
+        (busy, "Your other previews are still loading"),
+        (missing, "This file is no longer available"),
+    ] {
+        let headers = response.headers();
+        assert_eq!(headers[header::CONTENT_TYPE], "text/html; charset=utf-8");
+        assert_eq!(headers["content-security-policy"], PREVIEW_POLICY);
+        assert_eq!(headers[header::X_FRAME_OPTIONS], "SAMEORIGIN");
+        assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
+        let page = String::from_utf8(body_bytes(response).await.to_vec()).unwrap();
+        assert!(page.contains(problem), "{page}");
+        assert!(page.contains("<strong>Reload preview</strong>"), "{page}");
+    }
+    // A page that has been sent frees its place.
+    body_bytes(sending.pop().unwrap()).await;
+    assert_eq!(get(url).await.unwrap().status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_signed_out_preview_says_to_sign_in_again_inside_the_frame() {
+    let f = Fixture::new().await;
+    let (_, bytes) = f
+        .upload("signed-out-preview", "report.html", b"<p>Report</p>")
+        .await;
+    let attachment: AttachmentView = serde_json::from_slice(&bytes).unwrap();
+    let get = |uri: String| {
+        f.app.clone().oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, "oneloop_session=ended")
+                .header("sec-fetch-dest", "iframe")
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+    for uri in [
+        attachment.html_preview_url.unwrap(),
+        "/api/projects/p1/knowledge/preview/html?path=page.html".into(),
+    ] {
+        let response = get(uri).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let headers = response.headers();
+        assert_eq!(headers[header::CONTENT_TYPE], "text/html; charset=utf-8");
+        assert_eq!(headers["content-security-policy"], PREVIEW_POLICY);
+        assert_eq!(headers[header::X_FRAME_OPTIONS], "SAMEORIGIN");
+        let page = String::from_utf8(body_bytes(response).await.to_vec()).unwrap();
+        assert!(page.contains("Sign in to oneloop again."), "{page}");
+        assert!(!page.contains("<form"), "{page}");
+    }
+    // Every other route answers as before.
+    let download = get(attachment.download_url.unwrap()).await.unwrap();
+    assert_eq!(download.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(download.headers()[header::X_FRAME_OPTIONS], "DENY");
+    assert_eq!(body_json(download).await["error"]["code"], "unauthorized");
+}
+
 /// The policy of every attachment and Knowledge HTML preview.
 pub(crate) const PREVIEW_POLICY: &str = "sandbox; default-src 'none'; style-src 'unsafe-inline'; \
      img-src data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";

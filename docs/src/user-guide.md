@@ -249,7 +249,9 @@ file. Diagrams show math in their labels as plain text, such as `$$x^2$$`.
 
 HTML previews show the page without running its scripts or loading anything
 from other sites, such as images, styles and fonts. Styles, images and fonts
-inside the file still show. To use the page fully, download it.
+inside the file still show. To use the page fully, download it. The browser
+keeps the page and usually opens it again without downloading it, unless the
+file changed; **Reload preview** gets it from the server again.
 
 Mark a file **Temporary** if oneloop may remove it when storage runs low. A
 removed file then shows **Cleaned up**. oneloop never removes other files by

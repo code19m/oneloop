@@ -111,6 +111,18 @@ pub(crate) async fn require_actor(
     Ok(next.run(request).await)
 }
 
+/// `require_actor` for the HTML preview routes, whose answers show inside the
+/// preview frame: someone signed out reads there that they must sign in again.
+pub(crate) async fn require_actor_in_frame(
+    state: State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    require_actor(state, request, next)
+        .await
+        .unwrap_or_else(super::file_response::html_preview_error)
+}
+
 pub(crate) async fn authenticate_headers(
     state: &AppState,
     headers: &HeaderMap,

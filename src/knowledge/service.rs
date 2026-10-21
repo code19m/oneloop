@@ -35,7 +35,7 @@ use crate::{
     auth::{Actor, ActorSource, refresh_actor_connection},
     blocking::{Lane, PerPerson},
     collaboration::ActivityInput,
-    files::{MAX_TEXT_PREVIEW_BYTES, PreviewKind},
+    files::{HtmlPreview, MAX_TEXT_PREVIEW_BYTES, PreviewKind},
 };
 use catalog::Catalog;
 
@@ -74,6 +74,7 @@ pub(super) struct Inner {
     /// People with a search that runs or waits. Each has one at most, so no
     /// one can fill the queue.
     searchers: PerPerson,
+    html_previewers: crate::files::Previewers,
 }
 
 /// The Knowledge page: sync state and the file list. Only administrators
@@ -296,6 +297,7 @@ impl KnowledgeService {
                 readers: Lane::new("knowledge reader", 1),
                 searches: Lane::new("knowledge search", 1),
                 searchers: PerPerson::new(usize::MAX),
+                html_previewers: Default::default(),
             }),
         }
     }
@@ -325,10 +327,11 @@ impl KnowledgeService {
                 )?;
                 let files = statement
                     .query_map([&project_id], |row| {
+                        let path: String = row.get(0)?;
                         Ok(KnowledgeFile {
-                            path: row.get(0)?,
+                            kind: preview_kind(&path, row.get::<_, Option<String>>(2)?.as_deref(), &row.get::<_, String>(5)?, row.get(1)?),
+                            path,
                             size: row.get(1)?,
-                            kind: preview_kind(row.get::<_, Option<String>>(2)?.as_deref(), &row.get::<_, String>(5)?),
                             updated_at: row.get(3)?,
                             version: row.get(4)?,
                         })
@@ -390,7 +393,7 @@ impl KnowledgeService {
                     )
                     .optional()?
                     .ok_or(AppError::NotFound { resource: "file" })?;
-                let kind = preview_kind(kind.as_deref(), &media_type);
+                let kind = preview_kind(&path, kind.as_deref(), &media_type, size);
                 let allowed = match mode {
                     FileMode::Content => kind.is_some_and(PreviewKind::is_inline_media),
                     FileMode::Text => kind.is_some_and(PreviewKind::has_source),
@@ -426,26 +429,45 @@ impl KnowledgeService {
             .await
     }
 
-    /// Sanitized HTML for the sandboxed preview frame.
+    /// Sanitized HTML for the sandboxed preview frame. A `validator` that
+    /// matches answers without reading or cleaning the file again.
     pub async fn html_preview(
         &self,
         actor: &Actor,
         project_id: &str,
         path: &str,
-    ) -> AppResult<Vec<u8>> {
+        validator: Option<String>,
+    ) -> AppResult<HtmlPreview> {
         actor.require_ready()?;
         let path = requested_path(path)?;
+        let user_id = actor.user_id.clone();
         let actor = actor.clone();
         let project_id = project_id.to_owned();
-        let bytes = self
+        let (etag, stored) = self
             .inner
             .db
             .snapshot(move |connection| {
                 authorize_read(connection, &actor, &project_id)?;
-                html_preview_bytes(connection, &project_id, &path)
+                html_preview_file(connection, &project_id, &path, validator.as_deref())
             })
             .await?;
-        crate::files::sanitized_html_preview(bytes).await
+        let Some(stored) = stored else {
+            return Ok(HtmlPreview::NotModified(etag));
+        };
+        let turn = crate::files::html_preview_turn(&self.inner.html_previewers, &user_id).await?;
+        let size = stored.size;
+        let db = &self.inner.db;
+        let bytes = FileBody::new(db.clone(), stored.rowid, stored.checksum, size)
+            .read_start(size)
+            .await?;
+        let page = crate::files::cleaned_html_preview(
+            turn,
+            bytes,
+            db.layout().previews(),
+            self.inner.disk.clone(),
+        )
+        .await?;
+        Ok(HtmlPreview::Page { page, etag })
     }
 }
 
@@ -537,36 +559,80 @@ fn is_manager(actor: &Actor) -> bool {
     actor.is_admin && matches!(actor.source, ActorSource::BrowserSession { .. })
 }
 
-/// The bytes of an HTML file to preview. The file's kind is checked first, so
-/// a request for another file, up to 10 MiB, never loads it.
-fn html_preview_bytes(connection: &Connection, project_id: &str, path: &str) -> AppResult<Vec<u8>> {
-    let (rowid, media_type, kind): (i64, String, Option<String>) = connection
-        .query_row(
-            "SELECT rowid,media_type,preview_kind FROM knowledge_files
-             WHERE project_id=?1 AND path=?2",
-            params![project_id, path],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()?
-        .ok_or(AppError::NotFound { resource: "file" })?;
-    // Only files up to the HTML preview limit are classified as HTML.
-    if preview_kind(kind.as_deref(), &media_type) != Some(PreviewKind::Html) {
+/// One stored version of a file, which a reader reads by its rowid while its
+/// checksum stays the same.
+struct StoredVersion {
+    rowid: i64,
+    checksum: String,
+    size: u64,
+}
+
+/// The preview validator of an HTML file and, unless `validator` matches,
+/// the version to clean. Nothing here reads the bytes, so a request for
+/// another file, up to 10 MiB, or for a current copy never loads them.
+fn html_preview_file(
+    connection: &Connection,
+    project_id: &str,
+    path: &str,
+    validator: Option<&str>,
+) -> AppResult<(String, Option<StoredVersion>)> {
+    let (rowid, media_type, kind, size, checksum): (i64, String, Option<String>, i64, String) =
+        connection
+            .query_row(
+                "SELECT rowid,media_type,preview_kind,size,checksum FROM knowledge_files
+                 WHERE project_id=?1 AND path=?2",
+                params![project_id, path],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or(AppError::NotFound { resource: "file" })?;
+    if preview_kind(path, kind.as_deref(), &media_type, size) != Some(PreviewKind::Html) {
         return Err(AppError::NotFound {
             resource: "preview",
         });
     }
-    Ok(connection.query_row(
-        "SELECT content FROM knowledge_files WHERE rowid=?1",
-        [rowid],
-        |row| row.get(0),
-    )?)
+    let etag = crate::files::html_preview_etag(&checksum);
+    if crate::files::etag_matches(validator, &etag) {
+        return Ok((etag, None));
+    }
+    let size = size.max(0) as u64;
+    Ok((
+        etag,
+        Some(StoredVersion {
+            rowid,
+            checksum,
+            size,
+        }),
+    ))
 }
 
-fn preview_kind(value: Option<&str>, media_type: &str) -> Option<PreviewKind> {
-    let kind = PreviewKind::from_stored(value?)?;
+/// The preview of a stored file of `size` bytes, from the kind its sync
+/// detected.
+fn preview_kind(
+    path: &str,
+    value: Option<&str>,
+    media_type: &str,
+    size: i64,
+) -> Option<PreviewKind> {
+    let kind = match value {
+        Some(value) => PreviewKind::from_stored(value)?,
+        // Syncs before 0.1.0-rc.8 stored HTML over 1 MiB without a kind. The
+        // HTML limit applies when a file is read, as for attachments.
+        None => crate::files::preview_kind_from_metadata(path, media_type)
+            .filter(|kind| *kind == PreviewKind::Html)?,
+    };
     // Older snapshots could label binary .md files as Markdown. Every read,
     // listing and catalog must reject that persisted classification.
-    (!kind.has_source() || media_type.starts_with("text/")).then_some(kind)
+    ((!kind.has_source() || media_type.starts_with("text/")) && kind.fits(size.max(0) as u64))
+        .then_some(kind)
 }
 
 fn requested_path(path: &str) -> AppResult<String> {

@@ -25,14 +25,17 @@ use crate::{
     disk::DiskReservation,
     domain::resolve_task_id,
     files::{
-        AttachmentView, BlobState, FileStore, MAX_ATTACHMENT_BYTES, MAX_HTML_PREVIEW_BYTES,
-        NewAttachment, UPLOAD_RESERVATION_SECONDS,
+        AttachmentView, BlobState, FileStore, MAX_ATTACHMENT_BYTES, NewAttachment,
+        UPLOAD_RESERVATION_SECONDS,
         detect::{self, validate_original_name},
     },
     idempotency::{Resource, validate_key as validate_idempotency_key},
 };
 
-const PREFIX_INSPECTION_BYTES: usize = MAX_HTML_PREVIEW_BYTES as usize;
+/// The first bytes of an upload, kept in memory to detect its type. Text and
+/// HTML checks read the whole staged file instead, so this needn't grow with
+/// the preview limits.
+const PREFIX_INSPECTION_BYTES: usize = 1024 * 1024;
 
 /// The rules an upload meets before its bytes arrive. The fields are named as
 /// MCP upload tickets name them.
@@ -806,6 +809,61 @@ fn release_upload_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_upload_keeps_only_its_first_mebibyte_in_memory() {
+        // Uploads of up to 25 MiB run at once, so a higher preview limit must
+        // not make each of them hold more of its bytes.
+        let (_root, db) = crate::db::migrated_db();
+        db.run(|connection| {
+            connection.execute_batch(
+                "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p1','One','ONE',1,1);
+                 INSERT INTO users(id,username,display_name,password_hash,is_admin,password_changed_at,created_at,updated_at)
+                 VALUES('admin','admin','Admin','hash',1,1,1,1);
+                 INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at)
+                 VALUES('session','admin','token',1,1,1,9999999999,9999999999);
+                 INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('track','p1','Track',0,1,1);
+                 INSERT INTO tasks(id,project_id,track_id,task_number,task_key,title,status,position,created_at,updated_at)
+                 VALUES('task','p1','track',1,'ONE-001','Task','planning',0,1,1);",
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let service = FileService::new(db, 100 * 1024 * 1024, 0);
+        let actor = Actor {
+            user_id: "admin".into(),
+            username: "admin".into(),
+            display_name: "Admin".into(),
+            is_admin: true,
+            must_change_password: false,
+            authenticated_at: 1,
+            source: crate::auth::ActorSource::BrowserSession {
+                session_id: "session".into(),
+            },
+        };
+        let size = 10 * 1024 * 1024;
+        let new = NewAttachment {
+            name: "report.html",
+            size,
+            temporary: false,
+            idempotency_key: "report",
+            replaces: None,
+        };
+        let AttachmentUpload::Pending(mut upload) = service
+            .begin_attachment_upload(&actor, "task", new)
+            .await
+            .unwrap()
+        else {
+            panic!("a new upload starts");
+        };
+        for _ in 0..17 {
+            upload.write_chunk(&[b' '; 64 * 1024]).await.unwrap();
+        }
+        assert_eq!(upload.inspection.len(), 1024 * 1024);
+        assert_eq!(upload.inspection.capacity(), 1024 * 1024);
+        upload.abort().await.unwrap();
+    }
 
     #[tokio::test(start_paused = true)]
     async fn overall_deadline_ends_even_a_trickling_upload() {

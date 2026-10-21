@@ -58,7 +58,7 @@ pub(super) async fn synced_project(
 }
 
 #[test]
-fn an_html_preview_reads_no_bytes_of_other_files() {
+fn deciding_an_html_preview_reads_no_bytes() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static CONTENT_READS: AtomicUsize = AtomicUsize::new(0);
     let (_root, mut connection) = crate::db::migrated_connection();
@@ -96,16 +96,55 @@ fn an_html_preview_reads_no_bytes_of_other_files() {
         }),
     );
     let transaction = connection.transaction().unwrap();
+    // Neither another file, nor a page to send, nor a current copy.
     assert!(matches!(
-        html_preview_bytes(&transaction, "p", "data.bin"),
+        html_preview_file(&transaction, "p", "data.bin", None),
         Err(AppError::NotFound {
             resource: "preview"
         })
     ));
+    let (etag, stored) = html_preview_file(&transaction, "p", "page.html", None).unwrap();
+    let stored = stored.unwrap();
+    assert_eq!((stored.checksum.as_str(), stored.size), ("sum", 9));
+    let (current, stored) = html_preview_file(&transaction, "p", "page.html", Some(&etag)).unwrap();
+    assert_eq!(current, etag);
+    assert!(stored.is_none());
     assert_eq!(CONTENT_READS.load(Ordering::Relaxed), 0);
-    assert_eq!(
-        html_preview_bytes(&transaction, "p", "page.html").unwrap(),
-        b"<p>hi</p>"
-    );
-    assert_eq!(CONTENT_READS.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn html_that_older_syncs_stored_without_a_preview_previews_at_once() {
+    // Syncs before 0.1.0-rc.8 stored HTML files over 1 MiB without a kind.
+    let (_root, service, people) = synced_project(Vec::new(), &["admin"]).await;
+    let mut page = b"<!doctype html><p>Report</p>".to_vec();
+    page.resize(2 * 1024 * 1024, b' ');
+    let content = page.clone();
+    service
+        .inner
+        .db
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO knowledge_files(project_id,path,size,media_type,preview_kind,checksum,updated_at,content)
+                 VALUES('p','report.html',?1,'text/html',NULL,'sum',1,?2)",
+                params![content.len() as i64, content],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let view = service.view(&people[0], "p").await.unwrap();
+    assert_eq!(view.files[0].kind, Some(PreviewKind::Html));
+    let Ok(HtmlPreview::Page {
+        page: mut cleaned, ..
+    }) = service
+        .html_preview(&people[0], "p", "report.html", None)
+        .await
+    else {
+        panic!("the page previews");
+    };
+    let mut text = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut cleaned, &mut text)
+        .await
+        .unwrap();
+    assert_eq!(text, page);
 }

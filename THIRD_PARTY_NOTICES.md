@@ -343,7 +343,7 @@ The full EPL-2.0 text is reproduced under License texts below.
 | rustix@1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustls-native-certs@0.8.4 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types@1.15.1 | MIT OR Apache-2.0 |
-| rustls-webpki@0.103.15 | ISC |
+| rustls-webpki@0.103.16 | ISC |
 | rustls@0.23.46 | Apache-2.0 OR ISC OR MIT |
 | rustversion@1.0.23 | MIT OR Apache-2.0 |
 | rw@1.3.3 | BSD-3-Clause |
@@ -3140,7 +3140,7 @@ THIS SOFTWARE.
 
 ### 25. ISC License
 
-- rustls-webpki@0.103.15
+- rustls-webpki@0.103.16
 
 ```text
 Except as otherwise noted, this project is licensed under the following

@@ -152,9 +152,15 @@ pub(crate) async fn add_main_security_headers(
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.starts_with("application/json"));
+    // A preview frame's error page is a fixed text, made to be shown there.
+    let preview_page = response
+        .extensions()
+        .get::<super::file_response::PreviewErrorPage>()
+        .is_some();
     if is_api
         && (response.status().is_client_error() || response.status().is_server_error())
         && !is_json
+        && !preview_page
     {
         // Axum extractor failures occur before handlers/AppError. Normalize them
         // without copying request-derived rejection text or credentials.

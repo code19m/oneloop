@@ -7,11 +7,14 @@
 mod detect;
 mod models;
 mod preview;
-pub(crate) use preview::sanitized_html_preview;
+pub use preview::{CleanedPage, HtmlPreview};
+pub(crate) use preview::{
+    Previewers, cleaned_html_preview, html_preview_etag, html_preview_problem, html_preview_turn,
+};
 mod service;
 mod storage;
 
-pub(crate) use detect::classify_bytes;
+pub(crate) use detect::{classify_bytes, preview_kind_from_metadata};
 pub use models::*;
 pub use service::{
     AttachmentUpload, AvatarSlot, FileRead, FileRuntimeReport, FileService, LeasedFile,

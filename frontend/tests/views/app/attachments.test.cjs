@@ -311,6 +311,101 @@ test('an upload, retention change and delete still finish after a live update re
   assert.deepEqual(t.D.tasks.find(item => item.id === 'BIR-079').attachments, []);
 });
 
+test('a read of the files that began before a change made here never shows, and the next read keeps its kind', async () => {
+  // Each read waits until the test answers it with the list the server had.
+  const reads = [];
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, api: {
+    attachments: (_id, options = {}) => new Promise(resolve => reads.push({ answer: items => { reads.answered += 1; resolve({ items }); }, background: !!options.background })),
+    // A live update reads the comments and history too.
+    comments: async () => ({ items: [], nextCursor: null }), activity: async () => ({ items: [], nextCursor: null }),
+  } });
+  reads.answered = 0;
+  const file = (id, overrides = {}) => serverFile(id, `${id}.txt`, 'text', overrides);
+  const task = () => t.D.tasks.find(item => item.id === 'BIR-079');
+  const order = () => Array.from(task().attachments, item => item.id);
+  const temporary = id => task().attachments.find(item => item.id === id).ephemeral;
+  /** The next read, once it is sent. */
+  const held = async () => { const count = reads.answered + 1; await waitFor(() => reads.length >= count, 'a read was sent'); return reads[count - 1]; };
+  /** Answer `read` with the list the server had, and let it land. */
+  const answer = async (read, items) => { read.answer(items); await settle(); };
+  /** Answer every read still out, and those it leads to, with the server's list now. */
+  const drain = async items => { await settle(); while (reads.length > reads.answered) await answer(reads[reads.answered], items); };
+  const confirm = async (method, value) => { await waitFor(() => t.calls.some(call => call.method === method && !call.settled), `${method} was sent`); await answerLast(t, method, value); };
+
+  // The page's first read is out when an upload finishes. It is read again,
+  // and that read is not in the background either.
+  const first = await held();
+  t.A.attachFiles('BIR-079', { files: [new t.w.File(['a'], 'a.txt', { type: 'text/plain' })], value: '' });
+  await confirm('uploadAttachment', file('a'));
+  await answer(first, []);
+  assert.deepEqual(order(), ['a'], 'the uploaded file stays');
+  assert.equal((await held()).background, false);
+  await drain([file('a'), file('b'), file('c')]);
+  assert.deepEqual(order(), ['a', 'b', 'c']);
+
+  // A live update's read is out while a file is deleted.
+  filesChanged(t); let read = await held();
+  t.A.delAttachment('BIR-079', 2); t.d.querySelector('[data-confirm-accept]').click();
+  await confirm('deleteAttachment', {});
+  await answer(read, [file('a'), file('b'), file('c')]);
+  assert.deepEqual(order(), ['a', 'b'], 'the deleted file stays gone');
+  await drain([file('a'), file('b')]);
+  assert.deepEqual(order(), ['a', 'b']);
+
+  // Out while a file moves: the new order shows at once, and stays before
+  // the server answers, also against a read that began after the move.
+  filesChanged(t); read = await held();
+  t.A.reorderAttachment('BIR-079', 'b', 'a');
+  assert.deepEqual(order(), ['b', 'a']);
+  await answer(read, [file('a'), file('b')]);
+  assert.deepEqual(order(), ['b', 'a'], 'the order doesn\'t jump back');
+  filesChanged(t); read = await held();
+  await answer(read, [file('a'), file('b')]);
+  assert.deepEqual(order(), ['b', 'a'], 'nor for a read that began while the move waited');
+  assert.equal(reads.length, reads.answered, 'nothing is read again while the move waits');
+  await confirm('reorderAttachment', { items: [file('b'), file('a')] });
+  await drain([file('b'), file('a')]);
+  assert.deepEqual(order(), ['b', 'a']);
+
+  // Out while a file becomes temporary: the switch shows it at once, and
+  // keeps it before the server answers.
+  filesChanged(t); read = await held();
+  t.A.setAttachmentTemporary('BIR-079', 'a', true);
+  await answer(read, [file('b'), file('a')]);
+  assert.equal(temporary('a'), true, 'the switch doesn\'t jump back');
+  filesChanged(t); read = await held();
+  await answer(read, [file('b'), file('a')]);
+  assert.equal(temporary('a'), true, 'nor for a read that began while the change waited');
+  await confirm('updateAttachment', file('a', { isEphemeral: true, revision: 2 }));
+  await drain([file('b'), file('a', { isEphemeral: true, revision: 2 })]);
+  assert.equal(temporary('a'), true);
+
+  // A change that fails also ends the wait: the files are read again.
+  t.A.setAttachmentTemporary('BIR-079', 'a', false);
+  filesChanged(t); read = await held();
+  await answer(read, [file('b'), file('a', { isEphemeral: true, revision: 2 })]);
+  assert.equal(temporary('a'), false);
+  await waitFor(() => t.calls.some(call => call.method === 'updateAttachment' && !call.settled), 'the change was sent');
+  t.calls.find(call => call.method === 'updateAttachment' && !call.settled).reject(new ApiError('The server failed', { status: 500, code: 'internal' }));
+  await settle();
+  assert.equal(temporary('a'), true, 'the switch goes back');
+  await held();
+  await drain([file('b'), file('a', { isEphemeral: true, revision: 2 })]);
+  assert.equal(temporary('a'), true);
+
+  // A move that meets a conflict is read again once, as it settles.
+  const before = reads.length;
+  t.A.reorderAttachment('BIR-079', 'a', 'b');
+  await waitFor(() => t.calls.some(call => call.method === 'reorderAttachment' && !call.settled), 'the move was sent');
+  t.calls.find(call => call.method === 'reorderAttachment' && !call.settled).reject(new ApiError('Changed elsewhere', { status: 409, code: 'revision_conflict' }));
+  await settle();
+  assert.deepEqual(order(), ['b', 'a'], 'the move goes back');
+  await drain([file('b'), file('a', { isEphemeral: true, revision: 2 })]);
+  assert.equal(reads.length, before + 1, 'one read follows the conflict');
+  assert.deepEqual(reads.slice(0, 2).map(item => item.background), [false, false]);
+  assert(reads.slice(2).every(item => item.background), 'reads after a live update stay in the background');
+});
+
 test('live updates read attachments and storage usage again passively', async () => {
   const reads = [];
   const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, api: {

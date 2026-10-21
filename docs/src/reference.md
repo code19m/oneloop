@@ -102,8 +102,10 @@ never removes other files by itself.
 
 oneloop refuses an upload when files and unfinished uploads reach the limit,
 or when the upload would still leave less free disk space than
-`ONELOOP_DISK_MIN_FREE`. Space that running uploads and Knowledge downloads
-need counts as used. A deleted file, or a file of a deleted task, still
+`ONELOOP_DISK_MIN_FREE`. Space that running uploads, Knowledge downloads and
+HTML previews being sent need counts as used. An HTML preview that would leave
+less free space than that shows that the server is low on disk space, and
+**Reload preview** tries again. A deleted file, or a file of a deleted task, still
 counts, as pending deletion, until oneloop removes it after the
 [Undo](user-guide.md#undo-a-deletion) window.
 
@@ -161,12 +163,14 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 | Attachment size | 25 MiB per file |
 | Attachments per task | 25 |
 | Text and Markdown previews | The first 200 KiB |
-| HTML previews | Files up to 1 MiB |
+| HTML previews | Files up to 10 MiB. The server prepares two pages at once. Each person has one attachment page and one Knowledge page in line at a time, and their next one waits for it. A person can have three of each on the way; another one says at once to try again. A page that waits 5 seconds in all says that the server is busy |
 | Image thumbnails | PNG, JPEG and WebP images within the decode limits below; at most 256 × 256 px |
 | Avatar | 5 MiB, and within the decode limits below; stored as 256 × 256 px. One upload at a time per person, and 4 at once on the server |
 | Upload in progress | Fails if it stalls for 60 seconds, or takes over an hour |
 
-Text and Markdown previews need the whole file to be valid UTF-8 text.
+Text and Markdown previews need the whole file to be valid UTF-8 text. The
+HTML limit applies each time a file opens, so attachments and Knowledge files
+from older versions with a lower limit preview too.
 
 oneloop decodes one image at a time. It decodes only an image that needs at
 most about 192 MiB of memory, with at most 8192 px per side and 128 MiB of

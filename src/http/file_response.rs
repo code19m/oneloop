@@ -14,7 +14,7 @@ use tokio_util::io::ReaderStream;
 
 use crate::{
     AppError, AppResult,
-    files::{ConditionalRead, FileRead},
+    files::{ConditionalRead, FileRead, HtmlPreview},
 };
 
 /// How the browser treats a file.
@@ -41,6 +41,12 @@ pub(crate) fn validator(request: &HeaderMap) -> Option<String> {
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned)
+}
+
+/// The validator of an HTML preview request. **Reload preview** asks for a
+/// new copy, so its request has none.
+pub(crate) fn preview_validator(request: &HeaderMap, reload: bool) -> Option<String> {
+    if reload { None } else { validator(request) }
 }
 
 /// Refuses requests that would load a file as code or a plugin.
@@ -170,21 +176,82 @@ pub(crate) async fn conditional(read: ConditionalRead, request: &HeaderMap) -> A
 /// embedded as data. The app's own `frame-src 'self'` stops the framed page
 /// from navigating to other sites; without scripts, the page opened on its own
 /// navigates only when someone follows a link.
-pub(crate) fn html_preview(bytes: Vec<u8>) -> Response {
-    let mut response = Response::new(Body::from(bytes));
+///
+/// Caches keep the page and check it with the server before each use, as for
+/// other previews. A `reload` gets a new copy, which caches don't keep.
+pub(crate) fn html_preview(preview: HtmlPreview, reload: bool) -> Response {
+    let (mut response, etag) = match preview {
+        HtmlPreview::NotModified(etag) => (StatusCode::NOT_MODIFIED.into_response(), etag),
+        HtmlPreview::Page { page, etag } => {
+            let length = page.len();
+            let stream = ReaderStream::with_capacity(page, 64 * 1024);
+            let mut response = Response::new(Body::from_stream(stream));
+            let headers = response.headers_mut();
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/html; charset=utf-8"),
+            );
+            headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+            (response, etag)
+        }
+    };
+    let headers = response.headers_mut();
+    protect(
+        headers,
+        if reload {
+            Caching::NoStore
+        } else {
+            Caching::Revalidate(etag)
+        },
+    );
+    frame(headers);
+    response
+}
+
+/// Marks the page of `html_preview_error`, which API errors keep as it is.
+#[derive(Clone, Copy)]
+pub(crate) struct PreviewErrorPage;
+
+/// What the preview frame shows when `error` stops a preview: a short, fixed
+/// page that says why and points to **Reload preview**. It has the preview's
+/// own headers, so the frame may show it, and keeps the status and
+/// `Retry-After` of the error.
+pub(crate) fn html_preview_error(error: AppError) -> Response {
+    let reference = error.log_server_error();
+    let problem = crate::files::html_preview_problem(&error);
+    // A fault's reference lets an administrator find it in the log.
+    let reference = reference
+        .filter(|_| error.status() == StatusCode::INTERNAL_SERVER_ERROR)
+        .map(|reference| format!("<p class=reference>Reference: {reference}</p>"))
+        .unwrap_or_default();
+    let page = format!(
+        "<!doctype html><html lang=en><meta charset=utf-8>\
+         <meta name=color-scheme content=\"light dark\"><title>Preview unavailable</title>\
+         <style>:root{{color-scheme:light dark}}body{{margin:0;min-height:100vh;display:grid;\
+         place-items:center;background:Canvas;color:CanvasText;font:15px/1.6 system-ui,sans-serif}}\
+         main{{max-width:44ch;padding:32px 20px;text-align:center}}h1{{margin:0 0 8px;font-size:17px}}\
+         p{{margin:8px 0}}.reference{{font-size:13px;opacity:.75}}</style>\
+         <main><h1>Preview unavailable</h1><p>{problem}</p>\
+         <p>Use <strong>Reload preview</strong> to try again.</p>{reference}</main>"
+    );
+    let mut response = (error.status(), page).into_response();
+    response.extensions_mut().insert(PreviewErrorPage);
     let headers = response.headers_mut();
     headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
     );
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("private, no-store"),
-    );
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
+    if let Some(seconds) = error.retry_after() {
+        headers.insert(header::RETRY_AFTER, HeaderValue::from(seconds));
+    }
+    protect(headers, Caching::NoStore);
+    frame(headers);
+    response
+}
+
+/// The headers that let the app's preview frame, and only it, show a page,
+/// under the sandbox.
+fn frame(headers: &mut HeaderMap) {
     headers.insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
@@ -211,7 +278,6 @@ pub(crate) fn html_preview(bytes: Vec<u8>) -> Response {
         ),
     );
     headers.insert("x-dns-prefetch-control", HeaderValue::from_static("off"));
-    response
 }
 
 /// The headers that every file response carries, whatever its status.

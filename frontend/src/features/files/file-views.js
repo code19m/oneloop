@@ -15,12 +15,15 @@ const vendor = /** @type {any} */ (globalThis);
 
 const remote=value=>{try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password;}catch{return false;}};
 const embedded=value=>/^data:image\/(png|jpe?g|gif|webp|avif);base64,/i.test(value||'');
+// A Markdown preview shows the start of the file, so its note shows in both
+// modes; an HTML preview shows the whole page, and only its source is cut.
 function shell(host,kind,text,truncated){
-  setTrustedHTML(host,`<div class="html-preview-tools"><div class="seg" role="group" aria-label="${kind} preview mode"><button class="on" aria-pressed="true" data-view-preview>Preview</button><button aria-pressed="false" data-view-source>Source</button></div></div>${truncated?'<p class="access-note">'+(kind==='HTML'?'Source truncated to 200,000 characters.':'Preview truncated to 200 KB.')+' Download the full file.</p>':''}<div class="document-preview"></div><pre class="html-source" tabindex="0" hidden></pre>`);
+  const sourceOnly=kind==='HTML';
+  setTrustedHTML(host,`<div class="html-preview-tools"><div class="seg" role="group" aria-label="${kind} preview mode"><button class="on" aria-pressed="true" data-view-preview>Preview</button><button aria-pressed="false" data-view-source>Source</button></div></div>${truncated?'<p class="access-note" data-truncated'+(sourceOnly?' hidden>Source truncated to 200,000 characters.':'>Preview truncated to 200 KB.')+' Download the full file.</p>':''}<div class="document-preview"></div><pre class="html-source" tabindex="0" hidden></pre>`);
   const tools=host.querySelector('.html-preview-tools');host.closest('.file-dialog')?.querySelector('.file-tools')?.append(tools);
-  const view=host.querySelector('.document-preview'),source=host.querySelector('.html-source');source.textContent=text;
+  const view=host.querySelector('.document-preview'),source=host.querySelector('.html-source'),note=host.querySelector('[data-truncated]');source.textContent=text;
   let onMode=(/** @type {boolean} */ _rendered)=>{};
-  const mode=rendered=>{if(view.hidden===!rendered)return;onMode(rendered);view.hidden=!rendered;source.hidden=rendered;UIMotion.fade(rendered?view:source);for(const [key,on]of [['preview',rendered],['source',!rendered]]){const button=tools.querySelector('[data-view-'+key+']');button.classList.toggle('on',on);button.setAttribute('aria-pressed',String(on));}};
+  const mode=rendered=>{if(view.hidden===!rendered)return;onMode(rendered);view.hidden=!rendered;source.hidden=rendered;if(note&&sourceOnly)note.hidden=rendered;UIMotion.fade(rendered?view:source);for(const [key,on]of [['preview',rendered],['source',!rendered]]){const button=tools.querySelector('[data-view-'+key+']');button.classList.toggle('on',on);button.setAttribute('aria-pressed',String(on));}};
   tools.querySelector('[data-view-preview]').onclick=()=>mode(true);tools.querySelector('[data-view-source]').onclick=()=>mode(false);
   return {view,tools,onMode(callback){onMode=callback;}};
 }
@@ -452,13 +455,15 @@ export function htmlView(host,file,text){
   ui.tools.querySelector('[data-view-preview]').setAttribute('data-html-rendered','');ui.tools.querySelector('[data-view-source]').setAttribute('data-html-source','');
   const restart=document.createElement('button');restart.className='btn icon';restart.type='button';restart.title='Reload preview';restart.setAttribute('aria-label','Reload preview');setTrustedHTML(restart,'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2.3 5.7"/></svg>');restart.setAttribute('data-html-restart','');restart.hidden=!file.htmlPreviewUrl;ui.tools.append(restart);
   // Only the server's preview address shows the page, under its sandbox policy.
-  const start=()=>{
+  // The browser keeps the page and checks it with the server when it opens
+  // again; **Reload preview** asks for a new copy.
+  const start=(reload=false)=>{
     if(!file.htmlPreviewUrl){setTrustedHTML(ui.view,'<p class="preview-unavailable">Preview unavailable. Download the original file.</p>');return;}
     const frame=document.createElement('iframe');frame.className='html-preview';frame.setAttribute('sandbox','');frame.setAttribute('referrerpolicy','no-referrer');frame.setAttribute('allow',"camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; fullscreen 'none'; payment 'none'");frame.title=file.name.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,'')+' preview';frame.tabIndex=0;
-    const url=new URL(file.htmlPreviewUrl,location.href);url.searchParams.set('reload',String(Date.now()));frame.src=url.href;ui.view.replaceChildren(frame);
+    const url=new URL(file.htmlPreviewUrl,location.href);if(reload)url.searchParams.set('reload','1');frame.src=url.href;ui.view.replaceChildren(frame);
   };
   ui.onMode(rendered=>{restart.hidden=!rendered||!file.htmlPreviewUrl;if(rendered){if(!ui.view.firstChild)start();}else ui.view.replaceChildren();});
-  restart.onclick=start;start();
+  restart.onclick=()=>start(true);start();
 }
 
 /** Plain text, with JSON indented when the whole file is present. */

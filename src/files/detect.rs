@@ -3,10 +3,10 @@
 
 use std::path::Path;
 
-use super::{MAX_HTML_PREVIEW_BYTES, PreviewKind};
+use super::PreviewKind;
 use crate::{AppError, AppResult};
 
-pub(super) fn preview_kind_from_metadata(name: &str, media: &str) -> Option<PreviewKind> {
+pub(crate) fn preview_kind_from_metadata(name: &str, media: &str) -> Option<PreviewKind> {
     if media.starts_with("image/") {
         Some(PreviewKind::Image)
     } else if media == "application/pdf" {
@@ -278,14 +278,29 @@ pub(super) fn valid_text_reader(mut reader: impl std::io::Read) -> std::io::Resu
 /// uploads: by content first, with the name only choosing among text formats.
 pub(crate) fn classify_bytes(name: &str, bytes: &[u8]) -> (String, Option<PreviewKind>) {
     let media = detected_media_type(bytes, detect_preview(name, bytes));
-    let preview = preview_kind_from_metadata(name, &media)
-        .filter(|kind| *kind != PreviewKind::Html || bytes.len() as u64 <= MAX_HTML_PREVIEW_BYTES);
+    let preview =
+        preview_kind_from_metadata(name, &media).filter(|kind| kind.fits(bytes.len() as u64));
     (media, preview)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn synced_html_previews_up_to_10_mib() {
+        let mut page = b"<!doctype html><p>Report</p>".to_vec();
+        page.resize(10 * 1024 * 1024, b' ');
+        assert_eq!(
+            classify_bytes("report.html", &page),
+            ("text/html".to_owned(), Some(PreviewKind::Html))
+        );
+        page.push(b' ');
+        assert_eq!(
+            classify_bytes("report.html", &page),
+            ("text/html".to_owned(), None)
+        );
+    }
 
     #[test]
     fn text_inspection_preserves_utf8_across_every_chunk_boundary() {

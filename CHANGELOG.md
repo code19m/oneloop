@@ -6,6 +6,35 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- HTML previews of attachments and Knowledge files now show files up to
+  10 MiB instead of 1 MiB, such as reports with many screenshots inside the
+  file. Files uploaded or synced before preview at once. While a preview is
+  sent, its prepared page waits in a temporary file in the data folder
+  instead of in memory. Previews now need free disk space above
+  `ONELOOP_DISK_MIN_FREE`, as uploads do, and each person can have three
+  attachment pages and three Knowledge pages being sent at once. Production
+  setup says what previews cost in memory and disk space.
+- Opening an HTML preview again usually shows the browser's copy when the file
+  hasn't changed, instead of downloading it again. **Reload preview** still
+  gets a new copy from the server.
+
+### Fixed
+
+- An HTML preview that can't be shown, such as one of a deleted file, one the
+  server is too busy to prepare, or one whose session ended, now says why in
+  its frame and points to **Reload preview**. Before, the frame stayed empty.
+- A file you just uploaded, deleted, reordered or marked temporary or
+  permanent no longer goes back to how it was for a moment when a read of the
+  task's files that started earlier comes back, and an open preview of the new
+  file no longer closes.
+
+### Security
+
+- Updated rustls-webpki to 0.103.16 (RUSTSEC-2026-0382). oneloop uses it when
+  it fetches the metadata document of an AI assistant that connects.
+
 ## [0.1.0-rc.7] - 2026-10-19
 
 The seventh release candidate. Every task is now on a track, and an epic is

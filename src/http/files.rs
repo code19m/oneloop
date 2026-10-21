@@ -29,6 +29,14 @@ const MULTIPART_OVERHEAD_BYTES: usize = 1024 * 1024;
 const ATTACHMENT_BODY_LIMIT: usize = MAX_ATTACHMENT_BYTES as usize + MULTIPART_OVERHEAD_BYTES;
 const AVATAR_BODY_LIMIT: usize = MAX_AVATAR_BYTES as usize + MULTIPART_OVERHEAD_BYTES;
 
+/// The HTML preview, whose answers show inside the preview frame.
+pub(crate) fn preview_router() -> Router<AppState> {
+    Router::new().route(
+        "/api/attachments/{attachment_id}/preview/html",
+        get(html_preview),
+    )
+}
+
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route(
@@ -64,10 +72,6 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/api/attachments/{attachment_id}/source",
             get(source_attachment),
-        )
-        .route(
-            "/api/attachments/{attachment_id}/preview/html",
-            get(html_preview),
         )
         .route(
             "/api/auth/avatar",
@@ -321,18 +325,34 @@ async fn source_attachment(
     file_response::conditional(read, &headers).await
 }
 
+/// **Reload preview** adds `reload`, so the page is read and cleaned again.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreviewQuery {
+    reload: Option<String>,
+}
+
+/// An error shows in the preview frame, as a page that says why.
 async fn html_preview(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Path(attachment_id): Path<String>,
+    query: Result<ApiQuery<PreviewQuery>, AppError>,
     headers: HeaderMap,
-) -> AppResult<Response> {
-    file_response::require_safe_destination(&headers)?;
-    let bytes = state
-        .files
-        .html_preview_bytes(&actor, &attachment_id)
-        .await?;
-    Ok(file_response::html_preview(bytes))
+) -> Response {
+    let response: AppResult<Response> = async {
+        file_response::require_safe_destination(&headers)?;
+        let ApiQuery(query) = query?;
+        let reload = query.reload.is_some();
+        let validator = file_response::preview_validator(&headers, reload);
+        let preview = state
+            .files
+            .html_preview(&actor, &attachment_id, validator)
+            .await?;
+        Ok(file_response::html_preview(preview, reload))
+    }
+    .await;
+    response.unwrap_or_else(file_response::html_preview_error)
 }
 
 async fn upload_avatar(

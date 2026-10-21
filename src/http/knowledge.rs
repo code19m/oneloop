@@ -17,10 +17,18 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    AppResult, AppState,
+    AppError, AppResult, AppState,
     auth::Actor,
     knowledge::{FileMode, KnowledgeView, SearchResults},
 };
+
+/// The HTML preview, whose answers show inside the preview frame.
+pub(crate) fn preview_router() -> Router<AppState> {
+    Router::new().route(
+        "/api/projects/{project_id}/knowledge/preview/html",
+        get(html_preview),
+    )
+}
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -28,10 +36,6 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/projects/{project_id}/knowledge/search", get(search))
         .route("/api/projects/{project_id}/knowledge/content", get(content))
         .route("/api/projects/{project_id}/knowledge/text", get(text))
-        .route(
-            "/api/projects/{project_id}/knowledge/preview/html",
-            get(html_preview),
-        )
         .route(
             "/api/projects/{project_id}/knowledge/download",
             get(download),
@@ -50,13 +54,12 @@ struct FileQuery {
     path: String,
 }
 
-/// The preview frame adds `reload` so a restart always fetches again.
+/// **Reload preview** adds `reload`, so the page is read and cleaned again.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PreviewQuery {
     path: String,
-    #[serde(default, rename = "reload")]
-    _reload: Option<String>,
+    reload: Option<String>,
 }
 
 async fn view(
@@ -111,19 +114,27 @@ async fn download(
     file(state, actor, project_id, query, headers, FileMode::Download).await
 }
 
+/// An error shows in the preview frame, as a page that says why.
 async fn html_preview(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Path(project_id): Path<String>,
-    ApiQuery(query): ApiQuery<PreviewQuery>,
+    query: Result<ApiQuery<PreviewQuery>, AppError>,
     headers: HeaderMap,
-) -> AppResult<Response> {
-    file_response::require_safe_destination(&headers)?;
-    let bytes = state
-        .knowledge
-        .html_preview(&actor, &project_id, &query.path)
-        .await?;
-    Ok(file_response::html_preview(bytes))
+) -> Response {
+    let response: AppResult<Response> = async {
+        file_response::require_safe_destination(&headers)?;
+        let ApiQuery(query) = query?;
+        let reload = query.reload.is_some();
+        let validator = file_response::preview_validator(&headers, reload);
+        let preview = state
+            .knowledge
+            .html_preview(&actor, &project_id, &query.path, validator)
+            .await?;
+        Ok(file_response::html_preview(preview, reload))
+    }
+    .await;
+    response.unwrap_or_else(file_response::html_preview_error)
 }
 
 async fn file(

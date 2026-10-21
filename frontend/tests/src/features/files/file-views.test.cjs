@@ -78,17 +78,18 @@ test('Markdown can\'t point a label or a control at the app\'s own elements', as
   assert.deepEqual(clicks, [], 'the label reaches nothing outside the file');
 });
 
-test('HTML previews frame the server preview in a sandbox and restart it', async () => {
+test('HTML previews frame the server preview in a sandbox, open it from the cache and reload it', async () => {
   const { d, file, open, close } = await taskWithFiles();
   file('report.html').htmlPreviewUrl = '/api/attachments/report/preview/html';
   open('report.html');
   await waitFor(() => d.querySelector('iframe'), 'the preview loads');
   let frame = d.querySelector('iframe');
   assert.equal(frame.getAttribute('sandbox'), ''); assert.equal(frame.getAttribute('referrerpolicy'), 'no-referrer');
-  assert.equal(new URL(frame.src).pathname, '/api/attachments/report/preview/html'); assert(!frame.hasAttribute('srcdoc'));
-  d.querySelector('[data-html-restart]').click(); assert(!frame.isConnected); frame = d.querySelector('iframe'); assert.equal(new URL(frame.src).pathname, '/api/attachments/report/preview/html');
+  // The same address each time, so the browser's copy serves it again.
+  assert.equal(new URL(frame.src).href, new URL('/api/attachments/report/preview/html', frame.src).href); assert(!frame.hasAttribute('srcdoc'));
+  d.querySelector('[data-html-restart]').click(); assert(!frame.isConnected); frame = d.querySelector('iframe'); assert.equal(new URL(frame.src).pathname, '/api/attachments/report/preview/html'); assert.equal(new URL(frame.src).searchParams.get('reload'), '1');
   d.querySelector('[data-view-source]').click(); assert(!frame.isConnected); assert(!d.querySelector('.document-preview iframe')); assert(d.querySelector('[data-html-restart]').hidden);
-  d.querySelector('[data-view-preview]').click(); assert(d.querySelector('.document-preview iframe')); assert(!d.querySelector('[data-html-restart]').hidden); close();
+  d.querySelector('[data-view-preview]').click(); frame = d.querySelector('.document-preview iframe'); assert.equal(new URL(frame.src).search, ''); assert(!d.querySelector('[data-html-restart]').hidden); close();
 });
 
 test('large Markdown previews are bounded in both modes', async () => {
@@ -327,6 +328,19 @@ test('Markdown loads only the libraries it needs and retries a failed math libra
   assert(host.querySelector('.katex'), host.innerHTML + ' ' + JSON.stringify(loaded)); assert.equal(loaded.filter(name => name === 'vendor/katex/katex.min.js').length, 2);
   const count = loaded.length; await open('~~~math\nx^2\n~~~'); assert(host.querySelector('.katex')); assert.equal(loaded.length, count);
   await open('<pre><code class="language-js">const answer = 42;</code></pre>'); assert(host.querySelector('.hljs-keyword'));
+});
+
+test('a long HTML file says its source is cut only in Source mode, and a long Markdown file in both', () => {
+  const { host, views } = lazyPreviews();
+  const note = () => host.querySelector('[data-truncated]');
+  views.htmlView(host, { name: 'report.html', size: 300000, htmlPreviewUrl: '/api/attachments/r/preview/html' }, '<h1>Report</h1>');
+  assert(note().hidden, 'the preview shows the whole page');
+  host.querySelector('[data-view-source]').click();
+  assert(!note().hidden); assert.match(note().textContent, /Source truncated to 200,000 characters/);
+  host.querySelector('[data-view-preview]').click();
+  assert(note().hidden);
+  views.markdownView(host, { name: 'notes.md', size: 300000 }, '# Notes', true);
+  assert(!note().hidden); assert.match(note().textContent, /Preview truncated to 200 KB/);
 });
 
 test('HTML previews keep Source usable without parsing, and show nothing without a server preview', () => {

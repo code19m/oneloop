@@ -72,6 +72,16 @@ pub fn application(state: AppState) -> Application {
             state.clone(),
             http::security::enforce_browser_origin,
         ));
+    let previews = http::files::preview_router()
+        .merge(http::knowledge::preview_router())
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            http::auth::require_actor_in_frame,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            http::security::enforce_browser_origin,
+        ));
     let account = Router::new()
         .nest("/api/auth", http::auth::router())
         .merge(http::auth::users_router())
@@ -83,6 +93,7 @@ pub fn application(state: AppState) -> Application {
         .route("/healthz", get(health))
         .merge(account)
         .merge(work)
+        .merge(previews)
         .merge(mcp::router(state.clone()))
         .fallback(http::assets::serve)
         .layer(DefaultBodyLimit::max(256 * 1024))

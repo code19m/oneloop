@@ -1,6 +1,8 @@
 // Attachments and their previews: Markdown, HTML, PDF and images.
 import { randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
+import { connect } from 'node:net';
+import { crc32, deflateSync } from 'node:zlib';
 import { test, expect, openApp, holdResponses } from '../support/test.mjs';
 
 const pdf = readFileSync(new URL('../support/fixtures/document.pdf', import.meta.url));
@@ -140,6 +142,116 @@ test('HTML previews run no scripts and load nothing from other sites, framed or 
   await direct.close();
 });
 
+/** A PNG of `size` × `size` pixels of noise, which doesn't compress: about 120 KB for 200. */
+function noisePng(size, seed) {
+  const chunk = (type, data) => {
+    const length = Buffer.alloc(4), body = Buffer.concat([Buffer.from(type), data]), check = Buffer.alloc(4);
+    length.writeUInt32BE(data.length); check.writeUInt32BE(crc32(body));
+    return Buffer.concat([length, body, check]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(size, 0); header.writeUInt32BE(size, 4); header[8] = 8; header[9] = 2;
+  const rows = Buffer.alloc(size * (size * 3 + 1));
+  for (let index = 0, state = seed; index < rows.length; index++) {
+    state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+    rows[index] = index % (size * 3 + 1) === 0 ? 0 : state >>> 24;
+  }
+  return Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), chunk('IHDR', header), chunk('IDAT', deflateSync(rows)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+test('a 3 MiB HTML report with embedded screenshots previews, and opens again from the cache', async ({ page, instance, browserName, allowedConsoleErrors }) => {
+  allowedConsoleErrors.push(/Content Security Policy|Content-Security-Policy|content security policy|violates.*policy|sandbox|Sandbox|Blocked script/i);
+  const shots = Array.from({ length: 20 }, (_, index) => `<h2>Step ${index + 1}</h2><img alt="Screenshot ${index + 1}" src="data:image/png;base64,${noisePng(200, index + 1).toString('base64')}">`);
+  const report = `<!doctype html><title>Daily report</title><h1 id="status">Static</h1><img alt="Outside" src="${outside}/image.png"><script>document.getElementById('status').textContent='Script ran'</script>${shots.join('\n')}`;
+  expect(report.length).toBeGreaterThan(3 * 1024 * 1024);
+  const escapes = [], previews = [];
+  page.context().on('request', request => { if (request.url().startsWith(outside)) escapes.push(request); });
+  page.on('requestfinished', request => { if (request.url().includes('/preview/html')) previews.push(request); });
+  // Whether the server sent the page, rather than 304 for the browser's copy.
+  // Chromium reports such a copy with no body, Firefox with its 304.
+  const sentPage = async request => (await request.response()).status() !== 304 && (await request.sizes()).responseBodySize > 0;
+  await openApp(page, instance);
+  await attach(page, 'report.html', 'text/html', report);
+  const title = page.locator('.attachment-title').filter({ hasText: 'report.html' });
+  const view = page.frameLocator('iframe.html-preview');
+  const shown = async () => {
+    await expect(page.locator('iframe.html-preview')).toHaveAttribute('sandbox', '');
+    await expect(view.getByRole('img', { name: 'Screenshot 20' })).toHaveJSProperty('naturalWidth', 200);
+    await expect(view.locator('#status')).toHaveText('Static');
+  };
+  await title.click();
+  await shown();
+  expect(await sent(escapes)).toEqual([]);
+  await expect.poll(() => previews.length).toBe(1);
+  // WebKit reports the copy it checked with the server as a new response, so
+  // only the other browsers show what the server sent.
+  if (browserName === 'webkit') return;
+  expect(await sentPage(previews[0])).toBe(true);
+
+  // Opening the file again checks the browser's copy and downloads nothing.
+  await page.getByRole('button', { name: 'Close file preview' }).click();
+  await title.click();
+  await shown();
+  await expect.poll(() => previews.length).toBe(2);
+  expect(await sentPage(previews[1])).toBe(false);
+
+  // **Reload preview** gets a new copy.
+  await page.getByRole('button', { name: 'Reload preview' }).click();
+  await shown();
+  await expect.poll(() => previews.length).toBe(3);
+  expect(new URL(previews[2].url()).searchParams.get('reload')).toBe('1');
+  expect(await sentPage(previews[2])).toBe(true);
+});
+
+/** A request for `url` that stops reading once its response starts, as a stalled connection does. */
+function stalledRequest(url, cookie) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(Number(url.port), url.hostname, () => {
+      socket.write(`GET ${url.pathname}${url.search} HTTP/1.1\r\nHost: ${url.host}\r\nCookie: ${cookie}\r\nSec-Fetch-Dest: iframe\r\n\r\n`);
+    });
+    socket.once('error', reject);
+    socket.once('data', chunk => {
+      socket.pause();
+      if (!chunk.toString('latin1').startsWith('HTTP/1.1 200')) reject(new Error(chunk.toString('latin1', 0, 200)));
+      resolve(socket);
+    });
+  });
+}
+
+test('a preview that cannot be prepared or whose session ended says why in its frame', async ({ page, instance, allowedConsoleErrors }) => {
+  allowedConsoleErrors.push(/sandbox|Sandbox|Blocked script|status of (503|401)|Service Unavailable|Unauthorized/i);
+  // A page at the size limit is far more than a stalled connection buffers.
+  const heading = '<!doctype html><title>Big report</title><h1>Big report</h1><p>';
+  await openApp(page, instance);
+  await attach(page, 'big.html', 'text/html', heading + 'word '.repeat((10 * 1024 * 1024 - heading.length) / 5));
+  await page.locator('.attachment-title').filter({ hasText: 'big.html' }).click();
+  const view = page.frameLocator('iframe.html-preview');
+  await expect(view.getByRole('heading', { name: 'Big report' })).toBeVisible();
+  // Three other pages of this person are still being sent.
+  const preview = new URL(await page.locator('iframe.html-preview').getAttribute('src'), instance.url);
+  preview.searchParams.set('reload', '1');
+  const cookie = (await page.context().cookies()).map(({ name, value }) => `${name}=${value}`).join('; ');
+  const stalled = [];
+  for (let index = 0; index < 3; index++) stalled.push(await stalledRequest(preview, cookie));
+  await page.getByRole('button', { name: 'Reload preview' }).click();
+  await expect(view.locator('main')).toMatchAriaSnapshot(`
+    - main:
+      - heading "Preview unavailable" [level=1]
+      - paragraph: Your other previews are still loading, maybe in another tab or window.
+      - paragraph:
+        - text: Use
+        - strong: Reload preview
+        - text: to try again.
+  `);
+  for (const socket of stalled) socket.destroy();
+  await page.getByRole('button', { name: 'Reload preview' }).click();
+  await expect(view.getByRole('heading', { name: 'Big report' })).toBeVisible();
+  // A session that ended while the preview was open.
+  await page.context().clearCookies();
+  await page.getByRole('button', { name: 'Reload preview' }).click();
+  await expect(view.getByText('Your session has ended. Sign in to oneloop again.')).toBeVisible();
+});
+
 test('Markdown strips app actions and SVG navigation while keeping math, diagrams and footnotes', async ({ page, instance }) => {
   await openApp(page, instance);
   const markdown = `# Safe reader\n\n$x^2$\n\nReference[^1]\n\n[^1]: Footnote\n\n<svg viewBox="0 0 100 20"><a href="https://example.invalid/svg"><path d="M0 0h100v20H0z"/></a></svg>\n<span tabindex="0" data-reorder-task="${instance.projects[0].task.taskKey}" data-reorder-file="anything" data-action="logout" data-action-keydown="logout" data-args="[]">Gadget</span>\n[External](https://example.invalid/)` + '\n\n```mermaid\nsequenceDiagram\n A->>B: $$x^2$$\n```' + '\n\n```mermaid\nflowchart LR\n A$$B-->C\n subgraph s$$\n C-->D$$E-->F$$G\n end\n```';
@@ -248,6 +360,34 @@ test('the PDF preview loads bundled assets from a deep app URL', async ({ page, 
   const assetPath = response => new URL(response.url()).pathname.replace(/^\/v\/[a-f0-9]{64}(?=\/)/, '');
   for (const name of ['pdf.mjs', 'pdf.worker.mjs']) expect(assets.some(response => assetPath(response) === `/vendor/pdfjs/${name}` && response.ok())).toBe(true);
   expect(assets.every(response => assetPath(response).startsWith('/vendor/pdfjs/') && response.ok())).toBe(true);
+});
+
+test('a file list read before an upload finished neither hides the new file nor closes its preview', async ({ page, instance }) => {
+  await openApp(page, instance);
+  // The live update after the first upload reads the list, which is held
+  // until the second upload has finished here and its preview is open.
+  const read = await holdResponses(page, '**/api/tasks/*/attachments', { method: 'GET' });
+  const dialog = page.getByRole('dialog');
+  try {
+    await attach(page, 'first.txt', 'text/plain', 'First file');
+    await read.started;
+    await attach(page, 'second.txt', 'text/plain', 'Second file');
+    await expect(page.locator('.attachment-title')).toHaveCount(2);
+    await page.evaluate(() => {
+      window.__fewestFiles = 2;
+      new MutationObserver(() => { window.__fewestFiles = Math.min(window.__fewestFiles, document.querySelectorAll('.attachment-title').length); })
+        .observe(document.body, { childList: true, subtree: true });
+    });
+    await page.locator('.attachment-title').filter({ hasText: 'second.txt' }).click();
+    await expect(dialog.getByText('File 2 of 2')).toBeVisible();
+  } finally {
+    // The list is read again after the held answer.
+    const again = page.waitForResponse(response => response.request().method() === 'GET' && /\/attachments$/.test(response.url()));
+    await read.release();
+    await again;
+  }
+  await expect(dialog.locator('pre')).toHaveText('Second file');
+  expect(await page.evaluate(() => window.__fewestFiles)).toBe(2);
 });
 
 test('an attachment response survives task projection replacement', async ({ page, instance }) => {
