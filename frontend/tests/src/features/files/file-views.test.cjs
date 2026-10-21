@@ -330,6 +330,19 @@ test('Markdown loads only the libraries it needs and retries a failed math libra
   await open('<pre><code class="language-js">const answer = 42;</code></pre>'); assert(host.querySelector('.hljs-keyword'));
 });
 
+test('a long HTML file says its source is cut only in Source mode, and a long Markdown file in both', () => {
+  const { host, views } = lazyPreviews();
+  const note = () => host.querySelector('[data-truncated]');
+  views.htmlView(host, { name: 'report.html', size: 300000, htmlPreviewUrl: '/api/attachments/r/preview/html' }, '<h1>Report</h1>');
+  assert(note().hidden, 'the preview shows the whole page');
+  host.querySelector('[data-view-source]').click();
+  assert(!note().hidden); assert.match(note().textContent, /Source truncated to 200,000 characters/);
+  host.querySelector('[data-view-preview]').click();
+  assert(note().hidden);
+  views.markdownView(host, { name: 'notes.md', size: 300000 }, '# Notes', true);
+  assert(!note().hidden); assert.match(note().textContent, /Preview truncated to 200 KB/);
+});
+
 test('HTML previews keep Source usable without parsing, and show nothing without a server preview', () => {
   const { d, host, views } = lazyPreviews();
   let parses = 0;

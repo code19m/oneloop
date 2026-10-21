@@ -15,12 +15,15 @@ const vendor = /** @type {any} */ (globalThis);
 
 const remote=value=>{try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password;}catch{return false;}};
 const embedded=value=>/^data:image\/(png|jpe?g|gif|webp|avif);base64,/i.test(value||'');
+// A Markdown preview shows the start of the file, so its note shows in both
+// modes; an HTML preview shows the whole page, and only its source is cut.
 function shell(host,kind,text,truncated){
-  setTrustedHTML(host,`<div class="html-preview-tools"><div class="seg" role="group" aria-label="${kind} preview mode"><button class="on" aria-pressed="true" data-view-preview>Preview</button><button aria-pressed="false" data-view-source>Source</button></div></div>${truncated?'<p class="access-note">'+(kind==='HTML'?'Source truncated to 200,000 characters.':'Preview truncated to 200 KB.')+' Download the full file.</p>':''}<div class="document-preview"></div><pre class="html-source" tabindex="0" hidden></pre>`);
+  const sourceOnly=kind==='HTML';
+  setTrustedHTML(host,`<div class="html-preview-tools"><div class="seg" role="group" aria-label="${kind} preview mode"><button class="on" aria-pressed="true" data-view-preview>Preview</button><button aria-pressed="false" data-view-source>Source</button></div></div>${truncated?'<p class="access-note" data-truncated'+(sourceOnly?' hidden>Source truncated to 200,000 characters.':'>Preview truncated to 200 KB.')+' Download the full file.</p>':''}<div class="document-preview"></div><pre class="html-source" tabindex="0" hidden></pre>`);
   const tools=host.querySelector('.html-preview-tools');host.closest('.file-dialog')?.querySelector('.file-tools')?.append(tools);
-  const view=host.querySelector('.document-preview'),source=host.querySelector('.html-source');source.textContent=text;
+  const view=host.querySelector('.document-preview'),source=host.querySelector('.html-source'),note=host.querySelector('[data-truncated]');source.textContent=text;
   let onMode=(/** @type {boolean} */ _rendered)=>{};
-  const mode=rendered=>{if(view.hidden===!rendered)return;onMode(rendered);view.hidden=!rendered;source.hidden=rendered;UIMotion.fade(rendered?view:source);for(const [key,on]of [['preview',rendered],['source',!rendered]]){const button=tools.querySelector('[data-view-'+key+']');button.classList.toggle('on',on);button.setAttribute('aria-pressed',String(on));}};
+  const mode=rendered=>{if(view.hidden===!rendered)return;onMode(rendered);view.hidden=!rendered;source.hidden=rendered;if(note&&sourceOnly)note.hidden=rendered;UIMotion.fade(rendered?view:source);for(const [key,on]of [['preview',rendered],['source',!rendered]]){const button=tools.querySelector('[data-view-'+key+']');button.classList.toggle('on',on);button.setAttribute('aria-pressed',String(on));}};
   tools.querySelector('[data-view-preview]').onclick=()=>mode(true);tools.querySelector('[data-view-source]').onclick=()=>mode(false);
   return {view,tools,onMode(callback){onMode=callback;}};
 }
