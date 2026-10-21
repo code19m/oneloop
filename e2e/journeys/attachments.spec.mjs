@@ -362,11 +362,12 @@ test('the PDF preview loads bundled assets from a deep app URL', async ({ page, 
   expect(assets.every(response => assetPath(response).startsWith('/vendor/pdfjs/') && response.ok())).toBe(true);
 });
 
-test('a file list read before an upload finished never hides the uploaded file', async ({ page, instance }) => {
+test('a file list read before an upload finished neither hides the new file nor closes its preview', async ({ page, instance }) => {
   await openApp(page, instance);
   // The live update after the first upload reads the list, which is held
-  // until the second upload has finished here.
+  // until the second upload has finished here and its preview is open.
   const read = await holdResponses(page, '**/api/tasks/*/attachments', { method: 'GET' });
+  const dialog = page.getByRole('dialog');
   try {
     await attach(page, 'first.txt', 'text/plain', 'First file');
     await read.started;
@@ -377,15 +378,16 @@ test('a file list read before an upload finished never hides the uploaded file',
       new MutationObserver(() => { window.__fewestFiles = Math.min(window.__fewestFiles, document.querySelectorAll('.attachment-title').length); })
         .observe(document.body, { childList: true, subtree: true });
     });
+    await page.locator('.attachment-title').filter({ hasText: 'second.txt' }).click();
+    await expect(dialog.getByText('File 2 of 2')).toBeVisible();
   } finally {
     // The list is read again after the held answer.
     const again = page.waitForResponse(response => response.request().method() === 'GET' && /\/attachments$/.test(response.url()));
     await read.release();
     await again;
   }
+  await expect(dialog.locator('pre')).toHaveText('Second file');
   expect(await page.evaluate(() => window.__fewestFiles)).toBe(2);
-  await page.locator('.attachment-title').filter({ hasText: 'first.txt' }).click();
-  await expect(page.getByRole('dialog').getByText('File 1 of 2')).toBeVisible();
 });
 
 test('an attachment response survives task projection replacement', async ({ page, instance }) => {
