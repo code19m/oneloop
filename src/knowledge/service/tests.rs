@@ -58,7 +58,7 @@ pub(super) async fn synced_project(
 }
 
 #[test]
-fn an_html_preview_reads_no_bytes_of_other_files_or_for_a_current_copy() {
+fn deciding_an_html_preview_reads_no_bytes() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static CONTENT_READS: AtomicUsize = AtomicUsize::new(0);
     let (_root, mut connection) = crate::db::migrated_connection();
@@ -96,21 +96,20 @@ fn an_html_preview_reads_no_bytes_of_other_files_or_for_a_current_copy() {
         }),
     );
     let transaction = connection.transaction().unwrap();
+    // Neither another file, nor a page to send, nor a current copy.
     assert!(matches!(
-        html_preview_bytes(&transaction, "p", "data.bin", None),
+        html_preview_file(&transaction, "p", "data.bin", None),
         Err(AppError::NotFound {
             resource: "preview"
         })
     ));
+    let (etag, stored) = html_preview_file(&transaction, "p", "page.html", None).unwrap();
+    let stored = stored.unwrap();
+    assert_eq!((stored.checksum.as_str(), stored.size), ("sum", 9));
+    let (current, stored) = html_preview_file(&transaction, "p", "page.html", Some(&etag)).unwrap();
+    assert_eq!(current, etag);
+    assert!(stored.is_none());
     assert_eq!(CONTENT_READS.load(Ordering::Relaxed), 0);
-    let (etag, bytes) = html_preview_bytes(&transaction, "p", "page.html", None).unwrap();
-    assert_eq!(bytes.unwrap(), b"<p>hi</p>");
-    assert_eq!(CONTENT_READS.load(Ordering::Relaxed), 1);
-    assert_eq!(
-        html_preview_bytes(&transaction, "p", "page.html", Some(&etag)).unwrap(),
-        (etag, None)
-    );
-    assert_eq!(CONTENT_READS.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]

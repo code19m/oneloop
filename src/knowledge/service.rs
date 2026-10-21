@@ -439,20 +439,25 @@ impl KnowledgeService {
         let path = requested_path(path)?;
         let actor = actor.clone();
         let project_id = project_id.to_owned();
-        let (etag, bytes) = self
+        let (etag, stored) = self
             .inner
             .db
             .snapshot(move |connection| {
                 authorize_read(connection, &actor, &project_id)?;
-                html_preview_bytes(connection, &project_id, &path, validator.as_deref())
+                html_preview_file(connection, &project_id, &path, validator.as_deref())
             })
             .await?;
-        Ok(match bytes {
-            Some(bytes) => HtmlPreview::Page {
-                bytes: crate::files::sanitized_html_preview(bytes).await?,
-                etag,
-            },
-            None => HtmlPreview::NotModified(etag),
+        let Some(stored) = stored else {
+            return Ok(HtmlPreview::NotModified(etag));
+        };
+        let turn = crate::files::html_preview_turn().await;
+        let size = stored.size;
+        let bytes = FileBody::new(self.inner.db.clone(), stored.rowid, stored.checksum, size)
+            .read_start(size)
+            .await?;
+        Ok(HtmlPreview::Page {
+            bytes: crate::files::sanitized_html_preview(turn, bytes).await?,
+            etag,
         })
     }
 }
@@ -545,15 +550,23 @@ fn is_manager(actor: &Actor) -> bool {
     actor.is_admin && matches!(actor.source, ActorSource::BrowserSession { .. })
 }
 
-/// The preview validator of an HTML file, and its bytes unless `validator`
-/// matches. The file's kind and validator are checked first, so a request for
-/// another file, up to 10 MiB, or for a current copy never loads the bytes.
-fn html_preview_bytes(
+/// One stored version of a file, which a reader reads by its rowid while its
+/// checksum stays the same.
+struct StoredVersion {
+    rowid: i64,
+    checksum: String,
+    size: u64,
+}
+
+/// The preview validator of an HTML file and, unless `validator` matches,
+/// the version to clean. Nothing here reads the bytes, so a request for
+/// another file, up to 10 MiB, or for a current copy never loads them.
+fn html_preview_file(
     connection: &Connection,
     project_id: &str,
     path: &str,
     validator: Option<&str>,
-) -> AppResult<(String, Option<Vec<u8>>)> {
+) -> AppResult<(String, Option<StoredVersion>)> {
     let (rowid, media_type, kind, size, checksum): (i64, String, Option<String>, i64, String) =
         connection
             .query_row(
@@ -581,12 +594,15 @@ fn html_preview_bytes(
     if crate::files::etag_matches(validator, &etag) {
         return Ok((etag, None));
     }
-    let bytes = connection.query_row(
-        "SELECT content FROM knowledge_files WHERE rowid=?1",
-        [rowid],
-        |row| row.get(0),
-    )?;
-    Ok((etag, Some(bytes)))
+    let size = size.max(0) as u64;
+    Ok((
+        etag,
+        Some(StoredVersion {
+            rowid,
+            checksum,
+            size,
+        }),
+    ))
 }
 
 /// The preview of a stored file of `size` bytes, from the kind its sync

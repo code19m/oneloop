@@ -2,7 +2,10 @@
 //! through before the sandbox of their response headers.
 use std::sync::LazyLock;
 
-use crate::{AppResult, blocking::Lane};
+use crate::{
+    AppResult,
+    blocking::{Lane, Turn},
+};
 
 /// Remove direct-navigation and nested browsing primitives before applying the
 /// response-header sandbox. This lexical pass is intentionally conservative;
@@ -115,11 +118,18 @@ pub(crate) fn html_preview_etag(checksum: &str) -> String {
     format!("\"{checksum}-html-{}\"", crate::build_info::VERSION)
 }
 
-/// Sanitize HTML for the sandboxed preview frame, at most two files at once,
-/// attachments and Knowledge files together.
-pub(crate) async fn sanitized_html_preview(bytes: Vec<u8>) -> AppResult<Vec<u8>> {
+/// A turn to read and clean one page. Attachments and Knowledge files share
+/// two turns, so however many previews open at once, at most two pages wait
+/// in memory to be cleaned.
+pub(crate) async fn html_preview_turn() -> Turn {
     static PREVIEWS: LazyLock<Lane> = LazyLock::new(|| Lane::new("HTML preview", 2));
-    PREVIEWS.run(move || sanitize_html_preview(&bytes)).await
+    PREVIEWS.turn().await
+}
+
+/// Sanitize HTML for the sandboxed preview frame, in the turn its bytes were
+/// read in.
+pub(crate) async fn sanitized_html_preview(turn: Turn, bytes: Vec<u8>) -> AppResult<Vec<u8>> {
+    turn.run(move || sanitize_html_preview(&bytes)).await
 }
 
 #[cfg(test)]
