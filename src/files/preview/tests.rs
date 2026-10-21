@@ -13,7 +13,7 @@ fn hostile_megabyte_previews_do_not_take_quadratic_time() {
     // generous bound tolerates a loaded machine.
     let only_brackets = "<".repeat(1024 * 1024);
     assert_eq!(
-        sanitize_html_preview(only_brackets.as_bytes()).len(),
+        sanitized(only_brackets.as_bytes()).len(),
         only_brackets.len() * "&lt;".len(),
         "every unfinished tag is escaped"
     );
@@ -23,7 +23,7 @@ fn hostile_megabyte_previews_do_not_take_quadratic_time() {
         "<\"".repeat(512 * 1024),
     ] {
         let start = std::time::Instant::now();
-        let result = sanitize_html_preview(input.as_bytes());
+        let result = sanitized(input.as_bytes());
         assert!(!result.is_empty());
         assert!(
             start.elapsed() < std::time::Duration::from_secs(10),
@@ -34,25 +34,79 @@ fn hostile_megabyte_previews_do_not_take_quadratic_time() {
 }
 
 #[test]
-fn one_long_tag_needs_memory_of_a_few_times_the_file_not_per_byte_of_the_tag() {
-    // The scanner once kept 16 bytes for each byte of a tag: hundreds of MiB
-    // for one large embedded image. The copies it needs, such as the output,
-    // take about the size of the file each.
+fn cleaning_holds_one_byte_per_byte_of_the_file_whatever_its_tags() {
+    // The scanner once kept 16 bytes for each byte of a tag, and the cleaned
+    // page, up to four times the file, stayed in memory until it was sent.
+    let folder = tempfile::tempdir().unwrap();
+    let disk = DiskAdmission::new(folder.path(), 0, Default::default());
     let image = format!(
         "<img src=\"data:image/png;base64,{}\">",
         "A".repeat(1024 * 1024)
     );
-    for input in [image.clone(), image.trim_end_matches(['"', '>']).to_owned()] {
-        let (output, peak) =
-            crate::test_memory::peak_heap(|| sanitize_html_preview(input.as_bytes()));
-        assert!(output.len() >= input.len());
-        assert!(peak < 6 * input.len(), "{peak} bytes for {}", input.len());
+    for input in [
+        image.clone(),
+        image.trim_end_matches(['"', '>']).to_owned(),
+        "<".repeat(1024 * 1024),
+    ] {
+        let (cleaned, peak) = crate::test_memory::peak_heap(|| {
+            clean_into_file(input.as_bytes(), folder.path(), &disk).unwrap()
+        });
+        assert_eq!(cleaned.1, sanitized(input.as_bytes()).len() as u64);
+        assert!(
+            peak < input.len() + 256 * 1024,
+            "{peak} bytes for {}",
+            input.len()
+        );
     }
 }
 
+#[tokio::test]
+async fn a_cleaned_page_leaves_no_name_in_the_previews_folder() {
+    let folder = tempfile::tempdir().unwrap();
+    let disk = DiskAdmission::new(folder.path(), 0, Default::default());
+    let source = b"<p>Report</p><iframe src=x></iframe>".to_vec();
+    let turn = html_preview_turn(&PerPerson::new(usize::MAX), "reader")
+        .await
+        .unwrap();
+    let mut page = cleaned_html_preview(turn, source.clone(), folder.path().into(), disk)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 0);
+    let mut text = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut page, &mut text)
+        .await
+        .unwrap();
+    assert_eq!(text, b"<p>Report</p>");
+    assert_eq!(page.len(), text.len() as u64);
+}
+
+#[tokio::test]
+async fn each_person_has_one_preview_that_waits_is_cleaned_or_is_sent() {
+    let folder = tempfile::tempdir().unwrap();
+    let disk = DiskAdmission::new(folder.path(), 0, Default::default());
+    let previewers = PerPerson::new(usize::MAX);
+    let busy = |turn: AppResult<PreviewTurn>| matches!(turn, Err(AppError::Unavailable(_)));
+    let turn = html_preview_turn(&previewers, "reader").await.unwrap();
+    assert!(busy(html_preview_turn(&previewers, "reader").await));
+    drop(html_preview_turn(&previewers, "other").await.unwrap());
+    let page = cleaned_html_preview(turn, b"<p>Report</p>".to_vec(), folder.path().into(), disk)
+        .await
+        .unwrap();
+    assert!(busy(html_preview_turn(&previewers, "reader").await));
+    drop(page);
+    drop(html_preview_turn(&previewers, "reader").await.unwrap());
+}
+
+/// The cleaned page of `bytes`, in memory.
+fn sanitized(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    sanitize_html_preview(bytes, &mut out).unwrap();
+    out
+}
+
 fn assert_no_nested_navigation(source: &[u8]) {
-    let sanitized = sanitize_html_preview(source);
-    let text = std::str::from_utf8(&sanitized).unwrap();
+    let cleaned = sanitized(source);
+    let text = std::str::from_utf8(&cleaned).unwrap();
     let dom = Html::parse_document(text);
     let forbidden = Selector::parse(
         "iframe,frame,frameset,object,embed,base,portal,fencedframe,meta[http-equiv]",
@@ -79,7 +133,7 @@ proptest! {
 
 #[test]
 fn invalid_utf8_gets_a_notice_instead_of_the_bytes() {
-    let output = String::from_utf8(sanitize_html_preview(b"<p>caf\xe9</p>")).unwrap();
+    let output = String::from_utf8(sanitized(b"<p>caf\xe9</p>")).unwrap();
     assert!(
         output.contains("This HTML file is not valid UTF-8."),
         "{output}"
@@ -89,18 +143,18 @@ fn invalid_utf8_gets_a_notice_instead_of_the_bytes() {
 #[test]
 fn unfinished_tags_preserve_later_markup_and_browser_quote_rules() {
     let benign = "<p>if x < y it's fine</p><h1>Title</h1>";
-    assert_eq!(sanitize_html_preview(benign.as_bytes()), benign.as_bytes());
+    assert_eq!(sanitized(benign.as_bytes()), benign.as_bytes());
     let malformed = b"<a title=\"unfinished<h1>Title</h1><iframe src=x></iframe><p>end</p>";
-    let sanitized = String::from_utf8(sanitize_html_preview(malformed)).unwrap();
-    assert!(sanitized.contains("<h1>Title</h1>"));
-    assert!(sanitized.contains("<p>end</p>"));
-    assert!(!sanitized.contains("<iframe"));
+    let cleaned = String::from_utf8(sanitized(malformed)).unwrap();
+    assert!(cleaned.contains("<h1>Title</h1>"));
+    assert!(cleaned.contains("<p>end</p>"));
+    assert!(!cleaned.contains("<iframe"));
     for source in [
         br#"<a b'c><iframe src=x></iframe>'>"#.as_slice(),
         br#"<p title=x"y><iframe src=x></iframe>" >"#,
     ] {
         assert!(
-            !String::from_utf8(sanitize_html_preview(source))
+            !String::from_utf8(sanitized(source))
                 .unwrap()
                 .contains("<iframe")
         );
@@ -111,16 +165,23 @@ fn unfinished_tags_preserve_later_markup_and_browser_quote_rules() {
 fn memoized_scanner_matches_unoptimized_reference() {
     // Keep the value-aware pre-optimization scanner as an output oracle.
     // Deliberately small inputs let the reference rescan malformed suffixes.
-    let alphabet = b"<>='\" /abcxyz\t\n";
+    // Tag names match in any letter case.
+    let alphabet = b"<>='\" /abcxyzAEFIMRT\t\n";
+    let endings: [&[u8]; 4] = [
+        b"<iframe src=x></iframe><p>ok</p>",
+        b"<IFRAME src=x></IfRaMe><p>ok</p>",
+        b"<META Http-Equiv=refresh content=0><p>ok</p>",
+        b"<Meta charset=utf-8><p>ok</p>",
+    ];
     let mut state = 13_u64;
-    for _ in 0..20_000 {
+    for round in 0..20_000 {
         let mut source = Vec::new();
         for _ in 0..80 {
             state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
             source.push(alphabet[(state >> 32) as usize % alphabet.len()]);
         }
-        source.extend_from_slice(b"<iframe src=x></iframe><p>ok</p>");
-        assert_eq!(sanitize_html_preview(&source), reference_sanitizer(&source));
+        source.extend_from_slice(endings[round % endings.len()]);
+        assert_eq!(sanitized(&source), reference_sanitizer(&source));
     }
 }
 

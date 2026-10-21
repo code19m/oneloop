@@ -16,7 +16,7 @@ use crate::{
     clock::unix_now,
     files::{
         AttachmentView, BlobState, HtmlPreview, MAX_HTML_PREVIEW_BYTES, MAX_TEXT_PREVIEW_BYTES,
-        PreviewKind, StoredFile, html_preview_etag, html_preview_turn, sanitized_html_preview,
+        PreviewKind, StoredFile, cleaned_html_preview, html_preview_etag, html_preview_turn,
     },
 };
 
@@ -128,7 +128,7 @@ impl FileService {
             ConditionalRead::Modified(read) => *read,
             ConditionalRead::NotModified(etag) => return Ok(HtmlPreview::NotModified(etag)),
         };
-        let turn = html_preview_turn().await;
+        let turn = html_preview_turn(&self.html_previewers, &actor.user_id).await?;
         let mut bytes = Vec::with_capacity(read.size as usize);
         read.file
             .take(MAX_HTML_PREVIEW_BYTES + 1)
@@ -139,8 +139,10 @@ impl FileService {
                 resource: "preview",
             });
         }
+        let page =
+            cleaned_html_preview(turn, bytes, self.store.previews(), self.disk.clone()).await?;
         Ok(HtmlPreview::Page {
-            bytes: sanitized_html_preview(turn, bytes).await?,
+            page,
             etag: read.etag,
         })
     }

@@ -102,8 +102,8 @@ never removes other files by itself.
 
 oneloop refuses an upload when files and unfinished uploads reach the limit,
 or when the upload would still leave less free disk space than
-`ONELOOP_DISK_MIN_FREE`. Space that running uploads and Knowledge downloads
-need counts as used. A deleted file, or a file of a deleted task, still
+`ONELOOP_DISK_MIN_FREE`. Space that running uploads, Knowledge downloads and
+HTML previews being sent need counts as used. A deleted file, or a file of a deleted task, still
 counts, as pending deletion, until oneloop removes it after the
 [Undo](user-guide.md#undo-a-deletion) window.
 
@@ -161,7 +161,7 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 | Attachment size | 25 MiB per file |
 | Attachments per task | 25 |
 | Text and Markdown previews | The first 200 KiB |
-| HTML previews | Files up to 10 MiB |
+| HTML previews | Files up to 10 MiB. The server prepares two pages at once. Each person can have one attachment page and one Knowledge page that waits, is being prepared or is being sent; another one gets "try again" at once, and so does a page that waits 5 seconds |
 | Image thumbnails | PNG, JPEG and WebP images within the decode limits below; at most 256 × 256 px |
 | Avatar | 5 MiB, and within the decode limits below; stored as 256 × 256 px. One upload at a time per person, and 4 at once on the server |
 | Upload in progress | Fails if it stalls for 60 seconds, or takes over an hour |

@@ -53,6 +53,8 @@ pub struct FileService {
     thumbnails: std::sync::Arc<thumbnail::ThumbnailQueue>,
     /// People with an avatar upload under way, one upload each.
     avatar_uploaders: PerPerson,
+    /// People with an HTML preview that waits or is cleaned, one each.
+    html_previewers: PerPerson,
     scans: Lane,
     /// One image decode at a time, for avatar uploads and thumbnails together,
     /// so their memory never adds up.
@@ -184,6 +186,7 @@ impl FileService {
             disk,
             thumbnails: Default::default(),
             avatar_uploaders: PerPerson::new(avatar::AVATAR_UPLOADS),
+            html_previewers: PerPerson::new(usize::MAX),
             scans: Lane::new("file scanner", 2),
             decodes: Lane::new("image decoder", 1),
             inspections: Lane::new("text inspection", 2),

@@ -7,8 +7,8 @@
 mod detect;
 mod models;
 mod preview;
-pub use preview::HtmlPreview;
-pub(crate) use preview::{html_preview_etag, html_preview_turn, sanitized_html_preview};
+pub use preview::{CleanedPage, HtmlPreview};
+pub(crate) use preview::{cleaned_html_preview, html_preview_etag, html_preview_turn};
 mod service;
 mod storage;
 

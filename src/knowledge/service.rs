@@ -74,6 +74,8 @@ pub(super) struct Inner {
     /// People with a search that runs or waits. Each has one at most, so no
     /// one can fill the queue.
     searchers: PerPerson,
+    /// People with an HTML preview that waits or is cleaned, one each.
+    html_previewers: PerPerson,
 }
 
 /// The Knowledge page: sync state and the file list. Only administrators
@@ -296,6 +298,7 @@ impl KnowledgeService {
                 readers: Lane::new("knowledge reader", 1),
                 searches: Lane::new("knowledge search", 1),
                 searchers: PerPerson::new(usize::MAX),
+                html_previewers: PerPerson::new(usize::MAX),
             }),
         }
     }
@@ -438,6 +441,7 @@ impl KnowledgeService {
     ) -> AppResult<HtmlPreview> {
         actor.require_ready()?;
         let path = requested_path(path)?;
+        let user_id = actor.user_id.clone();
         let actor = actor.clone();
         let project_id = project_id.to_owned();
         let (etag, stored) = self
@@ -451,15 +455,20 @@ impl KnowledgeService {
         let Some(stored) = stored else {
             return Ok(HtmlPreview::NotModified(etag));
         };
-        let turn = crate::files::html_preview_turn().await;
+        let turn = crate::files::html_preview_turn(&self.inner.html_previewers, &user_id).await?;
         let size = stored.size;
-        let bytes = FileBody::new(self.inner.db.clone(), stored.rowid, stored.checksum, size)
+        let db = &self.inner.db;
+        let bytes = FileBody::new(db.clone(), stored.rowid, stored.checksum, size)
             .read_start(size)
             .await?;
-        Ok(HtmlPreview::Page {
-            bytes: crate::files::sanitized_html_preview(turn, bytes).await?,
-            etag,
-        })
+        let page = crate::files::cleaned_html_preview(
+            turn,
+            bytes,
+            db.layout().previews(),
+            self.inner.disk.clone(),
+        )
+        .await?;
+        Ok(HtmlPreview::Page { page, etag })
     }
 }
 

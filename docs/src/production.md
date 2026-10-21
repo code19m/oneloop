@@ -9,7 +9,16 @@ Before your team uses oneloop, set up three things:
 Give oneloop at least 512 MB of memory. It uses about 50 MiB when idle, and up
 to about 200 MiB more while it decodes an image for a thumbnail or an avatar,
 one image at a time. Knowledge search keeps up to 64 MiB of indexes, and
-needs up to about 100 MiB more while it builds one.
+needs up to about 100 MiB more while it builds one. HTML previews prepare two
+pages at once, with about twice the file's size in memory each: up to 40 MiB.
+
+A prepared HTML preview waits on disk while it is sent, in a temporary file in
+the data folder that has no name, so it goes away when the response ends,
+however it ends. It takes about the size of the file, and up to 4 times as
+much for a page full of `<` characters, and under 1 MiB of memory. Each person
+has at most one attachment page and one Knowledge page being sent, and
+previews use only disk space above
+[`ONELOOP_DISK_MIN_FREE`](reference.md#configuration).
 
 ## HTTPS with a reverse proxy
 

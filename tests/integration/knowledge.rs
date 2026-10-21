@@ -645,6 +645,7 @@ async fn files_follow_the_attachment_safety_rules() {
         "private, no-cache"
     );
     let etag = preview.headers()[header::ETAG].to_str().unwrap().to_owned();
+    assert!(body_bytes(preview).await.starts_with(b"<!doctype html>"));
     let current = fixture
         .get_with(&fixture.member, preview_url, &[("if-none-match", &etag)])
         .await;

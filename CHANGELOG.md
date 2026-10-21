@@ -10,8 +10,11 @@ All notable changes to oneloop are recorded here. The format follows
 
 - HTML previews of attachments and Knowledge files now show files up to
   10 MiB instead of 1 MiB, such as reports with many screenshots inside the
-  file. Files uploaded or synced before preview at once. A large embedded
-  image no longer makes the server use much more memory to clean the page.
+  file. Files uploaded or synced before preview at once. While a preview is
+  sent, its prepared page waits in a temporary file in the data folder
+  instead of in memory, and each person has one attachment page and one
+  Knowledge page prepared or sent at a time. Production setup says what
+  previews cost in memory and disk space.
 - Opening an HTML preview again usually shows the browser's copy when the file
   hasn't changed, instead of downloading it again. **Reload preview** still
   gets a new copy from the server.

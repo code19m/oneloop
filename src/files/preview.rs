@@ -1,60 +1,80 @@
 //! The lexical pass that HTML previews of attachments and Knowledge files go
-//! through before the sandbox of their response headers.
-use std::sync::LazyLock;
+//! through before the sandbox of their response headers, and the cleaned
+//! pages they send.
+use std::{
+    io::{self, BufWriter, Seek, Write},
+    path::Path,
+    pin::Pin,
+    sync::LazyLock,
+    task::{Context, Poll},
+    time::Duration,
+};
+
+use tokio::io::{AsyncRead, ReadBuf};
 
 use crate::{
-    AppResult,
-    blocking::{Lane, Turn},
+    AppError, AppResult,
+    blocking::{Lane, PerPerson, Place, Turn},
+    disk::{DiskAdmission, DiskReservation},
 };
+
+const NOT_UTF8: &[u8] =
+    b"<!doctype html><meta charset=utf-8><p>This HTML file is not valid UTF-8.</p>";
+
+/// Elements that browse or load on their own. `link` also covers hints such
+/// as preconnect, which open connections to other sites that the preview's
+/// policy may not govern.
+const REMOVED: [&str; 9] = [
+    "iframe",
+    "frame",
+    "frameset",
+    "object",
+    "embed",
+    "base",
+    "link",
+    "portal",
+    "fencedframe",
+];
 
 /// Remove direct-navigation and nested browsing primitives before applying the
 /// response-header sandbox. This lexical pass is intentionally conservative;
-/// the CSP remains the primary execution boundary.
-fn sanitize_html_preview(bytes: &[u8]) -> Vec<u8> {
+/// the CSP remains the primary execution boundary. Besides `out`, it needs
+/// one byte of memory for each byte of the file.
+fn sanitize_html_preview(bytes: &[u8], out: &mut impl Write) -> io::Result<()> {
     let Ok(source) = std::str::from_utf8(bytes) else {
-        return b"<!doctype html><meta charset=utf-8><p>This HTML file is not valid UTF-8.</p>"
-            .to_vec();
+        return out.write_all(NOT_UTF8);
     };
-    let mut output = String::with_capacity(source.len());
-    let lower = source.to_ascii_lowercase();
     let mut cursor = 0;
     let mut dead_states = vec![0_u8; source.len()];
-    while let Some(relative) = lower[cursor..].find('<') {
+    while let Some(relative) = source[cursor..].find('<') {
         let start = cursor + relative;
-        output.push_str(&source[cursor..start]);
+        out.write_all(&bytes[cursor..start])?;
         let Some(tag_end) = find_tag_end(source.as_bytes(), start, &mut dead_states) else {
-            output.push_str("&lt;");
+            out.write_all(b"&lt;")?;
             cursor = start + 1;
             continue;
         };
         let end = tag_end + 1;
-        let tag = &lower[start + 1..end - 1];
+        let tag = &source[start + 1..end - 1];
         let normalized = tag.trim_start().trim_start_matches('/').trim_start();
         let name = normalized
             .split(|c: char| c.is_ascii_whitespace() || c == '/' || c == '>')
             .next()
             .unwrap_or("");
-        // `link` also covers hints such as preconnect, which open connections
-        // to other sites that the preview's policy may not govern.
-        let remove = matches!(
-            name,
-            "iframe"
-                | "frame"
-                | "frameset"
-                | "object"
-                | "embed"
-                | "base"
-                | "link"
-                | "portal"
-                | "fencedframe"
-        ) || (name == "meta" && tag.contains("http-equiv"));
+        let remove = REMOVED
+            .iter()
+            .any(|removed| name.eq_ignore_ascii_case(removed))
+            || (name.eq_ignore_ascii_case("meta")
+                && tag
+                    .as_bytes()
+                    .windows(b"http-equiv".len())
+                    .any(|window| window.eq_ignore_ascii_case(b"http-equiv")));
         if !remove {
-            output.push_str(&source[start..end]);
+            out.write_all(&bytes[start..end])?;
         }
         cursor = end;
     }
-    output.push_str(&source[cursor..]);
-    output.into_bytes()
+    out.write_all(&bytes[cursor..])
 }
 
 fn find_tag_end(bytes: &[u8], start: usize, dead: &mut [u8]) -> Option<usize> {
@@ -106,10 +126,9 @@ fn next_state(state: u8, ch: u8) -> Option<u8> {
 
 /// A cleaned page for the preview frame, or word that the browser's copy of it
 /// is current.
-#[derive(Debug)]
 pub enum HtmlPreview {
     NotModified(String),
-    Page { bytes: Vec<u8>, etag: String },
+    Page { page: CleanedPage, etag: String },
 }
 
 /// The validator of the cleaned page of a file with this checksum. Another
@@ -118,18 +137,125 @@ pub(crate) fn html_preview_etag(checksum: &str) -> String {
     format!("\"{checksum}-html-{}\"", crate::build_info::VERSION)
 }
 
-/// A turn to read and clean one page. Attachments and Knowledge files share
-/// two turns, so however many previews open at once, at most two pages wait
-/// in memory to be cleaned.
-pub(crate) async fn html_preview_turn() -> Turn {
-    static PREVIEWS: LazyLock<Lane> = LazyLock::new(|| Lane::new("HTML preview", 2));
-    PREVIEWS.turn().await
+/// A cleaned page in a file that has no name, so its disk space returns
+/// when the page is dropped, however its response ends. A response reads it
+/// one buffer at a time, so a slow client holds no more of it in memory. The
+/// page keeps its person's place, so no one holds more than one at a time.
+pub struct CleanedPage {
+    file: tokio::fs::File,
+    len: u64,
+    _space: DiskReservation,
+    _place: Place,
 }
 
-/// Sanitize HTML for the sandboxed preview frame, in the turn its bytes were
-/// read in.
-pub(crate) async fn sanitized_html_preview(turn: Turn, bytes: Vec<u8>) -> AppResult<Vec<u8>> {
-    turn.run(move || sanitize_html_preview(&bytes)).await
+impl CleanedPage {
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl AsyncRead for CleanedPage {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.file).poll_read(context, buffer)
+    }
+}
+
+/// How long a preview waits for its turn before it is told to try again.
+const QUEUE_WAIT: Duration = Duration::from_secs(5);
+
+/// A turn to read and clean one page, and its person's place in the queue.
+pub(crate) struct PreviewTurn {
+    _place: Place,
+    turn: Turn,
+}
+
+/// A turn to read and clean a page for `user_id`, one of `previewers`.
+/// Attachments and Knowledge files share two turns, so however many previews
+/// open at once, at most two pages are in memory. Each person has one
+/// preview of each that waits, is cleaned or is being sent, and a preview
+/// that waits five seconds is told to try again.
+pub(crate) async fn html_preview_turn(
+    previewers: &PerPerson,
+    user_id: &str,
+) -> AppResult<PreviewTurn> {
+    static PREVIEWS: LazyLock<Lane> = LazyLock::new(|| Lane::new("HTML preview", 2));
+    let place = previewers.claim(user_id).map_err(|_| {
+        AppError::Unavailable(
+            "your previous HTML preview is still loading; try again shortly".into(),
+        )
+    })?;
+    let turn = PREVIEWS.turn_within(QUEUE_WAIT).await?;
+    Ok(PreviewTurn {
+        _place: place,
+        turn,
+    })
+}
+
+/// Cleans `bytes`, read in `turn`, into a page in the `folder` for previews.
+/// The page takes disk space from `disk` until it is dropped.
+pub(crate) async fn cleaned_html_preview(
+    turn: PreviewTurn,
+    bytes: Vec<u8>,
+    folder: std::path::PathBuf,
+    disk: DiskAdmission,
+) -> AppResult<CleanedPage> {
+    let PreviewTurn {
+        _place: place,
+        turn,
+    } = turn;
+    let (file, len, space) = turn
+        .run(move || clean_into_file(&bytes, &folder, &disk))
+        .await??;
+    Ok(CleanedPage {
+        file: tokio::fs::File::from_std(file),
+        len,
+        _space: space,
+        _place: place,
+    })
+}
+
+fn clean_into_file(
+    bytes: &[u8],
+    folder: &Path,
+    disk: &DiskAdmission,
+) -> AppResult<(std::fs::File, u64, DiskReservation)> {
+    // Each escaped `<` grows by three bytes; nothing else grows.
+    let brackets = bytes.iter().filter(|byte| **byte == b'<').count();
+    let most = bytes.len() + 3 * brackets + NOT_UTF8.len();
+    let space = disk.reserve(most as u64)?;
+    let mut file = unnamed_file(folder)?;
+    let mut out = BufWriter::with_capacity(64 * 1024, &mut file);
+    sanitize_html_preview(bytes, &mut out)?;
+    out.flush()?;
+    drop(out);
+    let len = file.stream_position()?;
+    file.rewind()?;
+    Ok((file, len, space))
+}
+
+/// A new private file in `folder` whose name is removed at once. If a crash
+/// or a failed removal keeps the name, the hourly scan of the previews folder
+/// removes the file, as it isn't a thumbnail.
+fn unnamed_file(folder: &Path) -> io::Result<std::fs::File> {
+    let path = folder.join(format!("{}.html-preview", uuid::Uuid::now_v7()));
+    let file = crate::db::private_file_options()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    // That scan may already have removed it.
+    match std::fs::remove_file(&path) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(file),
+    }
 }
 
 #[cfg(test)]

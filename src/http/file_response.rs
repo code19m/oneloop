@@ -182,12 +182,16 @@ pub(crate) async fn conditional(read: ConditionalRead, request: &HeaderMap) -> A
 pub(crate) fn html_preview(preview: HtmlPreview, reload: bool) -> Response {
     let (mut response, etag) = match preview {
         HtmlPreview::NotModified(etag) => (StatusCode::NOT_MODIFIED.into_response(), etag),
-        HtmlPreview::Page { bytes, etag } => {
-            let mut response = Response::new(Body::from(bytes));
-            response.headers_mut().insert(
+        HtmlPreview::Page { page, etag } => {
+            let length = page.len();
+            let stream = ReaderStream::with_capacity(page, 64 * 1024);
+            let mut response = Response::new(Body::from_stream(stream));
+            let headers = response.headers_mut();
+            headers.insert(
                 header::CONTENT_TYPE,
                 HeaderValue::from_static("text/html; charset=utf-8"),
             );
+            headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
             (response, etag)
         }
     };

@@ -134,8 +134,17 @@ async fn html_that_older_syncs_stored_without_a_preview_previews_at_once() {
         .unwrap();
     let view = service.view(&people[0], "p").await.unwrap();
     assert_eq!(view.files[0].kind, Some(PreviewKind::Html));
-    let preview = service
+    let Ok(HtmlPreview::Page {
+        page: mut cleaned, ..
+    }) = service
         .html_preview(&people[0], "p", "report.html", None)
-        .await;
-    assert!(matches!(preview, Ok(HtmlPreview::Page { bytes, .. }) if bytes == page));
+        .await
+    else {
+        panic!("the page previews");
+    };
+    let mut text = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut cleaned, &mut text)
+        .await
+        .unwrap();
+    assert_eq!(text, page);
 }

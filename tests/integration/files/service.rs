@@ -1292,8 +1292,15 @@ async fn html_previews_files_up_to_10_mib_that_arrive_in_chunks() {
     .await;
     assert_eq!(html.preview_kind, Some(PreviewKind::Html));
     assert!(html.html_preview_url.is_some());
-    let preview = service.html_preview(&fixture.viewer, &html.id, None).await;
-    assert!(matches!(preview, Ok(HtmlPreview::Page { bytes, .. }) if bytes == page));
+    let Ok(HtmlPreview::Page {
+        page: mut cleaned, ..
+    }) = service.html_preview(&fixture.viewer, &html.id, None).await
+    else {
+        panic!("the page previews");
+    };
+    let mut text = Vec::new();
+    cleaned.read_to_end(&mut text).await.unwrap();
+    assert_eq!(text, page);
 
     page.push(b' ');
     let large = upload(
