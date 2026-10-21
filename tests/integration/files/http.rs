@@ -446,6 +446,56 @@ async fn html_previews_revalidate_without_cleaning_again_and_reload_sends_a_new_
     assert_eq!(body_bytes(reload).await, &b"<p>Report</p>"[..]);
 }
 
+#[tokio::test]
+async fn html_preview_errors_are_pages_the_frame_shows_that_say_why() {
+    let f = Fixture::new().await;
+    let (_, bytes) = f
+        .upload("busy-preview", "report.html", b"<p>Report</p>")
+        .await;
+    let attachment: AttachmentView = serde_json::from_slice(&bytes).unwrap();
+    let url = format!("{}?reload=1", attachment.html_preview_url.unwrap());
+    let get = |uri: String| {
+        f.app.clone().oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, &f.manager_cookie)
+                .header("sec-fetch-dest", "iframe")
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+    // Three pages of one person are being sent, as their bodies aren't read.
+    let mut sending = Vec::new();
+    for _ in 0..3 {
+        let response = get(url.clone()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        sending.push(response);
+    }
+    let busy = get(url.clone()).await.unwrap();
+    assert_eq!(busy.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(busy.headers()[header::RETRY_AFTER], "1");
+    let missing = get("/api/attachments/missing/preview/html".into())
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    for (response, problem) in [
+        (busy, "Your other previews are still loading"),
+        (missing, "This file is no longer available"),
+    ] {
+        let headers = response.headers();
+        assert_eq!(headers[header::CONTENT_TYPE], "text/html; charset=utf-8");
+        assert_eq!(headers["content-security-policy"], PREVIEW_POLICY);
+        assert_eq!(headers[header::X_FRAME_OPTIONS], "SAMEORIGIN");
+        assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
+        let page = String::from_utf8(body_bytes(response).await.to_vec()).unwrap();
+        assert!(page.contains(problem), "{page}");
+        assert!(page.contains("<strong>Reload preview</strong>"), "{page}");
+    }
+    // A page that has been sent frees its place.
+    body_bytes(sending.pop().unwrap()).await;
+    assert_eq!(get(url).await.unwrap().status(), StatusCode::OK);
+}
+
 /// The policy of every attachment and Knowledge HTML preview.
 pub(crate) const PREVIEW_POLICY: &str = "sandbox; default-src 'none'; style-src 'unsafe-inline'; \
      img-src data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";

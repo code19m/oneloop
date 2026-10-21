@@ -20,6 +20,12 @@ All notable changes to oneloop are recorded here. The format follows
   hasn't changed, instead of downloading it again. **Reload preview** still
   gets a new copy from the server.
 
+### Fixed
+
+- An HTML preview that can't be shown, such as one of a deleted file or one
+  the server is too busy to prepare, now says why in its frame and points to
+  **Reload preview**. Before, the frame stayed empty.
+
 ## [0.1.0-rc.7] - 2026-10-19
 
 The seventh release candidate. Every task is now on a track, and an epic is

@@ -1,6 +1,7 @@
 // Attachments and their previews: Markdown, HTML, PDF and images.
 import { randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
+import { connect } from 'node:net';
 import { crc32, deflateSync } from 'node:zlib';
 import { test, expect, openApp, holdResponses } from '../support/test.mjs';
 
@@ -200,6 +201,51 @@ test('a 3 MiB HTML report with embedded screenshots previews, and opens again fr
   await expect.poll(() => previews.length).toBe(3);
   expect(new URL(previews[2].url()).searchParams.get('reload')).toBe('1');
   expect(await sentPage(previews[2])).toBe(true);
+});
+
+/** A request for `url` that stops reading once its response starts, as a stalled connection does. */
+function stalledRequest(url, cookie) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(Number(url.port), url.hostname, () => {
+      socket.write(`GET ${url.pathname}${url.search} HTTP/1.1\r\nHost: ${url.host}\r\nCookie: ${cookie}\r\nSec-Fetch-Dest: iframe\r\n\r\n`);
+    });
+    socket.once('error', reject);
+    socket.once('data', chunk => {
+      socket.pause();
+      if (!chunk.toString('latin1').startsWith('HTTP/1.1 200')) reject(new Error(chunk.toString('latin1', 0, 200)));
+      resolve(socket);
+    });
+  });
+}
+
+test('a preview that cannot be prepared says why in its frame, and Reload preview brings it back', async ({ page, instance, allowedConsoleErrors }) => {
+  allowedConsoleErrors.push(/sandbox|Sandbox|Blocked script|status of 503|Service Unavailable/i);
+  // A page at the size limit is far more than a stalled connection buffers.
+  const heading = '<!doctype html><title>Big report</title><h1>Big report</h1><p>';
+  await openApp(page, instance);
+  await attach(page, 'big.html', 'text/html', heading + 'word '.repeat((10 * 1024 * 1024 - heading.length) / 5));
+  await page.locator('.attachment-title').filter({ hasText: 'big.html' }).click();
+  const view = page.frameLocator('iframe.html-preview');
+  await expect(view.getByRole('heading', { name: 'Big report' })).toBeVisible();
+  // Three other pages of this person are still being sent.
+  const preview = new URL(await page.locator('iframe.html-preview').getAttribute('src'), instance.url);
+  preview.searchParams.set('reload', '1');
+  const cookie = (await page.context().cookies()).map(({ name, value }) => `${name}=${value}`).join('; ');
+  const stalled = [];
+  for (let index = 0; index < 3; index++) stalled.push(await stalledRequest(preview, cookie));
+  await page.getByRole('button', { name: 'Reload preview' }).click();
+  await expect(view.locator('main')).toMatchAriaSnapshot(`
+    - main:
+      - heading "Preview unavailable" [level=1]
+      - paragraph: Your other previews are still loading, maybe in another tab or window.
+      - paragraph:
+        - text: Use
+        - strong: Reload preview
+        - text: to try again.
+  `);
+  for (const socket of stalled) socket.destroy();
+  await page.getByRole('button', { name: 'Reload preview' }).click();
+  await expect(view.getByRole('heading', { name: 'Big report' })).toBeVisible();
 });
 
 test('Markdown strips app actions and SVG navigation while keeping math, diagrams and footnotes', async ({ page, instance }) => {

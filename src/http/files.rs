@@ -328,21 +328,27 @@ struct PreviewQuery {
     reload: Option<String>,
 }
 
+/// An error shows in the preview frame, as a page that says why.
 async fn html_preview(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Path(attachment_id): Path<String>,
-    ApiQuery(query): ApiQuery<PreviewQuery>,
+    query: Result<ApiQuery<PreviewQuery>, AppError>,
     headers: HeaderMap,
-) -> AppResult<Response> {
-    file_response::require_safe_destination(&headers)?;
-    let reload = query.reload.is_some();
-    let validator = file_response::preview_validator(&headers, reload);
-    let preview = state
-        .files
-        .html_preview(&actor, &attachment_id, validator)
-        .await?;
-    Ok(file_response::html_preview(preview, reload))
+) -> Response {
+    let response: AppResult<Response> = async {
+        file_response::require_safe_destination(&headers)?;
+        let ApiQuery(query) = query?;
+        let reload = query.reload.is_some();
+        let validator = file_response::preview_validator(&headers, reload);
+        let preview = state
+            .files
+            .html_preview(&actor, &attachment_id, validator)
+            .await?;
+        Ok(file_response::html_preview(preview, reload))
+    }
+    .await;
+    response.unwrap_or_else(file_response::html_preview_error)
 }
 
 async fn upload_avatar(

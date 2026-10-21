@@ -16,6 +16,7 @@ use crate::{
     AppError, AppResult,
     blocking::{Lane, PerPerson, Place, Turn},
     disk::DiskAdmission,
+    error::RuleKind,
 };
 
 const NOT_UTF8: &[u8] =
@@ -268,6 +269,25 @@ fn clean_into_file(
     // so keeping the reservation would count the page twice.
     drop(space);
     Ok((file, len))
+}
+
+/// What the preview frame says when `error` stops a preview, in plain words.
+pub(crate) fn html_preview_problem(error: &AppError) -> &'static str {
+    match error {
+        AppError::Unavailable(message) if message == STILL_LOADING => {
+            "Your other previews are still loading, maybe in another tab or window."
+        }
+        AppError::Unavailable(_) => "The server is busy preparing other previews.",
+        AppError::StorageFull(_)
+        | AppError::Rule {
+            kind: RuleKind::StorageFull,
+            ..
+        } => "The server doesn't have enough free disk space to prepare this preview.",
+        AppError::NotFound { .. } => {
+            "This file is no longer available. It may have been deleted or changed."
+        }
+        _ => "This preview can't be shown.",
+    }
 }
 
 /// A new private file in `folder` whose name is removed at once. If a crash
