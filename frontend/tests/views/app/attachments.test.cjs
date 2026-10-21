@@ -353,12 +353,16 @@ test('a read of the files that began before a change made here never shows, and 
   assert.deepEqual(order(), ['a', 'b']);
 
   // Out while a file moves: the new order shows at once, and stays before
-  // the server answers.
+  // the server answers, also against a read that began after the move.
   filesChanged(t); read = await held();
   t.A.reorderAttachment('BIR-079', 'b', 'a');
   assert.deepEqual(order(), ['b', 'a']);
   await answer(read, [file('a'), file('b')]);
   assert.deepEqual(order(), ['b', 'a'], 'the order doesn\'t jump back');
+  filesChanged(t); read = await held();
+  await answer(read, [file('a'), file('b')]);
+  assert.deepEqual(order(), ['b', 'a'], 'nor for a read that began while the move waited');
+  assert.equal(reads.length, reads.answered, 'nothing is read again while the move waits');
   await confirm('reorderAttachment', { items: [file('b'), file('a')] });
   await drain([file('b'), file('a')]);
   assert.deepEqual(order(), ['b', 'a']);
@@ -369,7 +373,23 @@ test('a read of the files that began before a change made here never shows, and 
   t.A.setAttachmentTemporary('BIR-079', 'a', true);
   await answer(read, [file('b'), file('a')]);
   assert.equal(temporary('a'), true, 'the switch doesn\'t jump back');
+  filesChanged(t); read = await held();
+  await answer(read, [file('b'), file('a')]);
+  assert.equal(temporary('a'), true, 'nor for a read that began while the change waited');
   await confirm('updateAttachment', file('a', { isEphemeral: true, revision: 2 }));
+  await drain([file('b'), file('a', { isEphemeral: true, revision: 2 })]);
+  assert.equal(temporary('a'), true);
+
+  // A change that fails also ends the wait: the files are read again.
+  t.A.setAttachmentTemporary('BIR-079', 'a', false);
+  filesChanged(t); read = await held();
+  await answer(read, [file('b'), file('a', { isEphemeral: true, revision: 2 })]);
+  assert.equal(temporary('a'), false);
+  await waitFor(() => t.calls.some(call => call.method === 'updateAttachment' && !call.settled), 'the change was sent');
+  t.calls.find(call => call.method === 'updateAttachment' && !call.settled).reject(new ApiError('The server failed', { status: 500, code: 'internal' }));
+  await settle();
+  assert.equal(temporary('a'), true, 'the switch goes back');
+  await held();
   await drain([file('b'), file('a', { isEphemeral: true, revision: 2 })]);
   assert.equal(temporary('a'), true);
   assert.deepEqual(reads.slice(0, 2).map(item => item.background), [false, false]);
