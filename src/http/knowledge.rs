@@ -22,16 +22,20 @@ use crate::{
     knowledge::{FileMode, KnowledgeView, SearchResults},
 };
 
+/// The HTML preview, whose answers show inside the preview frame.
+pub(crate) fn preview_router() -> Router<AppState> {
+    Router::new().route(
+        "/api/projects/{project_id}/knowledge/preview/html",
+        get(html_preview),
+    )
+}
+
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/api/projects/{project_id}/knowledge", get(view))
         .route("/api/projects/{project_id}/knowledge/search", get(search))
         .route("/api/projects/{project_id}/knowledge/content", get(content))
         .route("/api/projects/{project_id}/knowledge/text", get(text))
-        .route(
-            "/api/projects/{project_id}/knowledge/preview/html",
-            get(html_preview),
-        )
         .route(
             "/api/projects/{project_id}/knowledge/download",
             get(download),

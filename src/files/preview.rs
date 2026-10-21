@@ -297,6 +297,7 @@ pub(crate) fn html_preview_problem(error: &AppError) -> &'static str {
         AppError::NotFound { .. } => {
             "This file is no longer available. It may have been deleted or changed."
         }
+        AppError::Unauthorized => "Your session has ended. Sign in to oneloop again.",
         _ => "This preview can't be shown.",
     }
 }

@@ -29,6 +29,14 @@ const MULTIPART_OVERHEAD_BYTES: usize = 1024 * 1024;
 const ATTACHMENT_BODY_LIMIT: usize = MAX_ATTACHMENT_BYTES as usize + MULTIPART_OVERHEAD_BYTES;
 const AVATAR_BODY_LIMIT: usize = MAX_AVATAR_BYTES as usize + MULTIPART_OVERHEAD_BYTES;
 
+/// The HTML preview, whose answers show inside the preview frame.
+pub(crate) fn preview_router() -> Router<AppState> {
+    Router::new().route(
+        "/api/attachments/{attachment_id}/preview/html",
+        get(html_preview),
+    )
+}
+
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route(
@@ -64,10 +72,6 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/api/attachments/{attachment_id}/source",
             get(source_attachment),
-        )
-        .route(
-            "/api/attachments/{attachment_id}/preview/html",
-            get(html_preview),
         )
         .route(
             "/api/auth/avatar",

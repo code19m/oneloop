@@ -496,6 +496,44 @@ async fn html_preview_errors_are_pages_the_frame_shows_that_say_why() {
     assert_eq!(get(url).await.unwrap().status(), StatusCode::OK);
 }
 
+#[tokio::test]
+async fn a_signed_out_preview_says_to_sign_in_again_inside_the_frame() {
+    let f = Fixture::new().await;
+    let (_, bytes) = f
+        .upload("signed-out-preview", "report.html", b"<p>Report</p>")
+        .await;
+    let attachment: AttachmentView = serde_json::from_slice(&bytes).unwrap();
+    let get = |uri: String| {
+        f.app.clone().oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, "oneloop_session=ended")
+                .header("sec-fetch-dest", "iframe")
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+    for uri in [
+        attachment.html_preview_url.unwrap(),
+        "/api/projects/p1/knowledge/preview/html?path=page.html".into(),
+    ] {
+        let response = get(uri).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let headers = response.headers();
+        assert_eq!(headers[header::CONTENT_TYPE], "text/html; charset=utf-8");
+        assert_eq!(headers["content-security-policy"], PREVIEW_POLICY);
+        assert_eq!(headers[header::X_FRAME_OPTIONS], "SAMEORIGIN");
+        let page = String::from_utf8(body_bytes(response).await.to_vec()).unwrap();
+        assert!(page.contains("Sign in to oneloop again."), "{page}");
+        assert!(!page.contains("<form"), "{page}");
+    }
+    // Every other route answers as before.
+    let download = get(attachment.download_url.unwrap()).await.unwrap();
+    assert_eq!(download.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(download.headers()[header::X_FRAME_OPTIONS], "DENY");
+    assert_eq!(body_json(download).await["error"]["code"], "unauthorized");
+}
+
 /// The policy of every attachment and Knowledge HTML preview.
 pub(crate) const PREVIEW_POLICY: &str = "sandbox; default-src 'none'; style-src 'unsafe-inline'; \
      img-src data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";

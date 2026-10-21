@@ -22,9 +22,9 @@ All notable changes to oneloop are recorded here. The format follows
 
 ### Fixed
 
-- An HTML preview that can't be shown, such as one of a deleted file or one
-  the server is too busy to prepare, now says why in its frame and points to
-  **Reload preview**. Before, the frame stayed empty.
+- An HTML preview that can't be shown, such as one of a deleted file, one the
+  server is too busy to prepare, or one whose session ended, now says why in
+  its frame and points to **Reload preview**. Before, the frame stayed empty.
 
 ## [0.1.0-rc.7] - 2026-10-19
 

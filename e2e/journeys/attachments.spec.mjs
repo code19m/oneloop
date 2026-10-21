@@ -218,8 +218,8 @@ function stalledRequest(url, cookie) {
   });
 }
 
-test('a preview that cannot be prepared says why in its frame, and Reload preview brings it back', async ({ page, instance, allowedConsoleErrors }) => {
-  allowedConsoleErrors.push(/sandbox|Sandbox|Blocked script|status of 503|Service Unavailable/i);
+test('a preview that cannot be prepared or whose session ended says why in its frame', async ({ page, instance, allowedConsoleErrors }) => {
+  allowedConsoleErrors.push(/sandbox|Sandbox|Blocked script|status of (503|401)|Service Unavailable|Unauthorized/i);
   // A page at the size limit is far more than a stalled connection buffers.
   const heading = '<!doctype html><title>Big report</title><h1>Big report</h1><p>';
   await openApp(page, instance);
@@ -246,6 +246,10 @@ test('a preview that cannot be prepared says why in its frame, and Reload previe
   for (const socket of stalled) socket.destroy();
   await page.getByRole('button', { name: 'Reload preview' }).click();
   await expect(view.getByRole('heading', { name: 'Big report' })).toBeVisible();
+  // A session that ended while the preview was open.
+  await page.context().clearCookies();
+  await page.getByRole('button', { name: 'Reload preview' }).click();
+  await expect(view.getByText('Your session has ended. Sign in to oneloop again.')).toBeVisible();
 });
 
 test('Markdown strips app actions and SVG navigation while keeping math, diagrams and footnotes', async ({ page, instance }) => {
