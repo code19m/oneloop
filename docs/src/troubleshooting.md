@@ -7,7 +7,7 @@ curl --fail --max-time 5 https://tasks.example.com/healthz
 ```
 
 ```json
-{"status":"ok","version":"0.1.0-rc.7","revision":"…","schemaVersion":10}
+{"status":"ok","version":"0.1.0-rc.8","revision":"…","schemaVersion":10}
 ```
 
 `/healthz` needs no sign-in. It returns HTTP 200 when the server is up and its
