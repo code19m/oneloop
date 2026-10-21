@@ -392,6 +392,16 @@ test('a read of the files that began before a change made here never shows, and 
   await held();
   await drain([file('b'), file('a', { isEphemeral: true, revision: 2 })]);
   assert.equal(temporary('a'), true);
+
+  // A move that meets a conflict is read again once, as it settles.
+  const before = reads.length;
+  t.A.reorderAttachment('BIR-079', 'a', 'b');
+  await waitFor(() => t.calls.some(call => call.method === 'reorderAttachment' && !call.settled), 'the move was sent');
+  t.calls.find(call => call.method === 'reorderAttachment' && !call.settled).reject(new ApiError('Changed elsewhere', { status: 409, code: 'revision_conflict' }));
+  await settle();
+  assert.deepEqual(order(), ['b', 'a'], 'the move goes back');
+  await drain([file('b'), file('a', { isEphemeral: true, revision: 2 })]);
+  assert.equal(reads.length, before + 1, 'one read follows the conflict');
   assert.deepEqual(reads.slice(0, 2).map(item => item.background), [false, false]);
   assert(reads.slice(2).every(item => item.background), 'reads after a live update stay in the background');
 });

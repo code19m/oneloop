@@ -36,6 +36,8 @@ function editing(taskId){
   const entry=edits(taskId);entry.count++;entry.waiting++;let settled=false;
   return()=>{if(settled)return;settled=true;entry.count++;entry.waiting--;readAgain(taskId);};
 }
+/** Read the files once more when the change of `settled` ends, as after a conflict: one read, as the change settles. */
+function settleAndRead(taskId,settled){refreshPending.set(taskId,refreshPending.get(taskId)??false);settled();}
 /** Read the files again if a read was dropped, once nothing reads them and no change waits. */
 function readAgain(taskId){
   if(loading.has(taskId)||edits(taskId).waiting)return;
@@ -149,7 +151,7 @@ function editableAttachment(taskId,fileId,includeCleaned=false){
 function setTemporary(taskId,fileId,value){
   const task=taskById(taskId),file=editableAttachment(taskId,fileId);if(!file)return false;if(retentionPending.has(fileId)){App.toast('This retention change is still being saved.','info');return false;}
   const before=!!file.ephemeral;if(before===!!value)return true;const settled=editing(taskId);file.ephemeral=!!value;syncRetention(taskId,file);
-  retentionPending.add(fileId);transport().updateAttachment(fileId,{isEphemeral:!!value,expectedRevision:file.revision}).then(saved=>{const current=sameTask(taskId,task)?.attachments?.find(item=>item.id===fileId);if(!current)return;Object.assign(current,serverFile(saved));syncRetention(taskId,current);App.toast(current.ephemeral?'Attachment marked temporary':'Attachment marked permanent');}).catch(error=>{const current=sameTask(taskId,task)?.attachments?.find(item=>item.id===fileId);if(current){current.ephemeral=before;syncRetention(taskId,current);}if(error?.status===409||error?.uncertain)loadAttachments(taskId,true);App.toast(errorMessage(error,'Retention could not be changed.'),'error');}).finally(()=>{retentionPending.delete(fileId);settled();});
+  retentionPending.add(fileId);transport().updateAttachment(fileId,{isEphemeral:!!value,expectedRevision:file.revision}).then(saved=>{const current=sameTask(taskId,task)?.attachments?.find(item=>item.id===fileId);if(!current)return;Object.assign(current,serverFile(saved));syncRetention(taskId,current);App.toast(current.ephemeral?'Attachment marked temporary':'Attachment marked permanent');}).catch(error=>{const current=sameTask(taskId,task)?.attachments?.find(item=>item.id===fileId);if(current){current.ephemeral=before;syncRetention(taskId,current);}if(error?.status===409||error?.uncertain)settleAndRead(taskId,settled);App.toast(errorMessage(error,'Retention could not be changed.'),'error');}).finally(()=>{retentionPending.delete(fileId);settled();});
   return true;
 }
 // A row's switch acts through its data-action arguments. Actions never run in
@@ -214,7 +216,7 @@ function reorderAttachment(taskId,fileId,targetId,after=false){
   const before=task.attachments.map(f=>f.id),ordered=task.attachments.filter(f=>f.id!==fileId),index=ordered.indexOf(target)+(after?1:0);ordered.splice(index,0,file);
   if(ordered.every((f,i)=>f===task.attachments[i]))return false;
   const settled=editing(taskId);setFiles(task,ordered);
-  reorderPending.add(fileId);transport().reorderAttachment(task.internalId||taskId,{attachmentId:fileId,targetId,after,expectedRevision:file.revision,idempotencyKey:crypto.randomUUID()}).then(result=>{const current=sameTask(taskId,task);if(!current)return;setFiles(current,(result.items||[]).map(serverFile));refreshAttachments(taskId);App.toast('Attachment order updated');}).catch(error=>{const current=sameTask(taskId,task);if(current&&current.attachments===ordered){setFiles(current,before.map(id=>ordered.find(f=>f.id===id)).filter(Boolean));refreshAttachments(taskId);}if(error?.status===409||error?.uncertain)loadAttachments(taskId,true);App.toast(errorMessage(error,'Attachment order could not be updated.'),'error');}).finally(()=>{reorderPending.delete(fileId);settled();});
+  reorderPending.add(fileId);transport().reorderAttachment(task.internalId||taskId,{attachmentId:fileId,targetId,after,expectedRevision:file.revision,idempotencyKey:crypto.randomUUID()}).then(result=>{const current=sameTask(taskId,task);if(!current)return;setFiles(current,(result.items||[]).map(serverFile));refreshAttachments(taskId);App.toast('Attachment order updated');}).catch(error=>{const current=sameTask(taskId,task);if(current&&current.attachments===ordered){setFiles(current,before.map(id=>ordered.find(f=>f.id===id)).filter(Boolean));refreshAttachments(taskId);}if(error?.status===409||error?.uncertain)settleAndRead(taskId,settled);App.toast(errorMessage(error,'Attachment order could not be updated.'),'error');}).finally(()=>{reorderPending.delete(fileId);settled();});
   refreshAttachments(taskId);
   return true;
 }
