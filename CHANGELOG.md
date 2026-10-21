@@ -6,6 +6,16 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- HTML previews of attachments and Knowledge files now show files up to
+  10 MiB instead of 1 MiB, such as reports with many screenshots inside the
+  file. Files uploaded or synced before preview at once. A large embedded
+  image no longer makes the server use much more memory to clean the page.
+- Opening an HTML preview again shows the browser's copy when the file hasn't
+  changed, instead of downloading it again. **Reload preview** still gets a new
+  copy from the server.
+
 ## [0.1.0-rc.7] - 2026-10-19
 
 The seventh release candidate. Every task is now on a track, and an epic is

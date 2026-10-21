@@ -161,12 +161,14 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 | Attachment size | 25 MiB per file |
 | Attachments per task | 25 |
 | Text and Markdown previews | The first 200 KiB |
-| HTML previews | Files up to 1 MiB |
+| HTML previews | Files up to 10 MiB |
 | Image thumbnails | PNG, JPEG and WebP images within the decode limits below; at most 256 × 256 px |
 | Avatar | 5 MiB, and within the decode limits below; stored as 256 × 256 px. One upload at a time per person, and 4 at once on the server |
 | Upload in progress | Fails if it stalls for 60 seconds, or takes over an hour |
 
-Text and Markdown previews need the whole file to be valid UTF-8 text.
+Text and Markdown previews need the whole file to be valid UTF-8 text. The
+HTML limit applies each time a file opens, so attachments and Knowledge files
+from older versions with a lower limit preview too.
 
 oneloop decodes one image at a time. It decodes only an image that needs at
 most about 192 MiB of memory, with at most 8192 px per side and 128 MiB of
