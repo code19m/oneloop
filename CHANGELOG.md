@@ -26,6 +26,11 @@ All notable changes to oneloop are recorded here. The format follows
   server is too busy to prepare, or one whose session ended, now says why in
   its frame and points to **Reload preview**. Before, the frame stayed empty.
 
+### Security
+
+- Updated rustls-webpki to 0.103.16 (RUSTSEC-2026-0382). oneloop uses it when
+  it fetches the metadata document of an AI assistant that connects.
+
 ## [0.1.0-rc.7] - 2026-10-19
 
 The seventh release candidate. Every task is now on a track, and an epic is
