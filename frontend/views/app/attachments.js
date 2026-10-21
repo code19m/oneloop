@@ -23,9 +23,10 @@ let loaded=new WeakSet(),next=0;
 // live update or a refresh replaced the task, is passive: it never keeps an
 // idle session open.
 let attachmentsRead=new Set();
-// How often each task's files changed here, by an upload, deletion, reorder or
-// retention change that the server confirmed. A read that began before such a
-// change has an older list, so it is read again instead of shown.
+// How often each task's files changed here: when a reorder or retention change
+// shows, and when the server confirms it, an upload or a deletion. A read that
+// began before such a change has an older list, so it is read again instead of
+// shown.
 const editsHere=new Map();
 const editedHere=taskId=>editsHere.set(taskId,(editsHere.get(taskId)||0)+1);
 const transport=()=>runtime().transport.api;
@@ -135,7 +136,7 @@ function editableAttachment(taskId,fileId,includeCleaned=false){
 }
 function setTemporary(taskId,fileId,value){
   const task=taskById(taskId),file=editableAttachment(taskId,fileId);if(!file)return false;if(retentionPending.has(fileId)){App.toast('This retention change is still being saved.','info');return false;}
-  const before=!!file.ephemeral;if(before===!!value)return true;file.ephemeral=!!value;syncRetention(taskId,file);
+  const before=!!file.ephemeral;if(before===!!value)return true;editedHere(taskId);file.ephemeral=!!value;syncRetention(taskId,file);
   retentionPending.add(fileId);transport().updateAttachment(fileId,{isEphemeral:!!value,expectedRevision:file.revision}).then(saved=>{const current=sameTask(taskId,task)?.attachments?.find(item=>item.id===fileId);if(!current)return;editedHere(taskId);Object.assign(current,serverFile(saved));syncRetention(taskId,current);App.toast(current.ephemeral?'Attachment marked temporary':'Attachment marked permanent');}).catch(error=>{const current=sameTask(taskId,task)?.attachments?.find(item=>item.id===fileId);if(current){current.ephemeral=before;syncRetention(taskId,current);}if(error?.status===409||error?.uncertain)loadAttachments(taskId,true);App.toast(errorMessage(error,'Retention could not be changed.'),'error');}).finally(()=>retentionPending.delete(fileId));
   return true;
 }
@@ -200,7 +201,7 @@ function reorderAttachment(taskId,fileId,targetId,after=false){
   const target=task.attachments.find(f=>f.id===targetId&&f.state!=='removed');if(!target)return false;
   const before=task.attachments.map(f=>f.id),ordered=task.attachments.filter(f=>f.id!==fileId),index=ordered.indexOf(target)+(after?1:0);ordered.splice(index,0,file);
   if(ordered.every((f,i)=>f===task.attachments[i]))return false;
-  setFiles(task,ordered);
+  editedHere(taskId);setFiles(task,ordered);
   reorderPending.add(fileId);transport().reorderAttachment(task.internalId||taskId,{attachmentId:fileId,targetId,after,expectedRevision:file.revision,idempotencyKey:crypto.randomUUID()}).then(result=>{const current=sameTask(taskId,task);if(!current)return;editedHere(taskId);setFiles(current,(result.items||[]).map(serverFile));refreshAttachments(taskId);App.toast('Attachment order updated');}).catch(error=>{const current=sameTask(taskId,task);if(current&&current.attachments===ordered){setFiles(current,before.map(id=>ordered.find(f=>f.id===id)).filter(Boolean));refreshAttachments(taskId);}if(error?.status===409||error?.uncertain)loadAttachments(taskId,true);App.toast(errorMessage(error,'Attachment order could not be updated.'),'error');}).finally(()=>reorderPending.delete(fileId));
   refreshAttachments(taskId);
   return true;
