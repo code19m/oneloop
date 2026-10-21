@@ -95,14 +95,17 @@ export async function fulfillChanged(route, change) {
   try { await route.fulfill(await change(response)); } catch (error) { if (!gone(error)) throw error; }
 }
 
-/** Hold matching server responses until released; writes still reach the real backend. */
-export async function holdResponses(page, pattern) {
+/**
+ * Hold matching server responses until released; writes still reach the real
+ * backend. With `method`, requests with another method pass on at once.
+ */
+export async function holdResponses(page, pattern, { method } = {}) {
   let release, entered, released = false;
   const gate = new Promise(resolve => { release = resolve; });
   const started = new Promise(resolve => { entered = resolve; });
   const pending = new Set();
   const handler = async route => {
-    if (released) return route.fallback();
+    if (released || (method && route.request().method() !== method)) return route.fallback();
     const work = (async () => {
       const response = await route.fetch();
       entered();

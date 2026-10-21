@@ -362,6 +362,32 @@ test('the PDF preview loads bundled assets from a deep app URL', async ({ page, 
   expect(assets.every(response => assetPath(response).startsWith('/vendor/pdfjs/') && response.ok())).toBe(true);
 });
 
+test('a file list read before an upload finished never hides the uploaded file', async ({ page, instance }) => {
+  await openApp(page, instance);
+  // The live update after the first upload reads the list, which is held
+  // until the second upload has finished here.
+  const read = await holdResponses(page, '**/api/tasks/*/attachments', { method: 'GET' });
+  try {
+    await attach(page, 'first.txt', 'text/plain', 'First file');
+    await read.started;
+    await attach(page, 'second.txt', 'text/plain', 'Second file');
+    await expect(page.locator('.attachment-title')).toHaveCount(2);
+    await page.evaluate(() => {
+      window.__fewestFiles = 2;
+      new MutationObserver(() => { window.__fewestFiles = Math.min(window.__fewestFiles, document.querySelectorAll('.attachment-title').length); })
+        .observe(document.body, { childList: true, subtree: true });
+    });
+  } finally {
+    // The list is read again after the held answer.
+    const again = page.waitForResponse(response => response.request().method() === 'GET' && /\/attachments$/.test(response.url()));
+    await read.release();
+    await again;
+  }
+  expect(await page.evaluate(() => window.__fewestFiles)).toBe(2);
+  await page.locator('.attachment-title').filter({ hasText: 'first.txt' }).click();
+  await expect(page.getByRole('dialog').getByText('File 1 of 2')).toBeVisible();
+});
+
 test('an attachment response survives task projection replacement', async ({ page, instance }) => {
   const upload = await instance.api.post(`/api/tasks/${instance.projects[0].task.id}/attachments`, {
     headers: { 'Idempotency-Key': randomUUID(), 'X-File-Size': '12' },

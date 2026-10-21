@@ -23,6 +23,11 @@ let loaded=new WeakSet(),next=0;
 // live update or a refresh replaced the task, is passive: it never keeps an
 // idle session open.
 let attachmentsRead=new Set();
+// How often each task's files changed here, by an upload, deletion, reorder or
+// retention change that the server confirmed. A read that began before such a
+// change has an older list, so it is read again instead of shown.
+const editsHere=new Map();
+const editedHere=taskId=>editsHere.set(taskId,(editsHere.get(taskId)||0)+1);
 const transport=()=>runtime().transport.api;
 /** Whether the person may change `taskId`'s attachments. */
 const canEdit=taskId=>hasPermission('manage_board',taskTrack(taskById(taskId))?.projectId);
@@ -44,6 +49,7 @@ function loadAttachments(taskId,force=false,background=false){
     return loading.get(taskId);
   }
   if(force)loaded.delete(task.attachments);
+  const edits=editsHere.get(taskId);
   // A task detail read can replace its projection while this request is in flight.
   const currentTask=()=>{
     const current=taskById(taskId);
@@ -51,6 +57,7 @@ function loadAttachments(taskId,force=false,background=false){
   };
   const request=api.attachments(internalId,{background}).then(result=>{
     const current=currentTask();if(!current)return;
+    if(editsHere.get(taskId)!==edits){refreshPending.set(taskId,(refreshPending.get(taskId)??true)&&background);return;}
     setFiles(current,(result.items||[]).map(serverFile));attachmentsRead.add(internalId);
     const shown=shownPreview();
     if(shown?.key===taskId){
@@ -115,7 +122,7 @@ async function upload(job,task){
     const sending=transport().uploadAttachment(task.internalId||job.taskId,{file:job.file,ephemeral:job.ephemeral,idempotencyKey:job.idempotencyKey ||= crypto.randomUUID(),signal:controller.signal,onProgress:percent=>{if(job.state==='uploading'&&!job.cancelled){job.progress=percent;mountAttachments(job.taskId);}}});
     recovery.trackWrite(sending);const value=await sending;
     if(job.cancelled)return;const current=sameTask(job.taskId,task);if(!current)throw new Error('The task is no longer available.');
-    const mapped=serverFile(value),index=(current.attachments||[]).findIndex(file=>file.id===mapped.id);if(index>=0)current.attachments[index]=mapped;else(current.attachments ||= []).push(mapped);
+    editedHere(job.taskId);const mapped=serverFile(value),index=(current.attachments||[]).findIndex(file=>file.id===mapped.id);if(index>=0)current.attachments[index]=mapped;else(current.attachments ||= []).push(mapped);
     loaded.add(current.attachments);jobs.splice(jobs.indexOf(job),1);refreshAttachments(job.taskId);App.toast('Attachment added');
   }catch(error){if(job.cancelled)return;reject(job,errorMessage(error,'Upload failed. Please try again.'),error?.status===400&&error?.code==='validation_failed');}
 }
@@ -129,7 +136,7 @@ function editableAttachment(taskId,fileId,includeCleaned=false){
 function setTemporary(taskId,fileId,value){
   const task=taskById(taskId),file=editableAttachment(taskId,fileId);if(!file)return false;if(retentionPending.has(fileId)){App.toast('This retention change is still being saved.','info');return false;}
   const before=!!file.ephemeral;if(before===!!value)return true;file.ephemeral=!!value;syncRetention(taskId,file);
-  retentionPending.add(fileId);transport().updateAttachment(fileId,{isEphemeral:!!value,expectedRevision:file.revision}).then(saved=>{const current=sameTask(taskId,task)?.attachments?.find(item=>item.id===fileId);if(!current)return;Object.assign(current,serverFile(saved));syncRetention(taskId,current);App.toast(current.ephemeral?'Attachment marked temporary':'Attachment marked permanent');}).catch(error=>{const current=sameTask(taskId,task)?.attachments?.find(item=>item.id===fileId);if(current){current.ephemeral=before;syncRetention(taskId,current);}if(error?.status===409||error?.uncertain)loadAttachments(taskId,true);App.toast(errorMessage(error,'Retention could not be changed.'),'error');}).finally(()=>retentionPending.delete(fileId));
+  retentionPending.add(fileId);transport().updateAttachment(fileId,{isEphemeral:!!value,expectedRevision:file.revision}).then(saved=>{const current=sameTask(taskId,task)?.attachments?.find(item=>item.id===fileId);if(!current)return;editedHere(taskId);Object.assign(current,serverFile(saved));syncRetention(taskId,current);App.toast(current.ephemeral?'Attachment marked temporary':'Attachment marked permanent');}).catch(error=>{const current=sameTask(taskId,task)?.attachments?.find(item=>item.id===fileId);if(current){current.ephemeral=before;syncRetention(taskId,current);}if(error?.status===409||error?.uncertain)loadAttachments(taskId,true);App.toast(errorMessage(error,'Retention could not be changed.'),'error');}).finally(()=>retentionPending.delete(fileId));
   return true;
 }
 // A row's switch acts through its data-action arguments. Actions never run in
@@ -194,7 +201,7 @@ function reorderAttachment(taskId,fileId,targetId,after=false){
   const before=task.attachments.map(f=>f.id),ordered=task.attachments.filter(f=>f.id!==fileId),index=ordered.indexOf(target)+(after?1:0);ordered.splice(index,0,file);
   if(ordered.every((f,i)=>f===task.attachments[i]))return false;
   setFiles(task,ordered);
-  reorderPending.add(fileId);transport().reorderAttachment(task.internalId||taskId,{attachmentId:fileId,targetId,after,expectedRevision:file.revision,idempotencyKey:crypto.randomUUID()}).then(result=>{const current=sameTask(taskId,task);if(!current)return;setFiles(current,(result.items||[]).map(serverFile));refreshAttachments(taskId);App.toast('Attachment order updated');}).catch(error=>{const current=sameTask(taskId,task);if(current&&current.attachments===ordered){setFiles(current,before.map(id=>ordered.find(f=>f.id===id)).filter(Boolean));refreshAttachments(taskId);}if(error?.status===409||error?.uncertain)loadAttachments(taskId,true);App.toast(errorMessage(error,'Attachment order could not be updated.'),'error');}).finally(()=>reorderPending.delete(fileId));
+  reorderPending.add(fileId);transport().reorderAttachment(task.internalId||taskId,{attachmentId:fileId,targetId,after,expectedRevision:file.revision,idempotencyKey:crypto.randomUUID()}).then(result=>{const current=sameTask(taskId,task);if(!current)return;editedHere(taskId);setFiles(current,(result.items||[]).map(serverFile));refreshAttachments(taskId);App.toast('Attachment order updated');}).catch(error=>{const current=sameTask(taskId,task);if(current&&current.attachments===ordered){setFiles(current,before.map(id=>ordered.find(f=>f.id===id)).filter(Boolean));refreshAttachments(taskId);}if(error?.status===409||error?.uncertain)loadAttachments(taskId,true);App.toast(errorMessage(error,'Attachment order could not be updated.'),'error');}).finally(()=>reorderPending.delete(fileId));
   refreshAttachments(taskId);
   return true;
 }
@@ -299,11 +306,11 @@ function followChanges(){
     if(change?.type==='bootstrap')loaded=new WeakSet();
   });
 }
-function clearAccount(){jobs.splice(0).forEach(job=>{job.cancelled=true;job.reader?.abort();});loaded=new WeakSet();loading.clear();refreshPending.clear();retentionPending.clear();reorderPending.clear();attachmentsRead=new Set();}
+function clearAccount(){jobs.splice(0).forEach(job=>{job.cancelled=true;job.reader?.abort();});loaded=new WeakSet();loading.clear();refreshPending.clear();editsHere.clear();retentionPending.clear();reorderPending.clear();attachmentsRead=new Set();}
 
 Object.assign(App, {
   reorderAttachment,openAttachment,previewAttachment,downloadAttachment:download,setAttachmentTemporary:setTemporary,
-  delAttachment(id,index){const task=taskById(id),file=task?.attachments?.[index];if(!editableAttachment(id,file?.id,true))return;askConfirmation({title:'Delete attachment?',text:`${displayText(file.name)} will be deleted. You can undo this right after.`,action:'Delete attachment',confirm:()=>{if(!editableAttachment(id,file.id,true))return;if(!sameTask(id,task)){App.toast('This task is no longer available.','error');return;}transport().deleteAttachment(file.id,{expectedRevision:file.revision,idempotencyKey:file.deleteKey ||= crypto.randomUUID()}).then(()=>{const current=sameTask(id,task);if(current)setFiles(current,current.attachments.filter(item=>item.id!==file.id));forgetPreview(file.id);if(shownPreview()?.fileId===file.id)closePreview();refreshAttachments(id);App.offerUndo('Attachment deleted',again=>restoreAttachment(id,task,file,again));}).catch(error=>{if(error?.status===404||error?.status===409||error?.uncertain)loadAttachments(id,true);App.toast(errorMessage(error,'Attachment could not be deleted.'),'error');});}});},
+  delAttachment(id,index){const task=taskById(id),file=task?.attachments?.[index];if(!editableAttachment(id,file?.id,true))return;askConfirmation({title:'Delete attachment?',text:`${displayText(file.name)} will be deleted. You can undo this right after.`,action:'Delete attachment',confirm:()=>{if(!editableAttachment(id,file.id,true))return;if(!sameTask(id,task)){App.toast('This task is no longer available.','error');return;}transport().deleteAttachment(file.id,{expectedRevision:file.revision,idempotencyKey:file.deleteKey ||= crypto.randomUUID()}).then(()=>{const current=sameTask(id,task);if(current){editedHere(id);setFiles(current,current.attachments.filter(item=>item.id!==file.id));}forgetPreview(file.id);if(shownPreview()?.fileId===file.id)closePreview();refreshAttachments(id);App.offerUndo('Attachment deleted',again=>restoreAttachment(id,task,file,again));}).catch(error=>{if(error?.status===404||error?.status===409||error?.uncertain)loadAttachments(id,true);App.toast(errorMessage(error,'Attachment could not be deleted.'),'error');});}});},
   chooseAttachments(){document.getElementById('attIn')?.click();},
   attachFiles(id,input){if(!canEdit(id)){App.toast('You no longer have permission to upload attachments','error');return;}for(const file of [...input.files]){const job={id:'upload-'+(++next),taskId:id,file,owner:D.session?.userId,ephemeral:false,state:'queued',progress:0};jobs.push(job);start(job);}input.value='';},
 });

@@ -25,6 +25,9 @@ All notable changes to oneloop are recorded here. The format follows
 - An HTML preview that can't be shown, such as one of a deleted file, one the
   server is too busy to prepare, or one whose session ended, now says why in
   its frame and points to **Reload preview**. Before, the frame stayed empty.
+- A file you just uploaded, deleted, reordered or marked temporary no longer
+  goes back to how it was for a moment when a read of the task's files that
+  started earlier comes back. The file preview could then miss a new file.
 
 ### Security
 
