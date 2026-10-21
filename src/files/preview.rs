@@ -175,8 +175,10 @@ const QUEUE_WAIT: Duration = Duration::from_secs(5);
 /// device, and for an old connection that stalled.
 const PAGES_SENT_EACH: usize = 3;
 
-/// What a person hears when all their places are taken.
+/// What a person hears when all their pages are on the way.
 const STILL_LOADING: &str = "your other HTML previews are still loading; try again shortly";
+/// What a person hears when a page waited too long, as the lane says it.
+const BUSY: &str = "HTML preview is busy; try again shortly";
 
 /// The people with HTML previews under way, of attachments or of Knowledge
 /// files.
@@ -207,17 +209,26 @@ pub(crate) struct PreviewTurn {
 /// A turn to read and clean a page for `user_id`, one of `previewers`.
 /// Attachments and Knowledge files share two turns, so however many previews
 /// open at once, at most two pages are in memory. Each person has one page of
-/// each that waits or is cleaned, and three that are being sent; a page that
-/// waits five seconds is told to try again.
+/// each in the queue or being cleaned, and their next one waits for it; they
+/// have at most three on the way, and another is told at once to try again.
+/// A page that waits five seconds in all is told the server is busy.
 pub(crate) async fn html_preview_turn(
     previewers: &Previewers,
     user_id: &str,
 ) -> AppResult<PreviewTurn> {
     static PREVIEWS: LazyLock<Lane> = LazyLock::new(|| Lane::new("HTML preview", 2));
-    let still_loading = |_| AppError::Unavailable(STILL_LOADING.into());
-    let sending = previewers.sending.claim(user_id).map_err(still_loading)?;
-    let preparing = previewers.preparing.claim(user_id).map_err(still_loading)?;
-    let turn = PREVIEWS.turn_within(QUEUE_WAIT).await?;
+    let deadline = tokio::time::Instant::now() + QUEUE_WAIT;
+    let sending = previewers
+        .sending
+        .claim(user_id)
+        .map_err(|_| AppError::Unavailable(STILL_LOADING.into()))?;
+    let preparing = previewers
+        .preparing
+        .claim_by(user_id, deadline)
+        .await
+        .map_err(|_| AppError::Unavailable(BUSY.into()))?;
+    let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let turn = PREVIEWS.turn_within(left).await?;
     Ok(PreviewTurn {
         preparing,
         sending,

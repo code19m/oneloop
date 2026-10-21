@@ -88,30 +88,52 @@ async fn a_cleaned_page_has_no_name_and_its_disk_space_counts_once() {
 }
 
 #[tokio::test]
-async fn each_person_has_one_page_that_waits_or_is_cleaned_and_three_being_sent() {
+async fn each_person_has_three_pages_on_the_way_and_a_fourth_is_told_at_once() {
     let folder = tempfile::tempdir().unwrap();
     let disk = DiskAdmission::new(folder.path(), 0, Default::default());
-    let clean = |turn| {
-        cleaned_html_preview(
+    let previewers = Previewers::default();
+    let mut pages = Vec::new();
+    for _ in 0..3 {
+        let turn = html_preview_turn(&previewers, "reader").await.unwrap();
+        let page = cleaned_html_preview(
             turn,
             b"<p>Report</p>".to_vec(),
             folder.path().into(),
             disk.clone(),
-        )
-    };
-    let previewers = Previewers::default();
-    let busy = |turn: AppResult<PreviewTurn>| matches!(turn, Err(AppError::Unavailable(_)));
-    let first = html_preview_turn(&previewers, "reader").await.unwrap();
-    assert!(busy(html_preview_turn(&previewers, "reader").await));
-    drop(html_preview_turn(&previewers, "other").await.unwrap());
-    let mut pages = vec![clean(first).await.unwrap()];
-    for _ in 0..2 {
-        let turn = html_preview_turn(&previewers, "reader").await.unwrap();
-        pages.push(clean(turn).await.unwrap());
+        );
+        pages.push(page.await.unwrap());
     }
-    assert!(busy(html_preview_turn(&previewers, "reader").await));
+    drop(html_preview_turn(&previewers, "other").await.unwrap());
+    let Err(error) = html_preview_turn(&previewers, "reader").await else {
+        panic!("a fourth page is refused");
+    };
+    assert!(html_preview_problem(&error).starts_with("Your other previews are still loading"));
     pages.pop();
     drop(html_preview_turn(&previewers, "reader").await.unwrap());
+}
+
+#[tokio::test]
+async fn a_persons_next_page_waits_for_the_one_in_the_queue() {
+    let previewers = Previewers::default();
+    let first = html_preview_turn(&previewers, "reader").await.unwrap();
+    let (next, ()) = tokio::join!(html_preview_turn(&previewers, "reader"), async move {
+        tokio::task::yield_now().await;
+        drop(first);
+    });
+    assert!(next.is_ok());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_page_that_waits_five_seconds_is_told_the_server_is_busy() {
+    let previewers = Previewers::default();
+    let _first = html_preview_turn(&previewers, "reader").await.unwrap();
+    let Err(error) = html_preview_turn(&previewers, "reader").await else {
+        panic!("the next page waits five seconds at most");
+    };
+    assert_eq!(
+        html_preview_problem(&error),
+        "The server is busy preparing other previews."
+    );
 }
 
 /// The cleaned page of `bytes`, in memory.

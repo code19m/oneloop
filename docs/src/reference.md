@@ -163,7 +163,7 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 | Attachment size | 25 MiB per file |
 | Attachments per task | 25 |
 | Text and Markdown previews | The first 200 KiB |
-| HTML previews | Files up to 10 MiB. The server prepares two pages at once. Each person can have one attachment page and one Knowledge page that waits or is being prepared, and three of each being sent; another one says to try again at once, and so does a page that waits 5 seconds |
+| HTML previews | Files up to 10 MiB. The server prepares two pages at once. Each person has one attachment page and one Knowledge page in line at a time, and their next one waits for it. A person can have three of each on the way; another one says at once to try again. A page that waits 5 seconds in all says that the server is busy |
 | Image thumbnails | PNG, JPEG and WebP images within the decode limits below; at most 256 × 256 px |
 | Avatar | 5 MiB, and within the decode limits below; stored as 256 × 256 px. One upload at a time per person, and 4 at once on the server |
 | Upload in progress | Fails if it stalls for 60 seconds, or takes over an hour |

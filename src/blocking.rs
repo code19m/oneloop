@@ -8,7 +8,10 @@ use std::{
     time::Duration,
 };
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::{
+    sync::{Notify, OwnedSemaphorePermit, Semaphore},
+    time::Instant,
+};
 
 use crate::{AppError, AppResult};
 
@@ -82,6 +85,8 @@ impl Turn {
 pub(crate) struct PerPerson {
     /// The places each person holds.
     people: Arc<Mutex<HashMap<String, usize>>>,
+    /// Wakes those who wait for a place when one is given back.
+    freed: Arc<Notify>,
     /// The places one person may hold at once.
     each: usize,
     /// The most people with a place at once.
@@ -91,6 +96,7 @@ pub(crate) struct PerPerson {
 /// A person's place, until it is dropped.
 pub(crate) struct Place {
     people: Arc<Mutex<HashMap<String, usize>>>,
+    freed: Arc<Notify>,
     user_id: String,
 }
 
@@ -112,6 +118,7 @@ impl PerPerson {
     pub(crate) fn with_places(each: usize, max: usize) -> Self {
         Self {
             people: Arc::default(),
+            freed: Arc::default(),
             each,
             max,
         }
@@ -129,8 +136,27 @@ impl PerPerson {
         people.insert(user_id.to_owned(), held + 1);
         Ok(Place {
             people: self.people.clone(),
+            freed: self.freed.clone(),
             user_id: user_id.to_owned(),
         })
+    }
+
+    /// A place, once the person gives one of theirs back, until `deadline`.
+    /// When all places are taken, the answer comes at once.
+    pub(crate) async fn claim_by(&self, user_id: &str, deadline: Instant) -> Result<Place, Taken> {
+        loop {
+            // Listen before looking, so a place given back meanwhile counts.
+            let freed = self.freed.notified();
+            tokio::pin!(freed);
+            freed.as_mut().enable();
+            match self.claim(user_id) {
+                Err(Taken::Mine) => {}
+                claimed => return claimed,
+            }
+            if tokio::time::timeout_at(deadline, freed).await.is_err() {
+                return Err(Taken::Mine);
+            }
+        }
     }
 }
 
@@ -143,6 +169,8 @@ impl Drop for Place {
                 people.remove(&self.user_id);
             }
         }
+        drop(people);
+        self.freed.notify_waiters();
     }
 }
 
