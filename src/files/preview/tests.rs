@@ -33,6 +33,23 @@ fn hostile_megabyte_previews_do_not_take_quadratic_time() {
     }
 }
 
+#[test]
+fn one_long_tag_needs_memory_of_a_few_times_the_file_not_per_byte_of_the_tag() {
+    // The scanner once kept 16 bytes for each byte of a tag: hundreds of MiB
+    // for one large embedded image. The copies it needs, such as the output,
+    // take about the size of the file each.
+    let image = format!(
+        "<img src=\"data:image/png;base64,{}\">",
+        "A".repeat(1024 * 1024)
+    );
+    for input in [image.clone(), image.trim_end_matches(['"', '>']).to_owned()] {
+        let (output, peak) =
+            crate::test_memory::peak_heap(|| sanitize_html_preview(input.as_bytes()));
+        assert!(output.len() >= input.len());
+        assert!(peak < 6 * input.len(), "{peak} bytes for {}", input.len());
+    }
+}
+
 fn assert_no_nested_navigation(source: &[u8]) {
     let sanitized = sanitize_html_preview(source);
     let text = std::str::from_utf8(&sanitized).unwrap();

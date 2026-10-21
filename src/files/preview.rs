@@ -16,12 +16,10 @@ fn sanitize_html_preview(bytes: &[u8]) -> Vec<u8> {
     let lower = source.to_ascii_lowercase();
     let mut cursor = 0;
     let mut dead_states = vec![0_u8; source.len()];
-    let mut visited = Vec::new();
     while let Some(relative) = lower[cursor..].find('<') {
         let start = cursor + relative;
         output.push_str(&source[cursor..start]);
-        let Some(tag_end) = find_tag_end(source.as_bytes(), start, &mut dead_states, &mut visited)
-        else {
+        let Some(tag_end) = find_tag_end(source.as_bytes(), start, &mut dead_states) else {
             output.push_str("&lt;");
             cursor = start + 1;
             continue;
@@ -56,40 +54,51 @@ fn sanitize_html_preview(bytes: &[u8]) -> Vec<u8> {
     output.into_bytes()
 }
 
-fn find_tag_end(
-    bytes: &[u8],
-    start: usize,
-    dead: &mut [u8],
-    visited: &mut Vec<(usize, u8)>,
-) -> Option<usize> {
-    // States: attribute/name, after '=', unquoted value, single/double quote.
-    // Failed (position, state) pairs are visited at most once across all tags.
-    // Successful scans cover disjoint output ranges, so total work is O(bytes).
+fn find_tag_end(bytes: &[u8], start: usize, dead: &mut [u8]) -> Option<usize> {
+    // A failed scan marks the (position, state) pairs it passed as dead, so no
+    // later scan passes them again, and successful scans cover disjoint output
+    // ranges: total work is O(bytes).
     let mut state = 0;
-    visited.clear();
+    let mut stop = bytes.len();
     for (index, &ch) in bytes.iter().enumerate().skip(start + 1) {
-        let bit = 1 << state;
-        if dead[index] & bit != 0 {
+        if dead[index] & (1 << state) != 0 {
+            stop = index;
             break;
         }
-        visited.push((index, bit));
-        state = match (state, ch) {
-            (3, b'\'') | (4, b'"') => 0,
-            (3 | 4, _) => state,
-            (_, b'>') => return Some(index),
-            (1, b'\'') => 3,
-            (1, b'"') => 4,
-            (1, ch) if ch.is_ascii_whitespace() => 1,
-            (1, _) => 2,
-            (_, ch) if ch.is_ascii_whitespace() => 0,
-            (0, b'=') => 1,
-            _ => state,
-        };
+        match next_state(state, ch) {
+            Some(next) => state = next,
+            None => return Some(index),
+        }
     }
-    for &(index, bit) in visited.iter() {
-        dead[index] |= bit;
+    // The scan depends only on the bytes, so a second pass marks the pairs it
+    // passed, instead of a list of them that would be as long as the tag. It
+    // ends before `stop`, so no byte ends the tag.
+    let mut state = 0;
+    for (mark, &ch) in dead[start + 1..stop]
+        .iter_mut()
+        .zip(&bytes[start + 1..stop])
+    {
+        *mark |= 1 << state;
+        state = next_state(state, ch).unwrap_or(state);
     }
     None
+}
+
+/// The scanner's state after `ch`, or `None` when `ch` ends the tag. States:
+/// attribute/name, after '=', unquoted value, single/double quote.
+fn next_state(state: u8, ch: u8) -> Option<u8> {
+    Some(match (state, ch) {
+        (3, b'\'') | (4, b'"') => 0,
+        (3 | 4, _) => state,
+        (_, b'>') => return None,
+        (1, b'\'') => 3,
+        (1, b'"') => 4,
+        (1, ch) if ch.is_ascii_whitespace() => 1,
+        (1, _) => 2,
+        (_, ch) if ch.is_ascii_whitespace() => 0,
+        (0, b'=') => 1,
+        _ => state,
+    })
 }
 
 /// Sanitize HTML for the sandboxed preview frame, at most two files at once,
