@@ -1,7 +1,5 @@
 // @ts-check
 
-import { savedDoneOrder } from './done-order.js';
-
 /** HTTP transport only. Product validation and permissions belong to the server. */
 /** @typedef {{status?:number,code?:string,details?:unknown,retryAfter?:string|null,uncertain?:boolean,cause?:unknown,requestContext?:any}} ApiErrorOptions */
 /** @typedef {{method?:string,body?:unknown,signal?:AbortSignal,background?:boolean,headers?:Record<string,string>}} RequestOptions */
@@ -255,8 +253,6 @@ export function createApiClient({
       if (lastSwitch) { query.set('switchedTo', lastSwitch.projectId); query.set('switchedBy', lastSwitch.userId); }
       // A Board's first pages come for its filters, as a Board read's do.
       for (const [key, value] of new URLSearchParams(boardQuery(filters))) query.set(key, value);
-      // Board pages come in the order this browser chose for Done.
-      if (view === 'board' && savedDoneOrder() === 'completed') query.set('doneOrder', 'completed');
       // The Roadmap's lanes come for the days they held.
       if (view === 'roadmap' && roadmap) {
         query.set('roadmapFrom', roadmap.from); query.set('roadmapTo', roadmap.to);

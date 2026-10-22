@@ -240,7 +240,7 @@ test('the first load after the session check uses the read that started with it'
 test('a filtered Board address loads with one bootstrap, whose cards the Board takes for its filters',async()=>{
   const filters=normalizeBoardFilters({search:'x',blocked:true}),empty={nextCursor:null,total:0};
   // The server names the filter its Board pages were read for.
-  const boardFilter={search:'x',trackIds:[],epicIds:[],assigneeIds:[],noAssignee:false,blocked:true,doneOrder:'manual'};
+  const boardFilter={search:'x',trackIds:[],epicIds:[],assigneeIds:[],noAssignee:false,blocked:true};
   const t=firstVisit(()=>projection('p1',{view:'board',boardFilter,boardPages:{planning:{nextCursor:null,total:1},inProgress:empty,inReview:empty,done:empty},tasks:[view('t1')]}),'#/board/p1?search=x&blocked=1');
   t.signIn.prefetch();
   t.data.session={id:'s1',userId:'u1'};

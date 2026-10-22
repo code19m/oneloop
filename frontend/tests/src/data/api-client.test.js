@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ApiError, createApiClient, prepareCommand } from '../../../src/data/api-client.js';
 import { createCommandGateway } from '../../../src/data/command-gateway.js';
-import { saveDoneOrder } from '../../../src/data/done-order.js';
 
 test('retries preserve immutable logical command identity without automatic retry', async () => {
   const payload = { title: 'Initial', assignees: ['a'] };
@@ -55,11 +54,9 @@ test('bootstrap uses encoded identifiers, supports empty responses, and rejects 
   await assert.rejects(invalid.command(prepareCommand('task.update', {})), error => error.code === 'invalid_response' && error.uncertain);
 });
 
-test('a Board bootstrap asks for Done in the order this browser chose', async (t) => {
+test('a bootstrap asks for what its page shows: the Board for its filters, the Roadmap for its days', async () => {
   const requested = [];
   const api = createApiClient({ fetchImpl: async (url) => { requested.push(url); return new Response(null, { status: 204 }); } });
-  await api.bootstrap({ projectId: 'p1', view: 'board' });
-  saveDoneOrder('completed', undefined); t.after(() => saveDoneOrder('manual', undefined));
   await api.bootstrap({ projectId: 'p1', view: 'board' });
   await api.bootstrap({ projectId: 'p1', view: 'roadmap' });
   // The Roadmap's days in view, and the days each of its marks stands for.
@@ -68,10 +65,9 @@ test('a Board bootstrap asks for Done in the order this browser chose', async (t
   await api.bootstrap({ projectId: 'p1', view: 'board', filters: { search: 'x', trackIds: ['t1', 't2'], blocked: true } });
   assert.deepEqual(requested, [
     '/api/bootstrap?projectId=p1&view=board',
-    '/api/bootstrap?projectId=p1&view=board&doneOrder=completed',
     '/api/bootstrap?projectId=p1&view=roadmap',
     '/api/bootstrap?projectId=p1&view=roadmap&roadmapFrom=2026-01-01&roadmapTo=2026-03-01&roadmapAnchor=2026-02-01&roadmapCell=4',
-    '/api/bootstrap?projectId=p1&view=board&search=x&trackIds=t1%2Ct2&blocked=true&doneOrder=completed',
+    '/api/bootstrap?projectId=p1&view=board&search=x&trackIds=t1%2Ct2&blocked=true',
   ]);
 });
 

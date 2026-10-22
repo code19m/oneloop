@@ -4,7 +4,6 @@ import {createRequire} from 'node:module';
 import {installViewBridge} from '../../../src/app/view-bridge.js';
 import {createCommandGateway} from '../../../src/data/command-gateway.js';
 import {ApiError} from '../../../src/data/api-client.js';
-import {savedDoneOrder,saveDoneOrder} from '../../../src/data/done-order.js';
 import {useGlobals,deferred,settle,tick,waitFor} from '../../support/helpers.cjs';
 
 const {JSDOM}=createRequire(import.meta.url)('../../support/dom.cjs');
@@ -346,11 +345,10 @@ test('only the latest project selection may apply a completed bootstrap',async()
   assert.deepEqual(selected,['p2']);
 });
 
-test('a slow Board search, Done order or project switch marks the page busy after a moment, until its read ends',async t=>{
+test('a slow Board search or project switch marks the page busy after a moment, until its read ends',async t=>{
   t.mock.timers.enable({apis:['setTimeout']});
-  t.after(()=>saveDoneOrder('manual',undefined));
   const page=document.createElement('main');page.className='content';document.body.append(page);
-  const starts={search:bridge=>bridge.filterBoard({search:'slow'}),'Done order':bridge=>bridge.setDoneOrder('completed'),'project switch':bridge=>bridge.selectProject('p1')};
+  const starts={search:bridge=>bridge.filterBoard({search:'slow'}),'project switch':bridge=>bridge.selectProject('p1')};
   for(const [name,start] of Object.entries(starts))for(const ending of ['resolve','reject']){
     const read=deferred(),state=fixture({view:'board',projectId:'p1',board:{}},{reads:{board:()=>read.promise},reloadBootstrap:()=>read.promise});
     const done=start(state.bridge).catch(()=>{});await settle();
@@ -376,16 +374,6 @@ test('Pool read actions rely on in-place read callbacks without whole-app refres
   const state=fixture({view:'board',projectId:'p1',board:{}},{reads:{pool:async()=>({stale:false}),morePool:async()=>({stale:false})}});
   await state.bridge.openPool();await state.bridge.selectPool('mine');await state.bridge.loadMorePool('mine');
   assert.deepEqual(state.paints,[]);
-});
-
-test('choosing a Done order saves it and reads the Board again with the same filters',async(t)=>{
-  t.after(()=>saveDoneOrder('manual',undefined));
-  const reads=[],board={search:'checkout',trackIds:[],epicIds:[],assigneeIds:[],blocked:false};
-  const state=fixture({view:'board',projectId:'p1',board},{reads:{board:async(...args)=>{reads.push([...args,savedDoneOrder(undefined)]);return {stale:false};}}});
-  await state.bridge.setDoneOrder('completed');
-  assert.deepEqual(reads,[['p1',board,'completed']]);
-  await state.bridge.setDoneOrder('anything');
-  assert.equal(reads.at(-1)[2],'manual');
 });
 
 test('a failed obsolete task read cannot put the new Profile page into an error state',async()=>{

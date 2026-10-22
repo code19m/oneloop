@@ -321,34 +321,30 @@ test('a dropped card settles into its new column, not back to its old one', asyn
   expect(Math.abs(targets[0].top - card.top)).toBeLessThanOrEqual(2);
 });
 
-test('Done can list the newest finished tasks first, and the browser keeps the choice', async ({ page, instance }) => {
+test('Done lists a newly finished task on top and keeps the order people give it', async ({ page, instance }) => {
   const { project, epic } = instance.projects[0];
-  // Each task is newer than the one before, so the order holds even when two
-  // finish within the same second. The later one goes below the earlier one,
-  // so the manual order is the other way round.
+  // A task that moves to Done goes to its top, so Done lists the newest first by itself.
   const create = async (title) => (await command(instance.api, 'task.create', { projectId: project.id, epicId: epic.id, title })).entities[0];
-  let earlier;
   for (const title of ['Finished earlier', 'Finished later']) {
     const task = await create(title);
-    await command(instance.api, 'task.move', { taskId: task.id, status: 'done', ...(earlier ? { afterTaskId: earlier.id } : {}) }, task.revision);
-    earlier ??= task;
+    await command(instance.api, 'task.move', { taskId: task.id, status: 'done' }, task.revision);
   }
-  const now = await create('Finished now');
+  await create('Finished now');
   await openApp(page, instance, 'board');
   const done = page.locator('[data-col="done"]'), titles = done.locator('.card-title-button');
-  const toggle = done.getByRole('button', { name: 'Newest first' });
-  await expect(titles).toHaveText(['Finished earlier', 'Finished later']);
-  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
-  await toggle.click();
-  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
   await expect(titles).toHaveText(['Finished later', 'Finished earlier']);
+  await expect(done.locator('.col-head button')).toHaveCount(0);
+  const moved = () => expect.poll(() => page.evaluate(() => App.context().movePending)).toBe(false);
   await page.locator('.card').filter({ hasText: 'Finished now' }).locator('.card-move').click();
   await page.getByRole('button', { name: 'Move to Done' }).click();
   await expect(titles).toHaveText(['Finished now', 'Finished later', 'Finished earlier']);
-  await expect.poll(async () => (await (await instance.api.get(`/api/tasks/${now.id}`)).json()).status).toBe('done');
+  await moved();
+  await done.locator('.card').filter({ hasText: 'Finished now' }).locator('.card-move').click();
+  await page.getByRole('button', { name: 'Move down' }).click();
+  await expect(titles).toHaveText(['Finished later', 'Finished now', 'Finished earlier']);
+  await moved();
   await page.reload();
-  await expect(done.getByRole('button', { name: 'Newest first' })).toHaveAttribute('aria-pressed', 'true');
-  await expect(titles).toHaveText(['Finished now', 'Finished later', 'Finished earlier']);
+  await expect(titles).toHaveText(['Finished later', 'Finished now', 'Finished earlier']);
 });
 
 test('on a narrow Board a card held at the edge scrolls to a column off screen', async ({ page, instance }) => {

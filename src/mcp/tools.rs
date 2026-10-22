@@ -20,9 +20,7 @@ use crate::{
     auth::Actor,
     collaboration::{CollaborationOperation, InboxFilter},
     command::{Command, Operation},
-    domain::{
-        BoardQuery, BoardViewQuery, DomainOperation, DoneOrder, PageQuery, PoolQuery, TaskFilter,
-    },
+    domain::{BoardQuery, BoardViewQuery, DomainOperation, PageQuery, PoolQuery, TaskFilter},
     files::{AttachmentPatch, AttachmentReorder},
 };
 
@@ -463,7 +461,6 @@ impl OneloopMcp {
             assignee_ids: input.assignee_ids,
             no_assignee: input.no_assignee,
             blocked: input.blocked,
-            done_order: DoneOrder::Manual,
         };
         if let Some(status) = input.status {
             let query = BoardQuery {

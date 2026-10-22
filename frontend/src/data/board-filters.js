@@ -40,8 +40,7 @@ export function boardFiltered(filters) {
 
 /**
  * Whether two sets of filters that `normalizeBoardFilters` returned, such as
- * those a Board read loaded its cards for, choose the same tasks. The Done
- * order is not a filter.
+ * those a Board read loaded its cards for, choose the same tasks.
  * @param {Partial<ReturnType<typeof normalizeBoardFilters>>|null|undefined} left
  * @param {Partial<ReturnType<typeof normalizeBoardFilters>>|null|undefined} right
  */

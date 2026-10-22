@@ -43,9 +43,9 @@ test('a read and a command result give each entity the same fields under the cli
     ['epic', data.epics, { id:'e2', projectId:'p1', trackId:'tr1', title:'Beta', description:'Try', startDate:'2026-10-01', endDate:'2026-11-01', state:'planning', position:2, taskTotal:3, taskDone:1, taskOpen:2, completedThisWeek:1, completedSinceStart:1, weeklyCompletions:[1], revision:1 },
       { projectId:'p1', trackId:'tr1', title:'Beta', desc:'Try', start:'2026-10-01', end:'2026-11-01', state:'planning', order:2, total:3, done:1, open:2, closedThisWeek:1, completedSinceStart:1, weekly:[1], counted:true }],
     ['milestone', data.milestones, { id:'m2', projectId:'p1', title:'Beta', description:'Ready', milestoneDate:'2026-11-01', revision:1 }, { projectId:'p1', name:'Beta', desc:'Ready', date:'2026-11-01' }],
-    ['task', data.tasks, { id:'opaque-2', projectId:'p1', trackId:'tr1', epicId:null, taskKey:'BIR-002', title:'Test', description:'All', status:'in_review', position:2, deadline:'2026-12-01', createdAt:100, updatedAt:101, startedAt:99, completedAt:null, completionOrder:null, assigneeIds:['u1'], activeBlock:block, revision:1,
+    ['task', data.tasks, { id:'opaque-2', projectId:'p1', trackId:'tr1', epicId:null, taskKey:'BIR-002', title:'Test', description:'All', status:'in_review', position:2, deadline:'2026-12-01', createdAt:100, updatedAt:101, startedAt:99, completedAt:null, assigneeIds:['u1'], activeBlock:block, revision:1,
       checklistVersion:4, checklistDone:1, checklistTotal:1, checklist:[{ id:'i1', taskId:'opaque-2', position:0, title:'Plan', done:true, revision:3 }] },
-      { internalId:'opaque-2', id:'BIR-002', projectId:'p1', trackId:'tr1', epicId:null, title:'Test', desc:'All', state:'review', order:2, deadline:'2026-12-01', created:100000, updatedAt:101000, startedAt:99000, completedAt:null, completionOrder:null, assignees:['u1'],
+      { internalId:'opaque-2', id:'BIR-002', projectId:'p1', trackId:'tr1', epicId:null, title:'Test', desc:'All', state:'review', order:2, deadline:'2026-12-01', created:100000, updatedAt:101000, startedAt:99000, completedAt:null, assignees:['u1'],
         block:{ id:'b1', reason:'Waiting', by:'u1', at:100000, revision:1, mentions:[], resolution:null },
         checklistVersion:4, checklistDone:1, checklistTotal:1, checklist:[{ id:'i1', taskId:'opaque-2', title:'Plan', done:true, revision:3 }] }],
     ['poolItem', data.pool, { id:'i2', projectId:'p1', scope:'team', ownerUserId:null, title:'Idea', description:'Later', createdAt:100, revision:1 }, { projectId:'p1', scope:'project', ownerId:null, title:'Idea', desc:'Later', created:100000 }],
@@ -133,29 +133,16 @@ test('epics from command results keep or bring their counts, never the loading s
   assert.deepEqual([fresh.counted,fresh.done,fresh.total],[true,0,0]);
 });
 
-test('a newest-first Done keeps live cards in completion order, newest first',()=>{
+test('live Done cards keep Done\'s own order whatever their completion times',()=>{
   const data=createLegacyData(),value=bootstrap();
-  value.boardFilter={doneOrder:'completed'};value.boardPages={done:{nextCursor:null,total:0}};value.selectedProjectId='p1';
+  value.boardPages={done:{nextCursor:null,total:0}};value.selectedProjectId='p1';
   hydrateLegacyData(data,value);
-  assert.equal(data.boardPageInfo.filters.doneOrder,'completed');
   const done=(id,position,completedAt)=>({...value.tasks[0],id,taskKey:`BIR-${id}`,status:'done',position,completedAt});
-  appendBoardTasks(data,[done('old',1,100),done('undated',2,null),done('new',3,300),done('tie-b',4,200),done('tie-a',5,200)]);
-  assert.deepEqual(data.tasks.filter(item=>item.state==='done').map(item=>item.internalId),['new','tie-b','tie-a','old','undated']);
+  appendBoardTasks(data,[done('old',1,100),done('undated',2,null),done('new',3,300),done('tie-b',4,200),done('tie-a',4,200)]);
+  assert.deepEqual(data.tasks.filter(item=>item.state==='done').map(item=>item.internalId),['old','undated','new','tie-a','tie-b']);
   assert.equal(data.tasks.find(item=>item.internalId==='new').completedAt,300000);
-  data.boardPageInfo.filters={};
-  appendBoardTasks(data,[]);
-  assert.deepEqual(data.tasks.filter(item=>item.state==='done').map(item=>item.internalId),['old','undated','new','tie-b','tie-a']);
   reconcileCommandResult(data,{entities:[{...done('new',3,null),entityType:'task',status:'in_review',revision:9}]});
   assert.equal(data.tasks.find(item=>item.internalId==='new').completedAt,null);
-});
-
-test('a newest-first Done puts the task completed last first within one second',()=>{
-  const data=createLegacyData(),value=bootstrap();
-  value.boardFilter={doneOrder:'completed'};value.boardPages={done:{nextCursor:null,total:0}};value.selectedProjectId='p1';
-  hydrateLegacyData(data,value);
-  const done=(id,completionOrder)=>({...value.tasks[0],id,taskKey:`BIR-${id}`,status:'done',position:1,completedAt:200,completionOrder});
-  appendBoardTasks(data,[done('first',7),done('last',9),done('second',8)]);
-  assert.deepEqual(data.tasks.filter(item=>item.state==='done').map(item=>item.internalId),['last','second','first']);
 });
 
 test('an explicitly empty roadmap clears stale project collections',()=>{
