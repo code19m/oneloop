@@ -7,13 +7,10 @@ import {
 import {byStatus, toLegacyScope, toLegacyStatus, toWireStatus} from './wire.js';
 import {mapActivity} from './activity-mapper.js';
 import {NO_ASSIGNEE, boardFiltered, matchesBoardFilters, normalizeBoardFilters, sameBoardFilters} from './board-filters.js';
-import {savedDoneOrder} from './done-order.js';
-import {secondsToMilliseconds} from './time.js';
 
 const STATUSES=['planning','progress','review','done'];
 function boardFilters(filters={}){
-  // The browser's Done order travels with every Board read; only Done uses it.
-  return {limit:50,...normalizeBoardFilters(filters),...(savedDoneOrder()==='completed'?{doneOrder:'completed'}:{})};
+  return {limit:50,...normalizeBoardFilters(filters)};
 }
 
 /** @typedef {{slot:string,target:string,background:boolean,epoch:number,projection:number,controller:AbortController,signal:AbortSignal,promise:Promise<any>|null,next:Token|null,done:boolean}} Token */
@@ -94,7 +91,7 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
     const common=boardFilters(filters),loaded=data.boardPageInfo;
     if(data.bootstrapView!=='board'||loaded?.projectId!==projectId)return false;
     // The bootstrap's pages are a Board read's for the filters they name.
-    if(!sameBoardFilters(loaded.filters,common)||loaded.filters?.doneOrder!==common.doneOrder)return false;
+    if(!sameBoardFilters(loaded.filters,common))return false;
     // A column that shows more than its first page reads those pages again.
     if(boardState?.projectId===projectId&&Object.values(boardState.depths).some(depth=>depth>1))return false;
     supersedeBoard(boardTarget(projectId,common));
@@ -167,9 +164,9 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
           const status=view&&toLegacyStatus(view.status);
           const page=boardState.pages[status];
           const loaded=data.tasks.filter(item=>item.projectId===projectId&&item.state===status);
-          const edge=loaded.sort((left,right)=>compareTaskOrder(left,right,common.doneOrder)).at(-1);
+          const edge=loaded.sort(compareTaskOrder).at(-1);
           const matches=view&&view.projectId===projectId&&matchesBoardFilters({title:view.title,key:view.taskKey,epicId:view.epicId,trackId:view.trackId,assigneeIds:view.assigneeIds,blocked:!!view.activeBlock},common);
-          if(matches&&page&&(!page.nextCursor||edge&&compareTaskOrder({order:view.position,internalId:view.id,state:status,completedAt:secondsToMilliseconds(view.completedAt)??null,completionOrder:view.completionOrder??null},edge,common.doneOrder)<=0))appendBoardTasks(data,[view]);
+          if(matches&&page&&(!page.nextCursor||edge&&compareTaskOrder({order:view.position,internalId:view.id},edge)<=0))appendBoardTasks(data,[view]);
           else if(old)data.tasks.splice(data.tasks.indexOf(old),1);
         }
         if(counts){

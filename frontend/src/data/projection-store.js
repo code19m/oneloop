@@ -67,7 +67,7 @@ const FIELDS = {
   task: [
     ['projectId'], ['trackId'], ['epicId', 'epicId', orNull], ['taskKey', 'id'], ['title'], ['description', 'desc', text], ['status', 'state', toLegacyStatus], ['position', 'order'],
     ['deadline', 'deadline', orNull], ['createdAt', 'created', milliseconds], ['updatedAt', 'updatedAt', milliseconds], ['startedAt', 'startedAt', millisecondsOrNull], ['completedAt', 'completedAt', millisecondsOrNull],
-    ['completionOrder', 'completionOrder', orNull], ['assigneeIds', 'assignees', (ids) => [...(ids ?? [])]], ['activeBlock', 'block', (block) => mapBlock(block)],
+    ['assigneeIds', 'assignees', (ids) => [...(ids ?? [])]], ['activeBlock', 'block', (block) => mapBlock(block)],
     // Only detail reads carry the checklist; every read carries its counts and version.
     ['checklistVersion', 'checklistVersion', orZero], ['checklistDone', 'checklistDone', orZero], ['checklistTotal', 'checklistTotal', orZero],
     ['checklist', 'checklist', (items) => items?.map(mapChecklistItem)],
@@ -171,28 +171,17 @@ export function replaceBoardTasks(data, projectId, taskViews) {
 export function appendBoardTasks(data, taskViews) {
   const byId=new Map(data.tasks.map((item)=>[item.internalId,item]));
   for(const view of taskViews)byId.set(view.id,retainTaskDetails(byId.get(view.id),mapTask(view)));
-  const doneOrder=data.boardPageInfo?.filters?.doneOrder;
-  replace(data.tasks,[...byId.values()].sort((left,right)=>compareTaskOrder(left,right,doneOrder)));return data;
+  replace(data.tasks,[...byId.values()].sort(compareTaskOrder));return data;
 }
 
 /**
- * Match the server's order within each column: position, then opaque ID. A
- * newest-first Done orders by completion time, newest first, then by
- * completion order and ID the other way round; a task without a completion
- * time comes last. Done tasks then sort after all others, so the order stays
- * consistent across columns.
- * @param {{order:number,internalId:string,state?:string,completedAt?:number|null,completionOrder?:number|null}} left
- * @param {{order:number,internalId:string,state?:string,completedAt?:number|null,completionOrder?:number|null}} right
- * @param {string} [doneOrder]
+ * Match the server's order within each column, Done too: position, then
+ * opaque ID.
+ * @param {{order:number,internalId:string}} left
+ * @param {{order:number,internalId:string}} right
  */
-export function compareTaskOrder(left, right, doneOrder) {
-  const byId=left.internalId < right.internalId ? -1 : left.internalId > right.internalId ? 1 : 0;
-  if(doneOrder==='completed'){
-    const leftDone=left.state==='done',rightDone=right.state==='done';
-    if(leftDone!==rightDone)return leftDone?1:-1;
-    if(leftDone)return (right.completedAt??-1)-(left.completedAt??-1) || (right.completionOrder??0)-(left.completionOrder??0) || -byId;
-  }
-  return left.order-right.order || byId;
+export function compareTaskOrder(left, right) {
+  return left.order-right.order || (left.internalId < right.internalId ? -1 : left.internalId > right.internalId ? 1 : 0);
 }
 
 export function mergeEpicTaskPage(data, epicId, taskViews, page, append=false) {
@@ -507,9 +496,8 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
   if(projectId&&bootstrap.boardCounts)setProjectTaskCounts(data,projectId,byStatus(bootstrap.boardCounts));
   if(projectId&&Object.keys(bootstrap.boardPages??{}).length){
     const pages=Object.fromEntries(Object.entries(bootstrap.boardPages).map(([status,page])=>[toLegacyStatus(status),page]));
-    // The pages are a Board read's for the filter and Done order they name.
-    const {doneOrder,...filter}=bootstrap.boardFilter??{};
-    setBoardPageInfo(data,projectId,{...filter,...(doneOrder==='completed'?{doneOrder}:{})},pages);
+    // The pages are a Board read's for the filter they name.
+    setBoardPageInfo(data,projectId,bootstrap.boardFilter??{},pages);
   }
   if(projectId&&bootstrap.roadmap)replaceRoadmapLanes(data,projectId,bootstrap.roadmap);
   if(projectId&&bootstrap.poolCounts)for(const scope of ['personal','team']){

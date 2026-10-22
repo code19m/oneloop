@@ -7,7 +7,6 @@ import { patchInPlace, placeRows } from '../../src/app/rows.js';
 import {
   NO_ASSIGNEE, NO_EPIC, boardFiltered, matchesBoardFilters, normalizeBoardFilters, sameBoardFilters,
 } from '../../src/data/board-filters.js';
-import { savedDoneOrder } from '../../src/data/done-order.js';
 import { sessionKey } from '../../src/data/projection-store.js';
 import { MULTI, multiHtml } from './controls.js';
 import { drag, dropIndicator, makeDropIndicator, setDragImage } from './drag.js';
@@ -29,10 +28,6 @@ const COLS = [
   { key: 'review', name: 'In Review' },
   { key: 'done', name: 'Done' },
 ];
-/** Whether the loaded Done column lists the most recently completed task first. */
-const doneNewest = () => D.boardPageInfo?.projectId === state.projectId && D.boardPageInfo?.filters?.doneOrder === 'completed';
-/** Whether this browser chose Newest first, which the toggle shows before the column it asks for loads. */
-const newestChosen = () => savedDoneOrder() === 'completed';
 
 function taskBits(t) {
   if (t.state === 'done') return { right: stIcon('done'), cls: 'done' };
@@ -102,7 +97,7 @@ export function renderBoard({column=null,excludeIds=null}={}) {
         </div></div>`;
     }).join('');
     return `<section class="col" aria-labelledby="col-${c.key}" data-col="${esc(c.key)}" ${canBoard() ? `${UIAction.on('dragover', 'colOver', UIAction.event)} ${UIAction.on('dragleave', 'colLeave', UIAction.event)} ${UIAction.on('drop', 'dropTask', UIAction.event, c.key)}` : ''}>
-      <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${esc(c.key)}">${c.name}</h2><span class="mono subtle">${serverPage?.total ?? list.length}</span>${c.key === 'done' ? `<button type="button" class="btn icon done-order" aria-pressed="${newestChosen()}" aria-label="Newest first" data-tip="Newest first" ${UIAction('toggleDoneOrder', UIAction.element)}>${I.sortDescending}</button>` : ''}</div>
+      <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${esc(c.key)}">${c.name}</h2><span class="mono subtle">${serverPage?.total ?? list.length}</span></div>
       </div>
       <div class="col-cards" role="list" aria-labelledby="col-${c.key}">${cards || '<div class="empty-note" role="listitem">No tasks</div>'}${serverPage?.nextCursor ? `<div role="listitem" class="board-load-more"><button class="btn quiet" ${UIAction('loadMoreBoard', c.key)}>Load more</button></div>` : ''}</div></section>`;
   }).join('');
@@ -274,8 +269,6 @@ function applyBoardFilters(fromServer = false, { animate: motion = true } = {}) 
     }));
     const count=column.querySelector('.col-head .row1 .mono'),nextCount=next.querySelector('.col-head .row1 .mono').textContent;
     if(count.textContent!==nextCount)count.textContent=nextCount;
-    const order=column.querySelector('.col-head .done-order'),pressed=next.querySelector('.col-head .done-order')?.getAttribute('aria-pressed');
-    if(order&&pressed&&order.getAttribute('aria-pressed')!==pressed)order.setAttribute('aria-pressed',pressed);
     list.scrollTop = scrollTop;
     filterScroll.set(list, { wanted: scrollTop, applied: list.scrollTop });
     if (!animate) return;
@@ -356,9 +349,6 @@ function moveOrigin(t) {
 }
 
 function applyTaskMove(t, col, beforeId = null, atTop = false) {
-  // A newest-first Done shows a finished task on top and has no manual order to change.
-  const newest = col === 'done' && doneNewest();
-  if (newest) { if (t.state === 'done') return null; beforeId = null; atTop = true; }
   const plan = taskMovePlan(t, col, beforeId, atTop); if (!plan) return null;
   const shownBefore = shownColumn(col).filter((item) => item !== t);
   const origin = moveOrigin(t), { projectId } = origin, previousState = t.state, previousOrder = t.order;
@@ -373,7 +363,6 @@ function applyTaskMove(t, col, beforeId = null, atTop = false) {
   const at = next ? D.tasks.indexOf(next) : previous ? D.tasks.indexOf(previous) + 1 : D.tasks.length;
   D.tasks.splice(Math.max(0, at), 0, t);
   t.state = col;
-  if (newest) t.completedAt = Date.now();
   // Only the moved card takes a new position, between its new neighbours, as
   // on the server. The other cards keep the positions the server gave them,
   // so sorting the column again, as a live change does, keeps this order.
@@ -527,7 +516,7 @@ Object.assign(App, {
       if (ev.clientY >= r.top - 4 && ev.clientY <= r.bottom + 4) return;
     }
     const cards = [...colEl.querySelectorAll('.card:not(.dragging)')];
-    const next = colEl.dataset.col === 'done' && doneNewest() ? cards[0] : cards.find((c) => {
+    const next = cards.find((c) => {
       // Hit-test the final layout, not a sibling's in-flight transform.
       const y = list.getBoundingClientRect().top + c.offsetTop - list.scrollTop;
       return ev.clientY < y + c.offsetHeight / 2;
@@ -575,16 +564,14 @@ Object.assign(App, {
   // The header's search and filter menus show the arrays that the reset replaced.
   // Draw it once the cards arrive: before, the Board has none and would say No tasks yet.
   clearBoardFilters(){cancelBoardSearch();resetBoardFilters();App.replaceAddress();runtime().filterBoard(App.context().board).then(result=>{if(!result?.stale)App.refresh();},report);},
-  toggleDoneOrder(button){const newest=!newestChosen();button?.setAttribute('aria-pressed',String(newest));runtime().setDoneOrder(newest?'completed':'manual').catch(report);},
   loadMoreBoard(col){runtime().loadMoreBoard(col).catch(report);},
   taskMoveMenu(event,id){
     event.stopPropagation(); // The card around the button would open the task.
     if(pendingMove)return;
     if(!canBoard())return;const task=taskById(id),list=boardTasks().filter(t=>t.state===task.state),index=list.indexOf(task),r=event.currentTarget.getBoundingClientRect();
     const items=COLS.filter(c=>c.key!==task.state).map(c=>({label:'Move to '+c.name,fn:()=>{if(canBoard()){if(setTaskState(task,c.key)!==false){App.refresh();focusMovedTask(id);}}}}));
-    const ordered=!(task.state==='done'&&doneNewest());
-    if(ordered&&index>0)items.push({label:'Move up',fn:()=>App.moveTaskOrder(id,list[index-1].id,true)});
-    if(ordered&&index<list.length-1)items.push({label:'Move down',fn:()=>App.moveTaskOrder(id,list[index+1].id,false)});
+    if(index>0)items.push({label:'Move up',fn:()=>App.moveTaskOrder(id,list[index-1].id,true)});
+    if(index<list.length-1)items.push({label:'Move down',fn:()=>App.moveTaskOrder(id,list[index+1].id,false)});
     openMenu(items,r.left,r.bottom+6,{trigger:event.currentTarget});
   },
   /** Move a task just before or after another one in its column. */

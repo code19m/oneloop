@@ -54,9 +54,8 @@ export const ACTIONS = Object.freeze([
   'setBlockedFilter', 'setBoardQ', 'setMemberPermission', 'setNotificationRead', 'setPassword',
   'setPoolTab', 'setRoadmapScale', 'setTheme', 'showMoreMembers', 'sizeDescription',
   'sizeDescriptionEditors', 'sizeTaskTitle', 'taskActions', 'taskDragStart', 'taskMoveMenu',
-  'toggleCommentText', 'toggleDescription', 'toggleDoneOrder',
-  'togglePoolDescription', 'toggleReplies', 'toggleSidebar', 'trackMenu', 'updMe', 'updTask',
-  'updateProjectField', 'userMenu',
+  'toggleCommentText', 'toggleDescription', 'togglePoolDescription', 'toggleReplies',
+  'toggleSidebar', 'trackMenu', 'updMe', 'updTask', 'updateProjectField', 'userMenu',
 ]);
 const ALLOWED = new Set(ACTIONS);
 
