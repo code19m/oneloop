@@ -34,7 +34,8 @@ test('templates encode URLs and data attributes',()=>{
 
 test('user text with markup stays text on every page, dialog, drawer, menu and tooltip',async()=>{
   const evil=text=>`${text}<i class="planted" onclick="App.logout()" data-action="logout">x</i><img class="planted" src="data:,">`;
-  const t=bootApp({route:'roadmap',media:()=>true,prepare(D){
+  // The fixture's today, so its epics and tasks are on the Roadmap whatever the date.
+  const t=bootApp({route:'roadmap',media:()=>true,api:{serverNow:()=>Date.parse('2026-09-28T09:00:00Z')},prepare(D){
     for(const user of D.users)user.name=evil(user.name);
     for(const project of D.projects)project.name=evil(project.name);
     for(const track of D.tracks)track.name=evil(track.name);
