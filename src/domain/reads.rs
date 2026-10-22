@@ -26,7 +26,7 @@ use crate::{
 };
 
 use super::{
-    BlockView, BoardCounts, BoardView, BootstrapView, ChecklistItemView, DomainService, DoneOrder,
+    BlockView, BoardCounts, BoardView, BootstrapView, ChecklistItemView, DomainService,
     EpicSummary, EpicView, MembershipView, MilestoneView, Page, PageSummary, PoolItemView,
     PoolScope, ProjectMembers, ProjectView, RoadmapDays, RoadmapList, RoadmapView, SessionView,
     TaskStatus, TaskView, TrackView, UserView,
@@ -124,7 +124,7 @@ const PAGE_SIZE: usize = 50;
 /// What `epic_ids` names for the tasks without an epic.
 const NO_EPIC: &str = "none";
 
-/// Which tasks a Board read shows, and the order of its Done column.
+/// Which tasks a Board read shows.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskFilter {
@@ -137,12 +137,10 @@ pub struct TaskFilter {
     pub assignee_ids: Vec<String>,
     pub no_assignee: bool,
     pub blocked: bool,
-    /// Applies to the Done column; other columns keep their manual order.
-    pub done_order: DoneOrder,
 }
 
 impl TaskFilter {
-    /// Whether the filter shows every task. The Done order only sorts them.
+    /// Whether the filter shows every task.
     pub fn is_empty(&self) -> bool {
         self.search
             .as_deref()

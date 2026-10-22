@@ -54,10 +54,7 @@ async fn pending_deletion_provenance_survives_schema_upgrade_backup_and_restore(
             |row| row.get(0),
         )
         .unwrap();
-    assert!(
-        done_order_index,
-        "schema 4 adds the newest-first Done index"
-    );
+    assert!(done_order_index, "schema 4 adds the Done completion index");
     drop(upgraded);
     assert_eq!(
         validate_backup(upgrade.backup_path.unwrap())
@@ -257,10 +254,8 @@ async fn a_main_branch_database_upgrades_to_undo_with_its_deletions_intact() {
 }
 
 #[tokio::test]
-async fn an_upgraded_done_column_keeps_its_order_and_puts_new_completions_first() {
-    use oneloop::domain::{
-        BoardQuery, DomainOperation, DomainService, DoneOrder, TaskFilter, TaskStatus,
-    };
+async fn upgraded_done_tasks_keep_their_completion_order_and_new_ones_come_first() {
+    use oneloop::domain::{DomainOperation, DomainService, ListKind, RoadmapListQuery};
     let root = support::scratch_dir();
     let live = root.path().join("live");
     fs::create_dir(&live).unwrap();
@@ -282,21 +277,20 @@ async fn an_upgraded_done_column_keeps_its_order_and_puts_new_completions_first(
     let db = Db::open(&live).unwrap();
     let service = DomainService::new(db.clone(), support::utc());
     let owner = support::browser_actor("u", "Owner", "s", now);
+    // The Roadmap lists a section's tasks done on a day, the latest first.
     let newest = async || {
-        let query = BoardQuery {
+        let query = RoadmapListQuery {
             project_id: "p".into(),
-            status: TaskStatus::Done,
-            cursor: None,
-            limit: Some(50),
-            filter: TaskFilter {
-                done_order: DoneOrder::Completed,
-                ..Default::default()
-            },
+            track_id: "tr".into(),
+            epic_id: Some("e".into()),
+            kind: ListKind::Done,
+            from: Some("1970-01-01".into()),
+            to: Some("1970-01-01".into()),
         };
-        let page = service.board_page(&owner, query).await.unwrap();
-        page.items
+        let list = service.roadmap_list(&owner, query).await.unwrap();
+        list.items
             .into_iter()
-            .map(|task| task.id)
+            .map(|mark| mark.mark.id)
             .collect::<Vec<_>>()
     };
     // Before the upgrade, a tie fell back to the ID; it still does.

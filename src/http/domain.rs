@@ -12,9 +12,9 @@ use crate::{
     AppError, AppState,
     auth::Actor,
     domain::{
-        BoardCounts, BoardQuery, BoardView, BoardViewQuery, BootstrapQuery, DoneOrder, LanesQuery,
-        ListKind, Page, PageQuery, PoolItemView, PoolQuery, RoadmapDays, RoadmapList,
-        RoadmapListQuery, RoadmapView, RoadmapWindow, TaskFilter, TaskStatus, TaskView,
+        BoardCounts, BoardQuery, BoardView, BoardViewQuery, BootstrapQuery, LanesQuery, ListKind,
+        Page, PageQuery, PoolItemView, PoolQuery, RoadmapDays, RoadmapList, RoadmapListQuery,
+        RoadmapView, RoadmapWindow, TaskFilter, TaskStatus, TaskView,
     },
     error::AppResult,
 };
@@ -60,9 +60,10 @@ macro_rules! with_board_filter {
             no_assignee: bool,
             #[serde(default)]
             blocked: bool,
-            /// The Board's Done order; columns other than Done ignore it.
-            #[serde(default)]
-            done_order: DoneOrder,
+            /// Ignored: a page from 0.1.0-rc.8 or older may send its Done
+            /// order until it reloads as the current client.
+            #[serde(default, rename = "doneOrder")]
+            _done_order: serde::de::IgnoredAny,
         }
 
         impl $name {
@@ -76,7 +77,6 @@ macro_rules! with_board_filter {
                     assignee_ids: id_list(self.assignee_ids.as_deref()),
                     no_assignee: self.no_assignee,
                     blocked: self.blocked,
-                    done_order: self.done_order,
                 }
             }
         }

@@ -264,8 +264,7 @@ async fn a_bootstrap_with_board_filters_has_the_pages_that_the_board_read_has_fo
         assert_eq!(response.status(), axum::http::StatusCode::OK, "{uri}");
         serde_json::from_slice(&body_bytes(response).await).unwrap()
     };
-    let filter =
-        "search=needle&trackIds=tr1&epicIds=e1&assigneeIds=u3&noAssignee=true&doneOrder=completed";
+    let filter = "search=needle&trackIds=tr1&epicIds=e1&assigneeIds=u3&noAssignee=true";
     let board = read(format!("/api/projects/p1/board-view?{filter}&limit=50")).await;
     let bootstrap = read(format!("/api/bootstrap?projectId=p1&view=board&{filter}")).await;
     let ids = |items: &Value| -> Vec<String> {
@@ -307,7 +306,7 @@ async fn a_bootstrap_with_board_filters_has_the_pages_that_the_board_read_has_fo
     assert_eq!(
         bootstrap["boardFilter"],
         json!({"search":"needle","trackIds":["tr1"],"epicIds":["e1"],"assigneeIds":["u3"],
-               "noAssignee":true,"blocked":false,"doneOrder":"completed"})
+               "noAssignee":true,"blocked":false})
     );
 }
 
@@ -405,8 +404,7 @@ async fn position_writes(f: &Fixture) -> HashSet<String> {
 }
 
 async fn column(f: &Fixture, status: &str) -> Vec<oneloop::domain::TaskView> {
-    let mut query = board_query(status, None);
-    query.filter.done_order = DoneOrder::Manual;
+    let query = board_query(status, None);
     f.service.board_page(&f.manager, query).await.unwrap().items
 }
 
@@ -1233,8 +1231,9 @@ async fn filtered_board_counts_survive_empty_cursor_pages_and_search_edits() {
 }
 
 async fn seed_done_column(f: &Fixture) {
-    // Completion times with a tie, and one task without a completion time,
-    // which only data from before completion times were kept can have.
+    // Completion times out of the column's order, with a tie, and one task
+    // without a completion time, which only data from before completion
+    // times were kept can have.
     f.db.transaction(|tx| {
         for (number, id, completed) in [
             (501, "done-a", Some(100)),
@@ -1256,64 +1255,45 @@ async fn seed_done_column(f: &Fixture) {
     .unwrap();
 }
 
-fn newest_done_query(cursor: Option<String>, search: Option<&str>) -> BoardQuery {
-    BoardQuery {
-        limit: Some(2),
-        filter: TaskFilter {
-            search: search.map(str::to_owned),
-            done_order: DoneOrder::Completed,
-            ..Default::default()
-        },
-        ..board_query("done", cursor)
+/// Every Done task of the project, page by page: from the index without a
+/// search, or from the filtered matches with one.
+async fn done_pages(f: &Fixture, search: Option<&str>) -> Vec<String> {
+    let mut cursor = None;
+    let mut seen = Vec::new();
+    loop {
+        let query = BoardQuery {
+            limit: Some(2),
+            filter: TaskFilter {
+                search: search.map(str::to_owned),
+                ..Default::default()
+            },
+            ..board_query("done", cursor)
+        };
+        let page = f.service.board_page(&f.member, query).await.unwrap();
+        seen.extend(page.items.into_iter().map(|task| task.id));
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
     }
+    seen
 }
 
 #[tokio::test]
-async fn newest_first_done_pages_follow_completion_time() {
+async fn done_pages_follow_the_columns_own_order_whatever_the_completion_times() {
     let f = fixture().await;
     seed_done_column(&f).await;
-    // The unfiltered read uses the index; a search reads the filtered matches.
     for search in [None, Some("finished")] {
-        let mut cursor = None;
-        let mut seen = Vec::new();
-        loop {
-            let page = f
-                .service
-                .board_page(&f.member, newest_done_query(cursor, search))
-                .await
-                .unwrap();
-            assert_eq!(page.total, 6, "{search:?}");
-            seen.extend(page.items.iter().map(|task| task.id.clone()));
-            match page.next_cursor {
-                Some(next) => cursor = Some(next),
-                None => break,
-            }
-        }
         assert_eq!(
-            seen,
-            ["done-d", "done-b", "done-c", "done-a", "done-f", "done-e"],
+            done_pages(&f, search).await,
+            ["done-a", "done-b", "done-c", "done-d", "done-e", "done-f"],
             "{search:?}"
         );
     }
-    let first = f
-        .service
-        .board_page(&f.member, newest_done_query(None, None))
-        .await
-        .unwrap();
-    assert_eq!(first.items[0].completed_at, Some(300));
-    let manual = f
-        .service
-        .board_page(&f.member, board_query("done", None))
-        .await
-        .unwrap();
-    assert_eq!(
-        manual.items[0].id, "done-a",
-        "Manual order stays the default"
-    );
 }
 
 #[tokio::test]
-async fn a_task_moved_to_done_comes_first_in_both_orders() {
+async fn a_task_moved_to_done_comes_first_in_done() {
     let f = fixture().await;
     seed_done_column(&f).await;
     let created = f
@@ -1323,7 +1303,7 @@ async fn a_task_moved_to_done_comes_first_in_both_orders() {
             command(
                 DomainOperation::CreateTask,
                 json!({"projectId":"p1","epicId":"e1","title":"Just finished"}),
-                "newest-create",
+                "finish-create",
                 None,
             ),
         )
@@ -1339,7 +1319,7 @@ async fn a_task_moved_to_done_comes_first_in_both_orders() {
             command(
                 DomainOperation::MoveTask,
                 json!({"taskId":id,"status":"done"}),
-                "newest-move",
+                "finish-move",
                 Some(1),
             ),
         )
@@ -1347,18 +1327,12 @@ async fn a_task_moved_to_done_comes_first_in_both_orders() {
         .unwrap();
     let completed_at = moved.entities[0]["completedAt"].as_i64().unwrap();
     assert!((before..=now()).contains(&completed_at));
-    let newest = f
-        .service
-        .board_page(&f.member, newest_done_query(None, None))
-        .await
-        .unwrap();
-    assert_eq!(newest.items[0].id, id);
-    let manual = f
+    let done = f
         .service
         .board_page(&f.member, board_query("done", None))
         .await
         .unwrap();
-    assert_eq!(manual.items[0].id, id);
+    assert_eq!(done.items[0].id, id);
     let reopened = f
         .service
         .execute(
@@ -1366,7 +1340,7 @@ async fn a_task_moved_to_done_comes_first_in_both_orders() {
             command(
                 DomainOperation::MoveTask,
                 json!({"taskId":id,"status":"in_review"}),
-                "newest-reopen",
+                "finish-reopen",
                 Some(2),
             ),
         )
@@ -1376,7 +1350,7 @@ async fn a_task_moved_to_done_comes_first_in_both_orders() {
 }
 
 #[tokio::test]
-async fn newest_first_lists_tasks_completed_in_one_second_by_completion() {
+async fn done_lists_tasks_finished_in_one_second_the_last_finished_first() {
     let f = fixture().await;
     let mut ids = Vec::new();
     for number in 1..=4 {
@@ -1410,7 +1384,8 @@ async fn newest_first_lists_tasks_completed_in_one_second_by_completion() {
             .await
             .unwrap();
     }
-    // ...within one second, as quick keyboard moves or an assistant's batch do.
+    // ...within one second, as quick keyboard moves or an assistant's batch
+    // do. Each went to the top of Done, so the last one finished is first.
     f.db.run(|connection| {
         connection.execute("UPDATE tasks SET completed_at=1000 WHERE status='done'", [])?;
         Ok(())
@@ -1418,89 +1393,46 @@ async fn newest_first_lists_tasks_completed_in_one_second_by_completion() {
     .await
     .unwrap();
     let expected = [1, 2, 0, 3].map(|index| ids[index].clone());
-    // The unfiltered read uses the index; a search reads the filtered matches.
     for search in [None, Some("quick")] {
-        let mut cursor = None;
-        let mut seen = Vec::new();
-        loop {
-            let page = f
-                .service
-                .board_page(&f.member, newest_done_query(cursor, search))
-                .await
-                .unwrap();
-            seen.extend(page.items.into_iter().map(|task| task.id));
-            match page.next_cursor {
-                Some(next) => cursor = Some(next),
-                None => break,
-            }
-        }
-        assert_eq!(seen, expected, "{search:?}");
+        assert_eq!(done_pages(&f, search).await, expected, "{search:?}");
     }
 }
 
 #[tokio::test]
-async fn done_order_cursors_and_parameters_belong_to_their_order() {
+async fn a_done_order_from_an_older_page_gets_done_in_its_own_order() {
+    // A page from 0.1.0-rc.8 or older may still ask for its Done order
+    // until it reloads; it gets the normal answer.
     let f = fixture().await;
     seed_done_column(&f).await;
-    let newest = f
-        .service
-        .board_page(&f.member, newest_done_query(None, None))
-        .await
-        .unwrap();
-    let mut manual = board_query("done", None);
-    manual.limit = Some(2);
-    let manual = f.service.board_page(&f.member, manual).await.unwrap();
-    let mut mixed = board_query("done", newest.next_cursor.clone());
-    mixed.limit = Some(2);
-    assert!(f.service.board_page(&f.member, mixed).await.is_err());
-    assert!(
-        f.service
-            .board_page(&f.member, newest_done_query(manual.next_cursor, None))
-            .await
-            .is_err()
-    );
-    // Other columns keep their manual order whatever the Done order is.
-    seed_ordering_column(&f, 3).await;
-    let mut planning = board_query("planning", None);
-    planning.filter.done_order = DoneOrder::Completed;
-    let planning = f.service.board_page(&f.member, planning).await.unwrap();
-    assert_eq!(
-        planning
-            .items
-            .iter()
-            .map(|task| task.position)
-            .collect::<Vec<_>>(),
-        [0, 1, 2]
-    );
-
     let app = router(&f);
-    let get = |uri: &str| app.clone().oneshot(signed_in_get("u2", uri));
-    let response = get("/api/projects/p1/board?status=done&doneOrder=completed&limit=2")
-        .await
-        .unwrap();
-    assert_eq!(response.status(), axum::http::StatusCode::OK);
-    let page: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
-    assert_eq!(page["items"][0]["id"], "done-d");
-    let response = get("/api/projects/p1/board-view?doneOrder=completed&limit=2")
-        .await
-        .unwrap();
-    let view: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
-    assert_eq!(view["done"]["items"][1]["id"], "done-b");
-    let response = get("/api/bootstrap?projectId=p1&view=board&doneOrder=completed")
-        .await
-        .unwrap();
-    let bootstrap: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
-    assert_eq!(bootstrap["boardFilter"]["doneOrder"], "completed");
-    let done = bootstrap["tasks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|task| task["status"] == "done")
-        .map(|task| task["id"].as_str().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(done[..2], ["done-d", "done-b"]);
-    let response = get("/api/projects/p1/board?status=done&doneOrder=newest")
-        .await
-        .unwrap();
-    assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    let read = async |uri: &str| -> Value {
+        let response = app.clone().oneshot(signed_in_get("u2", uri)).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK, "{uri}");
+        serde_json::from_slice(&body_bytes(response).await).unwrap()
+    };
+    for order in ["completed", "manual", "newest"] {
+        let page = read(&format!(
+            "/api/projects/p1/board?status=done&doneOrder={order}&limit=2"
+        ))
+        .await;
+        assert_eq!(page["items"][0]["id"], "done-a", "{order}");
+        let view = read(&format!(
+            "/api/projects/p1/board-view?doneOrder={order}&limit=2"
+        ))
+        .await;
+        assert_eq!(view["done"]["items"][1]["id"], "done-b", "{order}");
+        let bootstrap = read(&format!(
+            "/api/bootstrap?projectId=p1&view=board&doneOrder={order}"
+        ))
+        .await;
+        assert!(bootstrap["boardFilter"].get("doneOrder").is_none());
+        let done = bootstrap["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|task| task["status"] == "done")
+            .map(|task| task["id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(done[..2], ["done-a", "done-b"], "{order}");
+    }
 }

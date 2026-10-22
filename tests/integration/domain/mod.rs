@@ -16,8 +16,8 @@ use oneloop::{
     auth::{Actor, token_hash},
     collaboration::{ActivityInput, CollaborationService, record_activity_tx},
     domain::{
-        BoardQuery, BoardViewQuery, BootstrapQuery, DomainOperation, DomainService, DoneOrder,
-        PoolQuery, PoolScope, TaskFilter,
+        BoardQuery, BoardViewQuery, BootstrapQuery, DomainOperation, DomainService, PoolQuery,
+        PoolScope, TaskFilter,
     },
 };
 use rusqlite::params;

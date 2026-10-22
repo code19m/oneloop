@@ -1,6 +1,6 @@
 use super::board::{
-    BLOCKED_COUNT_SQL, CHECKLIST_COUNTS_SQL, NEWEST_DONE_AFTER_SQL, NEWEST_DONE_SQL,
-    TASK_ASSIGNEES_SQL, TASK_BLOCKS_SQL, TASK_MENTIONS_SQL, TASK_VIEWS_SQL, UNDATED_DONE_SQL,
+    BLOCKED_COUNT_SQL, CHECKLIST_COUNTS_SQL, TASK_ASSIGNEES_SQL, TASK_BLOCKS_SQL,
+    TASK_MENTIONS_SQL, TASK_VIEWS_SQL,
 };
 use super::lanes::{
     DONE_DAYS_SQL, LATE_PLANS_SQL, MARKS_SQL, NAMED_SQL, OPEN_SQL, OVERDUE_SQL, PLAN_DAYS_SQL,
@@ -47,23 +47,6 @@ fn epic_summary_uses_covering_index_and_preserves_local_day_boundaries() {
     let plan = query_plan(&c, EPIC_SUMMARY_SQL);
     assert!(
         !plan.contains("TEMP B-TREE") && plan.contains("COVERING INDEX tasks_project_summary_idx"),
-        "{plan}"
-    );
-}
-
-#[test]
-fn newest_done_pages_read_the_partial_index_in_order() {
-    let (_root, c) = crate::db::migrated_connection();
-    for sql in [NEWEST_DONE_SQL, NEWEST_DONE_AFTER_SQL, UNDATED_DONE_SQL] {
-        let plan = query_plan(&c, sql);
-        assert!(
-            !plan.contains("TEMP B-TREE") && plan.contains("tasks_project_done_completed_idx"),
-            "{sql}\n{plan}"
-        );
-    }
-    let plan = query_plan(&c, NEWEST_DONE_AFTER_SQL);
-    assert!(
-        plan.contains("(completed_at,completion_order,id)<(?,?,?)"),
         "{plan}"
     );
 }

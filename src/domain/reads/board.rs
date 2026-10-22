@@ -1,5 +1,5 @@
-//! Task pages: Board columns in either Done order, the counts per column,
-//! an epic's tasks, and the task views they all return.
+//! Task pages: Board columns, the counts per column, an epic's tasks, and
+//! the task views they all return.
 
 use super::*;
 use crate::paging;
@@ -23,29 +23,15 @@ pub(super) fn board_page_with_total(
     generation: i64,
 ) -> AppResult<Page<TaskView>> {
     let limit = paging::page_limit(q.limit, PAGE_SIZE, PAGE_SIZE);
-    // Only Done has a newest-first order; other columns ignore the choice.
     let filter = &q.filter;
-    let newest = q.status == TaskStatus::Done && filter.done_order == DoneOrder::Completed;
-    let scope = if newest {
-        format!("board:{}:done:completed", q.project_id)
-    } else {
-        format!("board:{}:{}", q.project_id, q.status.as_str())
-    };
+    let scope = format!("board:{}:{}", q.project_id, q.status.as_str());
+    // The card the page continues after.
     let start = match q.cursor.as_deref() {
         None => None,
-        Some(raw) if newest => {
-            let cursor: CompletedCursor = paging::decode(raw)?;
-            check_task_cursor(cursor.generation, generation, &cursor.scope, &scope)?;
-            Some(PageStart::Completed {
-                at: cursor.completed_at,
-                order: cursor.completion_order,
-                id: cursor.id,
-            })
-        }
         Some(raw) => {
             let cursor: BoardCursor = paging::decode(raw)?;
             check_task_cursor(cursor.generation, generation, &cursor.scope, &scope)?;
-            Some(PageStart::Position(cursor.position, cursor.id))
+            Some((cursor.position, cursor.id))
         }
     };
     let mut values = vec![
@@ -140,43 +126,13 @@ pub(super) fn board_page_with_total(
     } else {
         total
     };
-    // Where the page starts, in the column's order. Newest first lists tasks
-    // without a completion time, which only very old data has, last, as
-    // SQLite sorts NULL last in a descending order.
-    let after = match &start {
-        Some(PageStart::Position(position, id)) => {
-            values.push((*position).into());
-            values.push(id.clone().into());
+    // Where the page starts, in the column's order.
+    let after = match start {
+        Some((position, id)) => {
+            values.push(position.into());
+            values.push(id.into());
             let n = values.len() - 1;
             format!("(t.position>?{n} OR (t.position=?{n} AND t.id>?{}))", n + 1)
-        }
-        Some(PageStart::Completed {
-            at: Some(completed),
-            order,
-            id,
-        }) => {
-            values.push((*completed).into());
-            values.push((*order).into());
-            values.push(id.clone().into());
-            let n = values.len() - 2;
-            format!(
-                "((t.completed_at,t.completion_order,t.id)<(?{n},?{},?{}) OR t.completed_at IS NULL)",
-                n + 1,
-                n + 2
-            )
-        }
-        Some(PageStart::Completed {
-            at: None,
-            order,
-            id,
-        }) => {
-            values.push((*order).into());
-            values.push(id.clone().into());
-            let n = values.len() - 1;
-            format!(
-                "(t.completed_at IS NULL AND (t.completion_order,t.id)<(?{n},?{}))",
-                n + 1
-            )
         }
         None => String::new(),
     };
@@ -184,26 +140,18 @@ pub(super) fn board_page_with_total(
     let limit_parameter = values.len();
     let (ids, total) = if let Some(total) = total {
         // Precomputed unfiltered totals retain the bounded index-only page path.
-        let ids = if newest {
-            let start = match &start {
-                Some(PageStart::Completed { at, order, id }) => Some((*at, *order, id.as_str())),
-                _ => None,
-            };
-            newest_done_ids(connection, &q.project_id, start, limit + 1)?
+        let after = if after.is_empty() {
+            after
         } else {
-            let after = if after.is_empty() {
-                after
-            } else {
-                format!(" AND {after}")
-            };
-            let sql = format!(
-                "SELECT t.id FROM {tasks} WHERE {predicate}{after} ORDER BY t.position,t.id LIMIT ?{limit_parameter}"
-            );
-            let mut statement = connection.prepare_cached(&sql)?;
-            statement
-                .query_map(rusqlite::params_from_iter(values.iter()), |row| row.get(0))?
-                .collect::<Result<Vec<String>, _>>()?
+            format!(" AND {after}")
         };
+        let sql = format!(
+            "SELECT t.id FROM {tasks} WHERE {predicate}{after} ORDER BY t.position,t.id LIMIT ?{limit_parameter}"
+        );
+        let mut statement = connection.prepare_cached(&sql)?;
+        let ids = statement
+            .query_map(rusqlite::params_from_iter(values.iter()), |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
         (ids, total)
     } else {
         // Materialize matching IDs once: expensive substring/member filters run
@@ -214,22 +162,14 @@ pub(super) fn board_page_with_total(
         } else {
             format!(" WHERE {after}")
         };
-        let (order, page_order) = if newest {
-            (
-                "t.completed_at DESC,t.completion_order DESC,t.id DESC",
-                "page.completed_at DESC,page.completion_order DESC,page.id DESC",
-            )
-        } else {
-            ("t.position,t.id", "page.position,page.id")
-        };
         let sql = format!(
             "WITH matches AS MATERIALIZED (
-            SELECT t.id,t.position,t.completed_at,t.completion_order FROM {tasks} WHERE {predicate}
+            SELECT t.id,t.position FROM {tasks} WHERE {predicate}
         ), page AS (
-            SELECT t.id,t.position,t.completed_at,t.completion_order FROM matches t{after}
-            ORDER BY {order} LIMIT ?{limit_parameter}
+            SELECT t.id,t.position FROM matches t{after}
+            ORDER BY t.position,t.id LIMIT ?{limit_parameter}
         ) SELECT page.id, totals.total FROM (SELECT COUNT(*) AS total FROM matches) totals
-          LEFT JOIN page ON true ORDER BY {page_order}"
+          LEFT JOIN page ON true ORDER BY page.position,page.id"
         );
         let mut statement = connection.prepare_cached(&sql)?;
         let mut rows = statement.query(rusqlite::params_from_iter(values.iter()))?;
@@ -248,22 +188,12 @@ pub(super) fn board_page_with_total(
     let items = task_views(connection, &ids, false)?;
     let next_cursor = if has_more {
         items.last().map(|t| {
-            if newest {
-                paging::encode(&CompletedCursor {
-                    generation,
-                    scope,
-                    completed_at: t.completed_at,
-                    completion_order: t.completion_order.unwrap_or(0),
-                    id: t.id.clone(),
-                })
-            } else {
-                paging::encode(&BoardCursor {
-                    generation,
-                    scope,
-                    position: t.position,
-                    id: t.id.clone(),
-                })
-            }
+            paging::encode(&BoardCursor {
+                generation,
+                scope,
+                position: t.position,
+                id: t.id.clone(),
+            })
         })
     } else {
         None
@@ -546,77 +476,6 @@ struct BoardCursor {
     position: i64,
     id: String,
 }
-
-/// A cursor in a newest-first Done column.
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CompletedCursor {
-    generation: i64,
-    scope: String,
-    completed_at: Option<i64>,
-    completion_order: i64,
-    id: String,
-}
-
-/// The card a Board page continues after.
-enum PageStart {
-    Position(i64, String),
-    Completed {
-        at: Option<i64>,
-        order: i64,
-        id: String,
-    },
-}
-
-/// One newest-first Done page of a project, read in order from the partial
-/// index. `start` is the completion time, completion order and ID of the card
-/// to continue after.
-pub(super) fn newest_done_ids(
-    connection: &rusqlite::Connection,
-    project_id: &str,
-    start: Option<(Option<i64>, i64, &str)>,
-    take: usize,
-) -> AppResult<Vec<String>> {
-    let read = |sql: &str, values: &[&dyn rusqlite::ToSql]| -> AppResult<Vec<String>> {
-        let mut statement = connection.prepare_cached(sql)?;
-        Ok(statement
-            .query_map(values, |row| row.get(0))?
-            .collect::<Result<Vec<String>, _>>()?)
-    };
-    let (mut ids, undated_after) = match start {
-        None => return read(NEWEST_DONE_SQL, params![project_id, take as i64]),
-        Some((Some(completed), order, id)) => (
-            read(
-                NEWEST_DONE_AFTER_SQL,
-                params![project_id, completed, order, id, take as i64],
-            )?,
-            None,
-        ),
-        Some((None, order, id)) => (Vec::new(), Some((order, id))),
-    };
-    // The row comparison skips tasks without a completion time; they follow.
-    if ids.len() < take {
-        let rest = (take - ids.len()) as i64;
-        let (order, id) = undated_after.unzip();
-        ids.extend(read(
-            UNDATED_DONE_SQL,
-            params![project_id, id, order, rest],
-        )?);
-    }
-    Ok(ids)
-}
-
-pub(super) const NEWEST_DONE_SQL: &str =
-    "SELECT id FROM tasks WHERE project_id=?1 AND status='done' AND deleted_at IS NULL
-    ORDER BY completed_at DESC,completion_order DESC,id DESC LIMIT ?2";
-pub(super) const NEWEST_DONE_AFTER_SQL: &str =
-    "SELECT id FROM tasks WHERE project_id=?1 AND status='done' AND deleted_at IS NULL
-    AND (completed_at,completion_order,id)<(?2,?3,?4)
-    ORDER BY completed_at DESC,completion_order DESC,id DESC LIMIT ?5";
-pub(super) const UNDATED_DONE_SQL: &str =
-    "SELECT id FROM tasks WHERE project_id=?1 AND status='done' AND deleted_at IS NULL
-    AND completed_at IS NULL AND (?2 IS NULL OR (completion_order,id)<(?3,?2))
-    ORDER BY completion_order DESC,id DESC LIMIT ?4";
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
