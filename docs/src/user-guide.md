@@ -162,9 +162,10 @@ a review.
   a refresh keeps them and you can share a filtered Board as a link. Changing
   them adds no step to the browser's history, so **Back** leaves the Board. A
   choice the project no longer has, such as a deleted track, is dropped.
-- **Done** shows the most recently finished tasks first by itself, because a
-  task that moves there goes to its top. To put a finished task elsewhere,
-  drag it or use **Move up** and **Move down**.
+- **Done** shows the most recently finished tasks first by itself: a task
+  moved to Done with **Move to**, its **Status**, **Unblock and complete** or
+  an AI assistant goes to its top. A card you drag into Done stays where you
+  drop it, and **Move up** and **Move down** reorder Done as any column.
 
 ### Pool
 

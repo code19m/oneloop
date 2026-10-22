@@ -61,7 +61,9 @@ macro_rules! with_board_filter {
             #[serde(default)]
             blocked: bool,
             /// Ignored: a page from 0.1.0-rc.8 or older may send its Done
-            /// order until it reloads as the current client.
+            /// order until it reloads as the current client, and refusing
+            /// it would fail that page's Board reads. Remove this field when
+            /// upgrades from 0.1.0-rc.8 end, after the next stable release.
             #[serde(default, rename = "doneOrder")]
             _done_order: serde::de::IgnoredAny,
         }

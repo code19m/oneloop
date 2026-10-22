@@ -1,6 +1,5 @@
 // @ts-check
 
-
 /** HTTP transport only. Product validation and permissions belong to the server. */
 /** @typedef {{status?:number,code?:string,details?:unknown,retryAfter?:string|null,uncertain?:boolean,cause?:unknown,requestContext?:any}} ApiErrorOptions */
 /** @typedef {{method?:string,body?:unknown,signal?:AbortSignal,background?:boolean,headers?:Record<string,string>}} RequestOptions */

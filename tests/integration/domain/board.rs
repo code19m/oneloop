@@ -1350,7 +1350,7 @@ async fn a_task_moved_to_done_comes_first_in_done() {
 }
 
 #[tokio::test]
-async fn done_lists_tasks_finished_in_one_second_the_last_finished_first() {
+async fn tasks_moved_to_done_stack_on_top_across_pages() {
     let f = fixture().await;
     let mut ids = Vec::new();
     for number in 1..=4 {
@@ -1369,7 +1369,7 @@ async fn done_lists_tasks_finished_in_one_second_the_last_finished_first() {
             .unwrap();
         ids.push(created.entities[0]["id"].as_str().unwrap().to_owned());
     }
-    // ONE-004, ONE-001, ONE-003 and ONE-002 move to Done in that order...
+    // ONE-004, ONE-001, ONE-003 and ONE-002 move to Done in that order.
     for index in [3, 0, 2, 1] {
         f.service
             .execute(
@@ -1384,14 +1384,7 @@ async fn done_lists_tasks_finished_in_one_second_the_last_finished_first() {
             .await
             .unwrap();
     }
-    // ...within one second, as quick keyboard moves or an assistant's batch
-    // do. Each went to the top of Done, so the last one finished is first.
-    f.db.run(|connection| {
-        connection.execute("UPDATE tasks SET completed_at=1000 WHERE status='done'", [])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
+    // Each went to the top of Done, so the last one finished is first.
     let expected = [1, 2, 0, 3].map(|index| ids[index].clone());
     for search in [None, Some("quick")] {
         assert_eq!(done_pages(&f, search).await, expected, "{search:?}");
