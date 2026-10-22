@@ -6,6 +6,15 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+- The **Newest first** button at the top of the Board's **Done** column. Since
+  0.1.0-rc.6, a task that moves to Done goes to the top of the column, so Done
+  already lists finished tasks newest first by itself, and the button only
+  switched between two orders that looked the same. A browser that had it on
+  now shows Done's own order. To put a finished task elsewhere, drag it or use
+  **Move up** and **Move down**.
+
 ## [0.1.0-rc.8] - 2026-10-22
 
 The eighth release candidate. HTML previews of attachments and Knowledge files
