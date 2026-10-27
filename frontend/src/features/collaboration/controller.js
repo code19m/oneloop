@@ -105,22 +105,21 @@ export function installCollaborationController({ transport, recovery, eventSourc
       const [comments,activity,target,block]=await Promise.all([
         !readComments?null:append&&page.loaded&&!page.commentsCursor?Promise.resolve({items:[],nextCursor:null}):transport.api.comments(task.internalId,{cursor:append?page.commentsCursor:undefined,limit:50,signal:taskController.signal,background}),
         !readActivity?null:append&&page.loaded&&!page.activityCursor?Promise.resolve({items:[],nextCursor:null}):transport.api.activity(task.projectId,{taskId:task.internalId,cursor:append?page.activityCursor:undefined,limit:50,signal:taskController.signal,background}),
-        Promise.all([...new Set(readComments?[...targetCommentIds,...(targetCommentId?[targetCommentId]:[])]:[])].map(id=>transport.api.comment(task.internalId,id,{signal:taskController.signal,background}))).then(pages=>({items:pages.flatMap(page=>page.items??[]),context:pages.flatMap(page=>page.context??[]),replyCounts:Object.assign({},...pages.map(page=>page.replyCounts))})),
+        Promise.all([...new Set(readComments?[...targetCommentIds,...(targetCommentId?[targetCommentId]:[])]:[])].map(id=>transport.api.comment(task.internalId,id,{signal:taskController.signal,background}))).then(pages=>({items:pages.flatMap(page=>page.items??[]),context:pages.flatMap(page=>page.context??[])})),
         targetBlockId?transport.api.block(task.internalId,targetBlockId,{signal:taskController.signal,background}):Promise.resolve(null),
       ]);
       if(reconcile){
         for(const [rows,depth,read] of [
           [comments,page.commentsDepth??1,cursor=>transport.api.comments(task.internalId,{cursor,limit:50,signal:taskController.signal,background})],
           [activity,page.activityDepth??1,cursor=>transport.api.activity(task.projectId,{taskId:task.internalId,cursor,limit:50,signal:taskController.signal,background})],
-        ]){for(let index=1;rows&&index<depth&&rows.nextCursor;index++){const next=await read(rows.nextCursor);rows.items.push(...next.items);rows.context=[...(rows.context??[]),...(next.context??[])];rows.replyCounts={...rows.replyCounts,...next.replyCounts};rows.nextCursor=next.nextCursor;}}
+        ]){for(let index=1;rows&&index<depth&&rows.nextCursor;index++){const next=await read(rows.nextCursor);rows.items.push(...next.items);rows.context=[...(rows.context??[]),...(next.context??[])];rows.nextCursor=next.nextCursor;}}
       }
       // A task read can replace the task's object while this read runs; the result then goes to the object the page shows.
       const shown=currentTask(task.internalId);
       if(generation!==taskGeneration||key!==`${currentSession()}:${task.internalId}`||expectedRoute!==routeKey||!shown){page.loading=false;return {stale:true};}
       task=shown;
       const commentRows=new Map([...(comments?.context??[]),...(comments?.items??[]),...(target?.context??[]),...(target?.items??[])].map((item)=>[item.id,item]));
-      const replyCounts={...comments?.replyCounts,...target?.replyCounts};
-      const mappedComments=[...commentRows.values()].map((item)=>({...mapComment(item),replyCount:replyCounts[item.rootId]}));
+      const mappedComments=[...commentRows.values()].map(mapComment);
       const activityRows=new Map([...(activity?.items??[]),...(block?.items??[])].map((item)=>[item.id,item]));
       const mappedActivity=[...activityRows.values()].map((item)=>mapActivity(item,data.users,data)).filter(Boolean);
       if(append){

@@ -314,7 +314,11 @@ Write a comment under the task's activity and press Enter to send it.
 Shift+Enter starts a new line. Every project member can comment, even with a
 read-only Board.
 
-- **Reply** answers a comment in its thread.
+- Comments read as a chat: comments and replies show in the order they were
+  written, the newest last, and your own sit on the right.
+- **Reply** answers a comment. You write the reply in the box at the bottom,
+  and it shows the comment it answers above its text; choose that line to go to
+  the comment.
 - You can edit and delete your own comments. Admins can edit and delete any
   comment. You can [undo a deletion](#undo-a-deletion).
 - To mention someone, type `@` and pick the person from the list. Only people

@@ -704,8 +704,7 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .tp-sec { display: flex; flex-direction: column; gap: 8px; }
 .tp-sec h2 { margin: 0; display: flex; align-items: center; font-size: var(--text-ui); font-weight: 500; color: var(--ink); }
 .cmt { padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
-.cmt-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: var(--text-label); color: var(--ink-soft); }
-.cmt-body { margin-top: 6px; font-size: var(--text-ui); line-height: 1.65; color: var(--ink); white-space: pre-line; }
+.cmt-body { margin-top: 6px; font-size: var(--text-body); line-height: 1.5; color: var(--ink); white-space: pre-line; }
 .cmt-new { margin-top: 10px; }
 .cmt-new textarea { width: 100%; min-height: 60px; }
 .act-row { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; font-size: var(--text-label); color: var(--ink-muted); }
@@ -1435,12 +1434,6 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .attachment-dropzone.is-compact .attachment-drop-icon { flex-basis:22px;width:22px;height:22px; }
 .attachment-dropzone.is-compact .attachment-drop-icon svg { width:22px;height:22px; }
 .attachment-dropzone.is-compact .attachment-drop-copy { gap:2px; }
-
-/* Thread contents stay mounted so both expansion and collapse can interpolate. */
-.comment-thread-wrap { display:grid;grid-template-rows:0fr;opacity:0;visibility:hidden;transition:grid-template-rows var(--motion-normal) cubic-bezier(.2,.8,.2,1),opacity var(--motion-normal) cubic-bezier(.2,.8,.2,1),visibility 0s var(--motion-normal); }
-.comment-thread-wrap>div { min-height:0;overflow:hidden; }
-.comment-thread-wrap.is-expanded { grid-template-rows:1fr;opacity:1;visibility:visible;transition-delay:0s; }
-@media(prefers-reduced-motion:reduce) { .comment-thread-wrap { transition:none; } }
 
 .member-access-row.off .member-person b { color:var(--ink-muted);font-weight:400; }
 

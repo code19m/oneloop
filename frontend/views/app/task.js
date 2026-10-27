@@ -57,16 +57,16 @@ function refreshTaskActivity(id,preserveComments=true) {
   const template=document.createElement('template');setHTML(template,taskActivityHtml(taskById(id)));
   const next=[...template.content.children],wanted=new Set(next.map(el=>el.dataset.feedKey).filter(Boolean));
   const focusedKey=active?.closest?.('[data-feed-key]')?.dataset.feedKey;
-  const focusedControl=active?.matches?.('button')?{comment:active.closest('[data-comment]')?.dataset.comment,replyRoot:active.dataset.replyRoot,action:active.getAttribute('aria-label'),className:active.className}:null;
+  const focusedControl=active?.matches?.('button')?{comment:active.closest('[data-comment]')?.dataset.comment,action:active.getAttribute('aria-label'),className:active.className}:null;
   const changed=[];
-  const children=next.map(el=>{const old=existing.get(el.dataset.feedKey),markup=el.outerHTML;if(old&&((preserveComments&&old.classList.contains('comment-conversation'))||feedRowMarkup.get(old)===markup))return old;feedRowMarkup.set(el,markup);if(old)changed.push(el);return el;});
+  const children=next.map(el=>{const old=existing.get(el.dataset.feedKey),markup=el.outerHTML;if(old&&((preserveComments&&old.classList.contains('comment-row'))||feedRowMarkup.get(old)===markup))return old;feedRowMarkup.set(el,markup);if(old)changed.push(el);return el;});
   const gone=[...existing].filter(([key])=>!wanted.has(key)).map(([key,el])=>[el,rows.get(key)]),viewport=timeline.closest('.content')?.getBoundingClientRect();
   timeline.style.position='relative';
   placeRows(timeline,children);
   if(children.length<=100)changed.forEach(el=>UIMotion.fade(el));
   if(gone.length<=20)fadeOutRows(timeline,gone,{listRect:timelineRect,viewport,height:before});
   if(active?.isConnected&&timeline.contains(active))active.focus({preventScroll:true});
-  else if(focusedKey&&focusedControl){const row=[...timeline.querySelectorAll('[data-feed-key]')].find(el=>el.dataset.feedKey===focusedKey);const target=focusedControl.replyRoot?[...row?.querySelectorAll('[data-reply-root]')||[]].find(el=>el.dataset.replyRoot===focusedControl.replyRoot):focusedControl.comment?[...row?.querySelectorAll('[data-comment] button')||[]].find(el=>el.closest('[data-comment]')?.dataset.comment===focusedControl.comment&&el.getAttribute('aria-label')===focusedControl.action):[...row?.querySelectorAll('button')||[]].find(el=>el.className===focusedControl.className);target?.focus({preventScroll:true});}
+  else if(focusedKey&&focusedControl){const row=[...timeline.querySelectorAll('[data-feed-key]')].find(el=>el.dataset.feedKey===focusedKey);const target=focusedControl.comment?[...row?.querySelectorAll('[data-comment] button')||[]].find(el=>el.closest('[data-comment]')?.dataset.comment===focusedControl.comment&&el.getAttribute('aria-label')===focusedControl.action&&el.className===focusedControl.className):[...row?.querySelectorAll('button')||[]].find(el=>el.className===focusedControl.className);target?.focus({preventScroll:true});}
   UIMotion.height(timeline,before);UIMotion.reflow(timeline,'[data-feed-key]','data-feed-key',rows);
 }
 

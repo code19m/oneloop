@@ -6,6 +6,17 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- A task's comments read as a chat. Comments and replies show in one list in
+  the order they were written, the newest last, so a reply to an older comment
+  no longer waits behind a closed **N replies** button further up the page.
+  Your own comments sit on the right. Every reply shows the comment it answers,
+  its author and first line, at the top of its bubble; choose that line to go
+  to the comment. **Reply** now writes in the box at the bottom of the
+  activity, and new comments keep arriving while you write a reply. Comment
+  text is a little smaller.
+
 ### Removed
 
 - The **Newest first** button at the top of the Board's **Done** column. Since

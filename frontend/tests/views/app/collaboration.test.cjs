@@ -261,22 +261,42 @@ test('Enter sends, replies and edits; Shift+Enter, composition and repeats do no
  const offline=boot();offline.w.Recovery.observeResponse({ok:false,error:new offline.w.TestApiError('Unable to reach oneloop',{code:'network_error'})});const input=typeComment(offline,'Keep my text');offline.A.commentKey({key:'Enter',currentTarget:input,preventDefault(){}});assert.equal(offline.commands.length,0);assert.equal(offline.d.getElementById('cmtIn').value,'Keep my text');
 });
 
-test('contextual comment actions, one inline editor, reply composer dismissal, reply-to references, edit cancellation and ownership checks', async () => {
+test('comments read as a chat: replies in time order with the comment they answer, own ones on the right, one editor, the reply box at the foot and ownership checks', async () => {
  const t=boot(D=>{D.tasks.find(x=>x.id==='BIR-079').comments=[
-  {id:'thread-root',who:'robin',ts:Date.now()-30000,text:'Please review the reminder edge cases.',replyCount:80},
+  {id:'thread-root',who:'robin',ts:Date.now()-30000,text:'Please review the reminder edge cases.'},
   {id:'thread-reply',who:'taylorwu',ts:Date.now()-20000,text:'Checking February.',parentId:'thread-root',replyToId:'thread-root'},
+  {id:'other-root',who:'blairq',ts:Date.now()-15000,text:'An unrelated note.'},
   {id:'thread-followup',who:'blairq',ts:Date.now()-10000,text:'The fixture is ready.',parentId:'thread-root',replyToId:'thread-reply'}
  ];}),task=t.D.tasks.find(x=>x.id==='BIR-079');
- const root=()=>t.d.querySelector('[data-comment="thread-root"]'),input=()=>t.d.getElementById('cmtIn'),toggle=()=>t.d.querySelector('[data-reply-root="thread-root"]');
- assert(root().querySelector('.reply-action svg'));assert(!root().querySelector('.comment-actions').textContent.includes('Delete'));assert(toggle().textContent.includes('2 of 80 replies'));assert(t.d.querySelector('.reply-reference'));
- t.A.commentMenu({currentTarget:root().querySelector('.comment-menu-button')},task.id,'thread-root');assert.equal(t.d.querySelector('.menu button').textContent.trim(),'Edit');assert.equal(t.d.querySelector('.menu button.danger').textContent.trim(),'Delete');t.A.menuAction(0);assert(input().closest('[data-comment="thread-root"]'));assert.equal(input().value,'Please review the reminder edge cases.');t.A.cancelCommentMode(task.id);
- t.A.replyComment(task.id,'thread-reply');assert(input().closest('.thread-composer'));assert.equal(t.d.querySelectorAll('#cmtIn').length,1);assert.equal(t.d.querySelector('.comment-composer-home').textContent,'');assert(t.d.querySelector('.reply-context-quote').textContent.includes('Checking February'));
- typeComment(t,'Keep this open');t.A.toggleReplies(task.id,'thread-root');assert.equal(toggle().getAttribute('aria-expanded'),'false');assert(!input().closest('[inert]'));assert.equal(input().value,'Keep this open');t.A.replyComment(task.id,'thread-reply');assert.equal(input().value,'Keep this open');
- t.A.addComment(task.id);assert.deepEqual(t.commands[0].payload,{taskId:task.internalId,content:'Keep this open',replyToId:'thread-reply',mentions:[]});await acceptComment(t,'saved-reply');assert.equal(task.comments.at(-1).parentId,'thread-root');assert.equal(task.comments.at(-1).replyToId,'thread-reply');assert(!t.d.querySelector('.thread-composer'));assert(input().closest('.comment-composer-home'));assert.equal(t.d.activeElement.dataset.comment,task.comments.at(-1).id);const savedReply=t.d.activeElement;assert(savedReply.classList.contains('comment-save-focus'));input().focus();assert(!savedReply.classList.contains('comment-save-focus'));assert(t.d.querySelector('#toast-region').textContent.includes('Reply added'));assert.equal(t.d.querySelector('.comment-feedback').textContent,'');assert.equal(input().value,'');assert.equal(toggle().getAttribute('aria-expanded'),'true');
- t.A.cancelCommentMode(task.id);assert(input().closest('.comment-composer-home'));assert.equal(t.d.querySelectorAll('#cmtIn').length,1);
- t.A.editComment(task.id,'thread-reply');assert(input().closest('[data-comment="thread-reply"]'));assert(toggle().disabled);typeComment(t,'Unsaved edit');t.A.cancelCommentMode(task.id);assert.equal(task.comments.find(c=>c.id==='thread-reply').text,'Checking February.');assert(!toggle().disabled);
- t.A.jumpToComment(task.id,'thread-followup');assert.equal(t.d.activeElement.dataset.comment,'thread-followup');
- t.D.users.find(u=>u.id==='taylorwu').admin=false;t.A.refresh();assert(!root().querySelector('.comment-menu-button'));assert(t.d.querySelector('[data-comment="thread-reply"] .comment-menu-button'));t.A.commentMenu({currentTarget:root()},task.id,'thread-root');assert(!t.d.querySelector('.menu'));
+ const row=id=>t.d.querySelector(`[data-comment="${id}"]`),order=()=>[...t.d.querySelectorAll('.timeline [data-comment]')].map(el=>el.dataset.comment),input=()=>t.d.getElementById('cmtIn');
+ // A reply takes its place among the other comments by when it was written; nothing is folded away under its root.
+ assert.deepEqual(order(),['thread-root','thread-reply','other-root','thread-followup']);assert(!t.d.querySelector('[data-reply-root],.comment-thread'));
+ assert(!row('thread-root').querySelector('.reply-reference'));
+ assert(row('thread-reply').querySelector('.reply-reference').textContent.includes('Please review the reminder edge cases.'));
+ assert(row('thread-followup').querySelector('.reply-reference').textContent.includes('Checking February.'));
+ // The person's own comment sits on the right with no picture; its name stays for screen readers.
+ const own=row('thread-reply').closest('.comment-row'),other=row('thread-root').closest('.comment-row');
+ assert(own.classList.contains('is-own'));assert(!own.querySelector('.avatar'));assert(row('thread-reply').querySelector('#comment-author-thread-reply.sr-only'));
+ assert(!other.classList.contains('is-own'));assert(other.querySelector('.avatar'));assert(row('thread-root').querySelector('#comment-author-thread-root.cmt-author'));
+ assert(row('thread-root').querySelector('.reply-action svg'));assert(!row('thread-root').querySelector('.comment-actions').textContent.includes('Delete'));
+ t.A.commentMenu({currentTarget:row('thread-root').querySelector('.comment-menu-button')},task.id,'thread-root');assert.equal(t.d.querySelector('.menu button').textContent.trim(),'Edit');assert.equal(t.d.querySelector('.menu button.danger').textContent.trim(),'Delete');t.A.menuAction(0);assert(input().closest('[data-comment="thread-root"]'));assert.equal(input().value,'Please review the reminder edge cases.');t.A.cancelCommentMode(task.id);
+ // A reply is written in the box at the foot of the chat, which quotes what it answers.
+ t.A.replyComment(task.id,'thread-reply');assert(input().closest('.comment-composer-home'));assert.equal(t.d.querySelectorAll('#cmtIn').length,1);assert(row('thread-reply').classList.contains('is-reply-target'));assert(t.d.querySelector('.reply-context-quote').textContent.includes('Checking February'));
+ typeComment(t,'Keep this open');t.A.replyComment(task.id,'thread-reply');assert.equal(input().value,'Keep this open');
+ t.A.addComment(task.id);assert.deepEqual(t.commands[0].payload,{taskId:task.internalId,content:'Keep this open',replyToId:'thread-reply',mentions:[]});await acceptComment(t,'saved-reply');
+ const saved=task.comments.at(-1);assert.equal(saved.parentId,'thread-root');assert.equal(saved.replyToId,'thread-reply');
+ assert.equal(order().at(-1),saved.id,'the new reply is the newest message');assert.equal(t.d.activeElement.dataset.comment,saved.id);assert(row(saved.id).querySelector('.reply-reference').textContent.includes('Checking February.'));
+ const savedReply=t.d.activeElement;assert(savedReply.classList.contains('comment-save-focus'));input().focus();assert(!savedReply.classList.contains('comment-save-focus'));
+ assert(t.d.querySelector('#toast-region').textContent.includes('Reply added'));assert.equal(t.d.querySelector('.comment-feedback').textContent,'');assert.equal(input().value,'');assert(!t.d.querySelector('.reply-context'));assert(!row('thread-reply').classList.contains('is-reply-target'));
+ t.A.replyComment(task.id,'thread-root');t.A.cancelCommentMode(task.id);assert(input().closest('.comment-composer-home'));assert(!t.d.querySelector('.reply-context'));assert.equal(t.d.querySelectorAll('#cmtIn').length,1);
+ // An edit happens in place across the whole width, and the box at the foot steps aside meanwhile.
+ t.A.editComment(task.id,'thread-reply');assert(input().closest('[data-comment="thread-reply"]'));assert(input().closest('.comment-row').classList.contains('is-editing'));assert.equal(t.d.querySelector('.comment-composer-home').textContent,'');typeComment(t,'Unsaved edit');t.A.cancelCommentMode(task.id);assert.equal(task.comments.find(c=>c.id==='thread-reply').text,'Checking February.');assert(input().closest('.comment-composer-home'));
+ // The line naming the answered comment leads to it, and does again the second time.
+ for(let i=0;i<2;i++){t.A.jumpToComment(task.id,'thread-reply');assert.equal(t.d.activeElement.dataset.comment,'thread-reply');assert(row('thread-reply').classList.contains('comment-highlight'));input().focus();}
+ t.A.jumpToComment(task.id,'missing');assert.equal(t.d.activeElement,input());
+ t.D.users.find(u=>u.id==='taylorwu').admin=false;t.A.refresh();assert(!row('thread-root').querySelector('.comment-menu-button'));assert(row('thread-reply').querySelector('.comment-menu-button'));t.A.commentMenu({currentTarget:row('thread-root')},task.id,'thread-root');assert(!t.d.querySelector('.menu'));
+ // A removed comment still shows in its place, and the replies to it say so.
+ task.comments.find(c=>c.id==='thread-root').deleted=true;t.A.refresh();assert.equal(row('thread-root').querySelector('.comment-removed').textContent,'Comment removed');assert(row('thread-reply').querySelector('.reply-reference').textContent.includes('Comment removed'));assert(!row('thread-root').querySelector('.reply-action'));
 });
 
 test('long comments use the description reader while retaining mention markup', () => {
@@ -292,7 +312,7 @@ test('comment readers disconnect when task scope is left', () => {
  assert(commentObserver);assert(!commentObserver.disconnected);t.module('views/app/collaboration.js').beforeCollaborationRender({userId:null,projectId:null,view:'auth',taskId:null});assert(commentObserver.disconnected);
 });
 
-test('same-timestamp activity, root comments and replies use stable IDs for chronological order', () => {
+test('same-timestamp activity, comments and replies use stable IDs for chronological order', () => {
  const t=boot(D=>{const task=D.tasks.find(x=>x.id==='BIR-079');task.activity=[
   {id:'activity-b',who:'robin',ts:100,text:'attached brief.pdf'},
   {id:'activity-a',who:'robin',ts:100,text:'created the task'},
@@ -301,9 +321,8 @@ test('same-timestamp activity, root comments and replies use stable IDs for chro
   {id:'comment-a',who:'robin',ts:100,text:'First root'},
   {id:'reply-b',who:'blairq',ts:100,text:'Second reply',parentId:'comment-a',replyToId:'comment-a'},
   {id:'reply-a',who:'blairq',ts:100,text:'First reply',parentId:'comment-a',replyToId:'comment-a'},
- ];}),task=t.D.tasks.find(x=>x.id==='BIR-079');
- assert.deepEqual([...t.d.querySelectorAll('[data-feed-key]')].map(el=>el.dataset.feedKey),['activity-activity-a','activity-activity-b','comment-comment-a','comment-comment-b']);
- t.A.toggleReplies(task.id,'comment-a');assert.deepEqual([...t.d.querySelectorAll('[data-thread-root="comment-a"] [data-comment]')].map(el=>el.dataset.comment),['reply-a','reply-b']);
+ ];});
+ assert.deepEqual([...t.d.querySelectorAll('[data-feed-key]')].map(el=>el.dataset.feedKey),['activity-activity-a','activity-activity-b','comment-comment-a','comment-comment-b','comment-reply-a','comment-reply-b']);
 });
 
 test('Enter submits block, edit, unblock and completion, picks mentions first, and is guarded against Shift, composition and repeats', async () => {

@@ -301,12 +301,12 @@ test('task access loss delegates to the shell state without a stale project toas
   assert.deepEqual(states,[[404,true]]);assert.deepEqual(toasts,[]);
 });
 
-test('older activity does not restart exhausted comments and retains reply context/counts',async()=>{
+test('older activity does not restart exhausted comments and retains reply context',async()=>{
   const root={id:'root',rootId:'root',authorId:'u1',createdAt:1,content:null,deletedAt:2,revision:2};
   const reply={id:'reply',rootId:'root',replyToId:'root',authorId:'u2',createdAt:100,content:'Recent reply',revision:1};
   let commentsCalls=0,activityCalls=0;
   const t=fixture({api:{
-    comments:async()=>{commentsCalls++;return {items:[reply],context:[root],replyCounts:{root:80},nextCursor:null};},
+    comments:async()=>{commentsCalls++;return {items:[reply],context:[root],nextCursor:null};},
     activity:async(_id,options)=>{activityCalls++;return {items:[{id:options.cursor?'old':'new',eventType:'task.updated',createdAt:options.cursor?10:110}],nextCursor:options.cursor?null:'older-activity'};},
   }});
   t.controller.beforeRender({userId:'u1',view:'task',projectId:'p1',taskId:'ONE-101'});
@@ -314,7 +314,6 @@ test('older activity does not restart exhausted comments and retains reply conte
   await t.controller.moreTask('ONE-101');
   assert.equal(commentsCalls,1);assert.equal(activityCalls,2);
   assert.deepEqual(t.data.tasks[0].comments.map(item=>[item.id,item.parentId]),[['root',null],['reply','root']]);
-  assert.equal(t.data.tasks[0].comments[0].replyCount,80);
   assert.equal(t.data.tasks[0].comments[0].deleted,true);
   assert.equal(t.pages.at(-1)[1].hasMore,false);
   t.controller.dispose();
