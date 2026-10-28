@@ -1,7 +1,7 @@
 /* A task's comments read as one chat, in the order they were written, with one active editor. */
 .comment-row { display:flex;align-items:flex-end;gap:8px;min-width:0; }
 .comment-row.is-own { justify-content:flex-end; }
-.comment-row>.avatar { flex-shrink:0;margin-bottom:2px;border-radius:6px; }
+.comment-avatar { display:flex;flex-shrink:0;margin-bottom:2px; }.comment-avatar>.avatar { border-radius:6px; }
 /* Everyone else's bubble is the comment surface and the person's own is tinted; the corner nearest each side is squared off. */
 .comment-row>.tl-cmt { --comment-surface:color-mix(in srgb,var(--surface-raised) 65%,var(--surface-canvas));--description-blur-surface:var(--comment-surface);min-width:0;max-width:min(85%,720px);margin:0;padding:8px 12px 4px;border-color:color-mix(in srgb,var(--line) 65%,transparent);border-radius:var(--radius-lg) var(--radius-lg) var(--radius-lg) var(--radius-xs);background:var(--comment-surface); }
 .comment-row.is-own>.tl-cmt { --comment-surface:color-mix(in srgb,var(--run) 12%,var(--surface-raised));border-radius:var(--radius-lg) var(--radius-lg) var(--radius-xs) var(--radius-lg); }

@@ -309,6 +309,19 @@ test('Escape on a reply leaves focus in the emptied box at the foot, and Cancel 
  assert.equal(t.d.activeElement,t.d.querySelector('[data-comment="c1"] .comment-menu-button'));
 });
 
+test('a reply\'s quote is named after the comment it leads to and described by its first line, cut short, and the picture beside a bubble is hidden from screen readers', () => {
+ const first='Long opening line '.repeat(20).trim();
+ const t=boot(D=>{D.tasks.find(x=>x.id==='BIR-079').comments=[
+  {id:'question',who:'robin',ts:1000,text:`${first}\nA second line`,mentions:[]},
+  {id:'answer',who:'blairq',ts:2000,text:'The answer',mentions:[],parentId:'question',replyToId:'question'},
+ ];});
+ const quote=t.d.querySelector('[data-comment="answer"] .reply-reference'),description=t.d.getElementById(quote.getAttribute('aria-describedby'));
+ assert.equal(quote.getAttribute('aria-label'),`Go to ${t.D.users.find(u=>u.id==='robin').name}'s comment`);
+ assert(quote.contains(description));assert.equal(description.textContent,first.slice(0,120)+'…');
+ const row=t.d.querySelector('[data-comment="answer"]').closest('.comment-row');
+ assert.equal(row.querySelector('.avatar').closest('[aria-hidden="true"]')?.parentElement,row);
+});
+
 test('comments shown only as context sit above a line saying earlier comments aren\'t loaded, until they are', async () => {
  const comment=(id,createdAt,reply)=>({id,authorId:'robin',rootId:reply??id,replyToId:reply??null,content:`Comment ${id}`,mentions:[],createdAt,revision:1});
  // The newest page holds a reply to a comment two pages back, which comes as its context.

@@ -167,14 +167,18 @@ function inboxHtml({items=null,lastGroup='',oldRows=null}={}){
 }
 
 const commentIcons={reply:inboxIcon('<path d="m9 5-6 6 6 6M3 11h10a7 7 0 0 1 7 7v2"/>'),edit:inboxIcon('<path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-4-4L5 15l-1 5Z"/>'),remove:inboxIcon('<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>'),more:inboxIcon('<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>')};
+// The first line of the comment a reply answers, short enough to read out.
+function quotedLine(c){if(c.deleted)return 'Comment removed';const line=c.text.split('\n').find(text=>text.trim())?.trim()??'',chars=[...line];return chars.length>120?chars.slice(0,120).join('')+'…':line;}
 // Every comment and reply is one row of a chat, in the order it was written: the
 // person's own on the right with no name or picture, everyone else's on the left.
 // A reply names the comment it answers inside its bubble.
 function commentRow(task,c,allowed=canComment(task)){
  const author=userById(c.who),name=esc(author?.name||c.authorName||c.who),own=c.who===me()?.id,editable=allowed&&(own||me()?.admin),target=c.replyToId?task.comments.find(r=>r.id===c.replyToId):null,editing=editable&&!c.deleted&&commentMode.mode==='edit'&&commentMode.target===c.id,replying=commentMode.mode==='reply'&&commentMode.target===c.id;
- const reference=target?`<button type="button" class="reply-reference" ${UIAction('jumpToComment',task.id,target.id)} title="View the original comment"><strong>${esc(userById(target.who)?.name||target.authorName||'Former user')}</strong><span>${esc(target.deleted?'Comment removed':target.text)}</span></button>`:'';
+ const targetName=target&&esc(userById(target.who)?.name||target.authorName||'Former user');
+ // Screen readers hear where the button goes, then the line it quotes.
+ const reference=target?`<button type="button" class="reply-reference" aria-label="Go to ${targetName}'s comment" aria-describedby="reply-quote-${esc(c.id)}" ${UIAction('jumpToComment',task.id,target.id)} title="View the original comment"><strong>${targetName}</strong><span id="reply-quote-${esc(c.id)}">${esc(quotedLine(target))}</span></button>`:'';
  const actions=`<div class="comment-actions">${allowed&&!c.deleted?`<button type="button" class="btn quiet reply-action" aria-pressed="${replying}" ${UIAction('replyComment',task.id,c.id)}>${commentIcons.reply}<span>Reply</span></button>`:''}<time id="comment-time-${esc(c.id)}" class="act-time" datetime="${new Date(c.ts).toISOString()}" ${exactTimeAttributes(c.ts)}>${ago(c.ts)}${c.editedAt?' · edited':''}</time>${editable&&!c.deleted?`<button type="button" class="btn icon comment-menu-button" aria-label="Actions for comment by ${name}" aria-expanded="false" aria-controls="action-menu" title="Comment actions" ${UIAction('commentMenu',UIAction.event,task.id,c.id)}>${commentIcons.more}</button>`:''}</div>`;
- return `<div class="comment-row${own?' is-own':''}${editing?' is-editing':''}" data-feed-key="comment-${esc(c.id)}">${own?'':avatarHtml(c.who,28)}<article class="tl-cmt${replying?' is-reply-target':''}" data-comment="${esc(c.id)}" tabindex="-1"><b id="comment-author-${esc(c.id)}" class="${own?'sr-only':'cmt-author'}">${name}</b>${reference}${editing?composerHtml(task,true):commentBodyHtml(task,c)+actions}</article></div>`;
+ return `<div class="comment-row${own?' is-own':''}${editing?' is-editing':''}" data-feed-key="comment-${esc(c.id)}">${own?'':`<span class="comment-avatar" aria-hidden="true">${avatarHtml(c.who,28)}</span>`}<article class="tl-cmt${replying?' is-reply-target':''}" data-comment="${esc(c.id)}" tabindex="-1"><b id="comment-author-${esc(c.id)}" class="${own?'sr-only':'cmt-author'}">${name}</b>${reference}${editing?composerHtml(task,true):commentBodyHtml(task,c)+actions}</article></div>`;
 }
 function feedHtml(task){const allowed=canComment(task),items=[...(task.activity||[]).map(a=>({...a,kind:'activity'})),...(task.comments||[]).map(c=>({...c,kind:'comment'}))].sort(chronological),{hasMore,commentsFrom}=taskPages.get(task.id)??{};
  // While older comments aren't read, the ones before the first comment read
