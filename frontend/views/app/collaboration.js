@@ -176,11 +176,15 @@ function commentRow(task,c,allowed=canComment(task)){
  const actions=`<div class="comment-actions">${allowed&&!c.deleted?`<button type="button" class="btn quiet reply-action" aria-pressed="${replying}" ${UIAction('replyComment',task.id,c.id)}>${commentIcons.reply}<span>Reply</span></button>`:''}<time id="comment-time-${esc(c.id)}" class="act-time" datetime="${new Date(c.ts).toISOString()}" ${exactTimeAttributes(c.ts)}>${ago(c.ts)}${c.editedAt?' · edited':''}</time>${editable&&!c.deleted?`<button type="button" class="btn icon comment-menu-button" aria-label="Actions for comment by ${name}" aria-expanded="false" aria-controls="action-menu" title="Comment actions" ${UIAction('commentMenu',UIAction.event,task.id,c.id)}>${commentIcons.more}</button>`:''}</div>`;
  return `<div class="comment-row${own?' is-own':''}${editing?' is-editing':''}" data-feed-key="comment-${esc(c.id)}">${own?'':avatarHtml(c.who,28)}<article class="tl-cmt${replying?' is-reply-target':''}" data-comment="${esc(c.id)}" tabindex="-1"><b id="comment-author-${esc(c.id)}" class="${own?'sr-only':'cmt-author'}">${name}</b>${reference}${editing?composerHtml(task,true):commentBodyHtml(task,c)+actions}</article></div>`;
 }
-function feedHtml(task){const allowed=canComment(task),items=[...(task.activity||[]).map(a=>({...a,kind:'activity'})),...(task.comments||[]).map(c=>({...c,kind:'comment'}))].sort(chronological),hasMore=taskPages.get(task.id)?.hasMore;
+function feedHtml(task){const allowed=canComment(task),items=[...(task.activity||[]).map(a=>({...a,kind:'activity'})),...(task.comments||[]).map(c=>({...c,kind:'comment'}))].sort(chronological),{hasMore,commentsFrom}=taskPages.get(task.id)??{};
+ // While older comments aren't read, the ones before the first comment read
+ // show only as context: comments that replies answer, or one a link leads to.
+ // A line under them says that the comments in between aren't loaded.
+ const first=commentsFrom?items.findIndex(item=>item.kind==='comment'&&chronological(item,commentsFrom)>=0):-1,gap=items.some((item,index)=>index<first&&item.kind==='comment')?first:-1;
  // A feed key keeps this button across timeline refreshes, so a click that spans a live update still lands.
- return (hasMore?`<button class="btn quiet" data-feed-key="load-older" ${UIAction('loadOlderActivity',task.id)}>Load older activity</button>`:'')+items.map(item=>{
+ return (hasMore?`<button class="btn quiet" data-feed-key="load-older" ${UIAction('loadOlderActivity',task.id)}>Load older activity</button>`:'')+items.map((item,index)=>{
   if(item.kind==='activity')return `<div class="tl-act${/^(attached |deleted attachment: |restored attachment: |made .+ (temporary|permanent)$|Temporary file removed during storage cleanup: )/.test(item.text)?' attachment-activity':''}" ${item.blockId?`data-block-id="${esc(item.blockId)}" tabindex="-1"`:''} data-feed-key="activity-${esc(item.id||item.ts+':'+item.who+':'+item.text)}">${avatarHtml(item.who,16)}<span data-tip="${esc(item.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}" data-tip-overflow><b>${esc(userById(item.who)?.name||item.actorName||(item.who==='system'?'System':item.who))}</b> ${esc(item.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span>${item.actorAppName?`<span class="act-time activity-source">via ${esc(item.actorAppName)}</span>`:''}<time class="act-time" datetime="${new Date(item.ts).toISOString()}" ${exactTimeAttributes(item.ts)}>· ${ago(item.ts)}</time></div>`;
-  return commentRow(task,item,allowed);
+  return (index===gap?'<div class="comment-gap" data-feed-key="comment-gap">Earlier comments aren\'t loaded</div>':'')+commentRow(task,item,allowed);
  }).join('');
 }
 function composerHtml(task,inline=false){
@@ -203,7 +207,7 @@ function refreshComments(task,composer=false){redrawComments(task.id,composer);m
 function taskFeedState(id){return taskPages.get(id)||{loaded:false,loading:true,error:false};}
 // Retain one serialization for the mounted task; metadata does not duplicate the feed.
 function feedSnapshotFor(task,meta=taskFeedState(task.id)){
- return {taskId:task.id,data:JSON.stringify([task.comments,task.activity,commentMode.mode,commentMode.target]),meta:JSON.stringify([meta.loaded,meta.loading,meta.error,meta.hasMore])};
+ return {taskId:task.id,data:JSON.stringify([task.comments,task.activity,commentMode.mode,commentMode.target]),meta:JSON.stringify([meta.loaded,meta.loading,meta.error,meta.hasMore,meta.commentsFrom])};
 }
 function scrollWithinTask(el,center=false){
  const panel=el?.closest('.task-page');if(!panel)return;

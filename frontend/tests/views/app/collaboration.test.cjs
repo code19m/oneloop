@@ -309,6 +309,23 @@ test('Escape on a reply leaves focus in the emptied box at the foot, and Cancel 
  assert.equal(t.d.activeElement,t.d.querySelector('[data-comment="c1"] .comment-menu-button'));
 });
 
+test('comments shown only as context sit above a line saying earlier comments aren\'t loaded, until they are', async () => {
+ const comment=(id,createdAt,reply)=>({id,authorId:'robin',rootId:reply??id,replyToId:reply??null,content:`Comment ${id}`,mentions:[],createdAt,revision:1});
+ // The newest page holds a reply to a comment two pages back, which comes as its context.
+ const root=comment('old-root',10),middle=comment('middle',100),recent=comment('recent',200),reply=comment('new-reply',300,'old-root');
+ const t=bootApp({route:'task/BIR-079',prepare:D=>{D.tasks.find(item=>item.id==='BIR-079').internalId='task-1';},api:{
+  comments:async(_id,{cursor})=>cursor?{items:[middle,root],nextCursor:null}:{items:[reply,recent],context:[root],nextCursor:'older'},
+  activity:async()=>({items:[],nextCursor:null}),
+ }});
+ await settle();
+ const feed=()=>[...t.d.querySelectorAll('.timeline > [data-feed-key]')].map(el=>el.dataset.feedKey);
+ assert.deepEqual(feed(),['load-older','comment-old-root','comment-gap','comment-recent','comment-new-reply']);
+ assert.equal(t.d.querySelector('.comment-gap').textContent,'Earlier comments aren\'t loaded');
+ t.A.jumpToComment('BIR-079','old-root');assert.equal(t.d.activeElement.dataset.comment,'old-root','the quote still leads to the comment above the line');
+ t.A.loadOlderActivity('BIR-079');await settle();
+ assert.deepEqual(feed(),['comment-old-root','comment-middle','comment-recent','comment-new-reply']);
+});
+
 test('long comments use the description reader while retaining mention markup', () => {
  const text=`Opening context for @robin.\n\n${'More implementation detail that keeps the comment readable. '.repeat(28)}`,mention='@robin',start=text.indexOf(mention),t=boot(D=>{D.tasks.find(x=>x.id==='BIR-079').comments=[{id:'long-root',who:'taylorwu',ts:Date.now(),text,mentions:[{id:'robin',label:'robin',start,end:start+mention.length}]}];}),body=t.d.querySelector('[data-comment="long-root"] .comment-body-content'),toggle=t.d.querySelector('[data-comment="long-root"] .description-toggle');
  assert.equal(body.getAttribute('role'),'group');assert.equal(body.getAttribute('tabindex'),null);

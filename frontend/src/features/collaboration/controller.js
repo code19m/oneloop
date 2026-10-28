@@ -36,6 +36,20 @@ function mapComment(comment) {
 function replace(array, items) { array.splice(0, array.length, ...items); }
 
 /**
+ * The first of a page's comments in feed order, as `{ts,id}`. Comments the
+ * feed shows before it, while older pages aren't read, are only context: the
+ * comments that replies answer, or one that a link leads to.
+ * @param {any[]} items
+ * @returns {{ts:number,id:string}|null}
+ */
+function firstComment(items) {
+  return items.reduce((first, item) => {
+    const next = { ts: secondsToMilliseconds(item.createdAt), id: item.id };
+    return !first || chronological(next, first) < 0 ? next : first;
+  }, /** @type {{ts:number,id:string}|null} */ (null));
+}
+
+/**
  * Install the controller that loads and saves comments, the Inbox and live
  * updates. views/app/collaboration.js keeps their markup, focus, keys and
  * the text being typed, and binds itself as the facade.
@@ -131,16 +145,16 @@ export function installCollaborationController({ transport, recovery, eventSourc
           const byId=new Map(task.comments.map(item=>[item.id,item]));for(const item of mappedComments)byId.set(item.id,item);task.comments=[...byId.values()].sort(chronological);}
         if(activity)task.activity=refreshPageWindow(task.activity??[],mappedActivity,!!activity.nextCursor,item=>item.ts,Math.min(...(activity.items??[]).map((/** @type {{createdAt:number}} */ item)=>secondsToMilliseconds(item.createdAt)))).sort(chronological);}
       if(append){if(page.commentsCursor)page.commentsDepth=(page.commentsDepth??1)+1;if(page.activityCursor)page.activityDepth=(page.activityDepth??1)+1;}
-      if(comments){if(append||reconcile||!page.commentsLoaded)page.commentsCursor=comments.nextCursor??null;else if(!comments.nextCursor)page.commentsCursor=null;page.commentsLoaded=true;}
+      if(comments){if(append||reconcile||!page.commentsLoaded){page.commentsCursor=comments.nextCursor??null;page.commentsFrom=firstComment(comments.items??[]);}else if(!comments.nextCursor)page.commentsCursor=null;page.commentsLoaded=true;}
       if(activity){if(append||reconcile||!page.activityLoaded)page.activityCursor=activity.nextCursor??null;else if(!activity.nextCursor)page.activityCursor=null;page.activityLoaded=true;}
       page.loaded=!!(page.commentsLoaded&&page.activityLoaded);page.loading=false;page.error=false;page.commentsRef=new WeakRef(task.comments);taskPages.set(task.internalId,page);
-      facade?.taskPage?.(task.id,{loaded:page.loaded,loading:false,error:false,hasMore:!!(page.commentsCursor||page.activityCursor),background});
+      facade?.taskPage?.(task.id,{loaded:page.loaded,loading:false,error:false,hasMore:!!(page.commentsCursor||page.activityCursor),commentsFrom:page.commentsCursor?page.commentsFrom:null,background});
       return {stale:false};
     }catch(error){
       page.loading=false;
       if(generation!==taskGeneration||key!==`${currentSession()}:${task.internalId}`||expectedRoute!==routeKey||!currentTask(task.internalId)||error?.code==='aborted')return {stale:true};
       page.error=true;
-      facade?.taskPage?.(task.id,{loaded:page.loaded,loading:false,error:true,hasMore:!!(page.commentsCursor||page.activityCursor),background});
+      facade?.taskPage?.(task.id,{loaded:page.loaded,loading:false,error:true,hasMore:!!(page.commentsCursor||page.activityCursor),commentsFrom:page.commentsCursor?page.commentsFrom:null,background});
       if([403,404].includes(error?.status))recovery.handleRouteError(error,{background:true});else report(error,false);
       return {stale:false,error};
     }

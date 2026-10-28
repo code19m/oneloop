@@ -77,7 +77,7 @@ test('task reconciliation uses opaque IDs, server activity and scoped refresh me
   assert.equal(comment.id,'c1');assert.equal(comment.ts,20_000);assert.equal(comment.editedAt,22_000);
   assert.deepEqual(comment.mentions,[{id:'u2',label:'bob',start:6,end:10}]);
   assert.deepEqual(t.data.tasks[0].activity.map((item)=>item.text),['edited a comment']);
-  assert.deepEqual(t.pages,[['ONE-101',{loaded:false,loading:true,error:false,hasMore:false,background:false}],['ONE-101',{loaded:true,loading:false,error:false,hasMore:true,background:false}]]);
+  assert.deepEqual(t.pages,[['ONE-101',{loaded:false,loading:true,error:false,hasMore:false,background:false}],['ONE-101',{loaded:true,loading:false,error:false,hasMore:true,commentsFrom:{ts:20_000,id:'c1'},background:false}]]);
 });
 
 test('same-second comments and projections retain server IDs through initial, appended and reconciled pages',async()=>{

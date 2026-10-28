@@ -27,6 +27,9 @@
 .comment-actions .comment-menu-button { width:28px;height:28px;min-width:28px;min-height:28px;padding:6px;margin-right:-6px;color:var(--ink-muted);opacity:.7; }
 .tl-cmt:hover .comment-menu-button,.comment-menu-button:focus-visible { opacity:1; }
 .comment-removed { color:var(--ink-muted);font-size:var(--text-label); }
+/* The line between comments shown only as context and the first comment read. */
+.comment-gap { display:flex;align-items:center;gap:12px;margin:6px 0;color:var(--ink-muted);font-size:var(--text-sm); }
+.comment-gap::before,.comment-gap::after { content:"";flex:1;border-top:1px solid var(--line-strong); }
 .task-layout .inline-composer { margin-top:10px; }
 .inline-composer { padding:14px;border:1px solid var(--line-strong);border-radius:var(--radius-md);background:var(--surface-canvas); }
 .reply-context { display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px;font-size:var(--text-sm);color:var(--ink-muted); }
