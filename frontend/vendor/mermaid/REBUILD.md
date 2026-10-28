@@ -8,13 +8,13 @@ The checked-in `mermaid.min.js` was built from the official
 [`mermaid@12.0.0` Git tag](https://github.com/mermaid-js/mermaid/tree/mermaid%4012.0.0),
 commit `98a0945418c76238f15df2afaddbba4272656c3b`, using Node 22.23.2 and
 pnpm 10.30.3. It has SHA-256
-`424994cafb13de86c186fa48354720061f610e3812b9f6ba6231b302a8375957`.
+`5afdd53cd62872ea6fe14a0c9a0acaea7023f7605b0f1c8df7b6b5a8bd5529e0`.
 
 To reproduce in a disposable directory:
 
 Download the [source archive](https://github.com/mermaid-js/mermaid/archive/98a0945418c76238f15df2afaddbba4272656c3b.tar.gz)
 and extract it into a disposable directory. Set `pnpm.overrides.dompurify` to
-`3.4.16`, `pnpm.overrides.lodash-es` to `4.18.1` and `pnpm.overrides.katex` to
+`3.4.17`, `pnpm.overrides.lodash-es` to `4.18.1` and `pnpm.overrides.katex` to
 `0.18.9` in its root `package.json`.
 Copy the [reviewed lockfile](../../../scripts/vendor/mermaid/pnpm-lock.yaml) into
 the source root, then run there with Node 22.23.2 on PATH:
@@ -25,7 +25,7 @@ corepack pnpm build:mermaid
 shasum -a 256 packages/mermaid/dist/mermaid.min.js
 ```
 
-The expected built output contains `DOMPurify 3.4.16`, KaTeX's version string
+The expected built output contains `DOMPurify 3.4.17`, KaTeX's version string
 `"0.18.9"` and the SHA-256 above.
 Copy `packages/mermaid/dist/mermaid.min.js` and retain the Mermaid license
 and dependency notices, then run the Markdown/Mermaid preview tests. When changing
@@ -67,10 +67,13 @@ Regenerate the distribution copy with `node scripts/third-party-notices.mjs`.
 Do not replace the bundle without updating and reviewing its inventory/notices.
 
 The integration rebuild fixes the [lodash template advisory](https://github.com/advisories/GHSA-r5fr-rjxr-66jc),
-the [array-path advisory](https://github.com/advisories/GHSA-f23m-r3pf-42rh) and the
-[KaTeX trust advisory](https://github.com/advisories/GHSA-238p-pmpm-9mq7) by replacing
+the [array-path advisory](https://github.com/advisories/GHSA-f23m-r3pf-42rh), the
+[KaTeX trust advisory](https://github.com/advisories/GHSA-238p-pmpm-9mq7) and the DOMPurify
+advisories fixed in 3.4.17 ([GHSA-cg2g-xh64-v4q7](https://github.com/advisories/GHSA-cg2g-xh64-v4q7),
+[GHSA-mrv2-3pqr-j5jr](https://github.com/advisories/GHSA-mrv2-3pqr-j5jr) and
+[GHSA-c6gr-qvv4-5v3f](https://github.com/advisories/GHSA-c6gr-qvv4-5v3f)) by replacing
 the actual bundled dependency. The generated `mermaid.min.js.map` contains only
-`lodash-es@4.18.1`, `dompurify@3.4.16` and `katex@0.18.9` paths for those libraries. The
+`lodash-es@4.18.1`, `dompurify@3.4.17` and `katex@0.18.9` paths for those libraries. The
 conservative production/parser closure changes only those dependencies and KaTeX's
 command-line dependency, commander 15.0.0 instead of 8.3.0, which is not in the bundle.
 No audit suppression or manual minified-code patch is used.
