@@ -34,8 +34,8 @@ test('every text on both comment bubbles and their quotes meets normal-text cont
   const rgba=value=>{const hex=value.match(/^#([\da-f]{6})$/i);if(hex)return [...hex[1].match(/../g).map(part=>parseInt(part,16)),1];const [r,g,b,a=1]=value.match(/[\d.]+/g).map(Number);return [r,g,b,a];};
   const over=([r,g,b,a],surface)=>[r,g,b].map((value,index)=>value*a+surface[index]*(1-a));
   const hex=rgb=>'#'+rgb.map(value=>Math.round(value).toString(16).padStart(2,'0')).join('');
-  // Everyone else's bubble and the person's own, as their stylesheet mixes them.
-  const surfaces=[...stylesheet('comment-threads').matchAll(/--comment-surface:color-mix\(in srgb,var\((--[\w-]+)\) (\d+)%,var\((--[\w-]+)\)\)/g)];
+  // Everyone else's bubble and the person's own, as the app's styles mix them.
+  const surfaces=[...appCss.matchAll(/--comment-surface:color-mix\(in srgb,var\((--[\w-]+)\) (\d+)%,var\((--[\w-]+)\)\)/g)];
   assert.equal(surfaces.length,2);
   for(const [name,tokens] of Object.entries(themes)){
     const color=token=>rgba(resolve(tokens,`var(${token})`)),check=(texts,surface)=>{for(const text of texts)assert(contrast(hex(color(text).slice(0,3)),hex(surface))>=4.5,`${name}: ${text} on ${hex(surface)}`);};

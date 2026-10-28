@@ -525,7 +525,7 @@ test('a live change on a task page reads only what it can change: the task and i
  const empty={items:[],nextCursor:null};
  const app=bootApp({route:'board',api:{
   comments:async()=>{reads.push('comments');return empty;},
-  comment:async()=>{reads.push('comment');return {items:[],context:[],replyCounts:{}};},
+  comment:async()=>{reads.push('comment');return {items:[],context:[]};},
   activity:async()=>{reads.push('activity');return empty;},
   attachments:async()=>{reads.push('files');return {items:[]};},
   task:async()=>{reads.push('task');return latest;},

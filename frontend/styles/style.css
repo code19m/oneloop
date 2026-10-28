@@ -703,7 +703,6 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .tp-title:disabled:hover { border-bottom-color: transparent; }
 .tp-sec { display: flex; flex-direction: column; gap: 8px; }
 .tp-sec h2 { margin: 0; display: flex; align-items: center; font-size: var(--text-ui); font-weight: 500; color: var(--ink); }
-.cmt { padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
 .cmt-body { margin-top: 6px; font-size: var(--text-body); line-height: 1.5; color: var(--ink); white-space: pre-line; }
 .cmt-new { margin-top: 10px; }
 .cmt-new textarea { width: 100%; min-height: 60px; }
