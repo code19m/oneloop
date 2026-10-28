@@ -299,6 +299,16 @@ test('comments read as a chat: replies in time order with the comment they answe
  task.comments.find(c=>c.id==='thread-root').deleted=true;t.A.refresh();assert.equal(row('thread-root').querySelector('.comment-removed').textContent,'Comment removed');assert(row('thread-reply').querySelector('.reply-reference').textContent.includes('Comment removed'));assert(!row('thread-root').querySelector('.reply-action'));
 });
 
+test('Escape on a reply leaves focus in the emptied box at the foot, and Cancel on an edit on its comment\'s menu', () => {
+ const t=boot(D=>{D.tasks.find(x=>x.id==='BIR-079').comments=[{id:'c1',who:'taylorwu',ts:Date.now(),text:'Existing discussion',mentions:[]}];}),task=t.D.tasks.find(x=>x.id==='BIR-079'),box=()=>t.d.getElementById('cmtIn');
+ t.A.replyComment(task.id,'c1');typeComment(t,'Half a reply');
+ t.A.commentKey({key:'Escape',currentTarget:box(),preventDefault(){},stopPropagation(){}});
+ // The reply was written at the foot, far from its comment, so focus stays there.
+ assert.equal(t.d.activeElement,box());assert(box().closest('.comment-composer-home'));assert.equal(box().value,'');assert(!t.d.querySelector('.reply-context'));
+ t.A.editComment(task.id,'c1');t.A.cancelCommentMode(task.id);
+ assert.equal(t.d.activeElement,t.d.querySelector('[data-comment="c1"] .comment-menu-button'));
+});
+
 test('long comments use the description reader while retaining mention markup', () => {
  const text=`Opening context for @robin.\n\n${'More implementation detail that keeps the comment readable. '.repeat(28)}`,mention='@robin',start=text.indexOf(mention),t=boot(D=>{D.tasks.find(x=>x.id==='BIR-079').comments=[{id:'long-root',who:'taylorwu',ts:Date.now(),text,mentions:[{id:'robin',label:'robin',start,end:start+mention.length}]}];}),body=t.d.querySelector('[data-comment="long-root"] .comment-body-content'),toggle=t.d.querySelector('[data-comment="long-root"] .description-toggle');
  assert.equal(body.getAttribute('role'),'group');assert.equal(body.getAttribute('tabindex'),null);
