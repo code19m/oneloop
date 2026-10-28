@@ -114,6 +114,15 @@ test('Enter posts a comment, and a reply shows last in the chat with the comment
   await expect(page.locator('.comment-composer-home #cmtIn')).toBeVisible();
   await reply.locator('.reply-reference').click();
   await expect(root).toBeFocused();
+  // The flash fades back to the comment's own surface, not to a paler one that then snaps back.
+  const [fading, after] = await root.evaluate(el => {
+    const flash = el.getAnimations().find(animation => animation.animationName === 'comment-flash');
+    flash.pause(); flash.currentTime = 1990;
+    const fading = getComputedStyle(el).backgroundColor;
+    flash.finish();
+    return [fading, getComputedStyle(el).backgroundColor];
+  });
+  expect(fading).toBe(after);
 });
 
 test('a comment whose answer is lost is saved once, also when the next one was typed meanwhile', async ({ page, instance, allowedConsoleErrors }) => {
