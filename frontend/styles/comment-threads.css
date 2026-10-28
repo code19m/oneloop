@@ -18,7 +18,8 @@
 /* The comment a reply answers: its author and first line, one press away. */
 .reply-reference { display:flex;flex-direction:column;align-items:stretch;gap:1px;width:100%;min-width:0;margin:4px 0;padding:4px 8px;border:0;border-left:2px solid var(--run);border-radius:var(--radius-xs);background:var(--fill-hover);color:var(--ink-muted);font:inherit;font-size:var(--text-sm);line-height:1.4;text-align:left;cursor:pointer; }
 .reply-reference>strong { font-weight:500;color:var(--ink-soft); }
-.reply-reference>span { overflow:hidden;white-space:nowrap;text-overflow:ellipsis; }
+/* The quoted line reads from its own side, as comments do, and is cut at its end; its dir="auto" puts WebKit's ellipsis there too. */
+.reply-reference>span { overflow:hidden;white-space:nowrap;text-overflow:ellipsis;text-align:start; }
 .reply-reference:hover { background:var(--fill-selected); }
 .comment-actions { display:flex;align-items:center;gap:4px;margin-top:2px; }
 .comment-actions .reply-action { min-height:30px;padding:4px 7px;margin-left:-7px;font-size:var(--text-sm);gap:6px;color:var(--ink-muted); }

@@ -474,9 +474,9 @@ test('descriptions and comments take each paragraph\'s direction from its own te
   const { task } = instance.projects[0];
   await command(instance.api, 'task.update', { taskId: task.id, description: 'وصف المهمة بالعربية.\nAn English line.' }, task.revision);
   // A comment's bubble is as wide as its text, so each one wraps: its last line shows the side it reads from.
-  for (const content of ['تعليق باللغة العربية، هل يظهر بشكل صحيح؟ '.repeat(6).trim(), 'An English comment. '.repeat(14).trim()]) {
-    await command(instance.api, 'discussion.comment.create', { taskId: task.id, content, mentions: [] });
-  }
+  const [arabic] = (await command(instance.api, 'discussion.comment.create', { taskId: task.id, content: 'تعليق باللغة العربية، هل يظهر بشكل صحيح؟ '.repeat(6).trim(), mentions: [] })).entities;
+  await command(instance.api, 'discussion.comment.create', { taskId: task.id, content: 'An English comment. '.repeat(14).trim(), mentions: [] });
+  await command(instance.writer, 'discussion.comment.create', { taskId: task.id, content: 'A reply.', replyToId: arabic.id, mentions: [] });
   await openApp(page, instance);
   // Where a text sits in its box: right-aligned when it reads right to left.
   const sides = locator => locator.evaluate(element => {
@@ -487,6 +487,12 @@ test('descriptions and comments take each paragraph\'s direction from its own te
   const lastLine = async locator => (await sides(locator)).at(-1);
   await expect.poll(() => lastLine(page.locator('.cmt-body').filter({ hasText: 'تعليق' }))).toBe('right');
   expect(await lastLine(page.locator('.cmt-body').filter({ hasText: 'An English comment.' }))).toBe('left');
+  // The reply's quote of it starts on the right too, so a line too long for it is cut at its end, on the left.
+  expect(await page.locator('.reply-reference span').evaluate(element => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    return Math.round(Math.abs(element.getBoundingClientRect().right - Math.max(...[...range.getClientRects()].map(line => line.right))));
+  })).toBeLessThanOrEqual(1);
   // The description's lines, as it shows them and in its editor.
   const lines = await sides(page.locator('#task-description-content p'));
   expect([lines.at(0), lines.at(-1)]).toEqual(['right', 'left']);

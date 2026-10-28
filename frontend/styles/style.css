@@ -1541,7 +1541,7 @@ textarea.checklist-title[data-unsaved] { border-color:color-mix(in srgb, var(--e
 /* People write in any script: each paragraph of their text takes its direction,
    and so its alignment, from its own first letter. */
 :is(.tp-title, #task-description, .description-editor, .description-content, .cmt-body, #cmtIn,
-    .reply-context-quote, #block-reason, .modal textarea[name="reason"], .task-block p,
+    .reply-reference > span, .reply-context-quote, #block-reason, .modal textarea[name="reason"], .task-block p,
     #poolNewDesc, .pool-description-editor textarea, .pool-description-preview) {
   unicode-bidi: plaintext;
 }
