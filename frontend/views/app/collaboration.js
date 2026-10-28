@@ -196,11 +196,22 @@ function composerHtml(task,inline=false){
 
 function feedback(message){const el=document.querySelector('.comment-feedback');if(el)el.textContent=message;}
 const canBoardTask=t=>hasPermission('manage_board',taskTrack(t)?.projectId);
+/**
+ * Change the chat above the comment box with `change`. A box being written in
+ * that shows keeps its place on screen, as in a chat: the rows above it move
+ * up instead of pushing it down. Returns whether it held the box there.
+ */
+function holdComposer(change){
+ const box=document.activeElement?.closest?.('.comment-composer-home'),panel=box?.closest('.task-page'),view=panel?.getBoundingClientRect(),place=box?.getBoundingClientRect();
+ change();
+ if(!view||!box.isConnected||place.top>=view.bottom||place.bottom<=view.top)return false;
+ panel.scrollTop+=box.getBoundingClientRect().top-place.top;return true;
+}
 /** Draw the open task's comments again, and with `composer` its comment box. */
 function redrawComments(taskId,composer=false){
  if(state.view!=='task'||state.taskId!==taskId)return;
  const task=taskById(taskId),timeline=document.querySelector('.task-page .timeline'),before=timeline?.getBoundingClientRect().height,rows=UIMotion.rows(timeline,'[data-comment]','data-comment');
- if(timeline){setHTML(timeline,feedHtml(task));UIMotion.height(timeline,before);UIMotion.reflow(timeline,'[data-comment]','data-comment',rows);}
+ if(timeline){if(!holdComposer(()=>setHTML(timeline,feedHtml(task))))UIMotion.height(timeline,before);UIMotion.reflow(timeline,'[data-comment]','data-comment',rows);}
  if(composer){const home=document.querySelector('.comment-composer-home');if(home)setHTML(home,composerHtml(task));UIMotion.enter(document.querySelector('.collaboration-composer .reply-context'));}
 }
 function refreshComments(task,composer=false){redrawComments(task.id,composer);mount();}
@@ -347,7 +358,7 @@ function mount(updateSnapshot=true){badge();mountCommentBodies();if(mention&&!me
 }
 /** Retry the open task's comments and activity. */
 export function retryTaskPage(id){return controller.loadTaskPage(id);}
-export {beforeRender as beforeCollaborationRender,blockReasonHtml,blockText,composerHtml,feedHtml,inboxHtml,inboxNav,mount as mountCollaboration,sizeCommentBodies,taskFeedState};
+export {beforeRender as beforeCollaborationRender,blockReasonHtml,blockText,composerHtml,feedHtml,holdComposer,inboxHtml,inboxNav,mount as mountCollaboration,sizeCommentBodies,taskFeedState};
 
 // Leaving oneloop would lose comments kept for an empty box. While no one
 // is signed in, that is any of them, and any comment still on its way when

@@ -200,6 +200,22 @@ test('a reply being written stays in its box while new comments arrive in the ch
   assert.equal(t.d.getElementById('cmtIn'),input);assert.equal(input.value,'Half a reply');assert(t.d.querySelector('.reply-context-quote').textContent.includes('First note'));
 });
 
+test('the comment box being written in keeps its place on screen while new comments arrive above it', () => {
+  const t=boot('task/BIR-079',w=>{w.OneloopCollaboration={bind(_app,facade){w.testFacade=facade;return {beforeRender(){},mount(){}};}};}),task=t.D.tasks.find(item=>item.id==='BIR-079');
+  task.comments=[{id:'root',who:'robin',ts:1000,text:'First note',mentions:[],parentId:null}];task.activity=[];
+  const arrive=()=>{task.comments=[...task.comments,{id:`late-${task.comments.length}`,who:'blairq',ts:2000+task.comments.length,text:'Arrived',mentions:[],parentId:null}];t.w.testFacade.taskPage(task.id,{loaded:true,loading:false,error:false,hasMore:false,background:true});};
+  arrive();
+  // jsdom lays nothing out: here the box sits under the chat's rows, 50 px each, and the page shows 0 to 500 px.
+  const panel=t.d.querySelector('.task-page'),home=t.d.querySelector('.comment-composer-home');let offset=200;
+  const top=()=>offset+50*t.d.querySelectorAll('.timeline [data-comment]').length-panel.scrollTop;
+  home.getBoundingClientRect=()=>({top:top(),bottom:top()+120});
+  t.d.getElementById('cmtIn').focus();arrive();
+  assert.equal(panel.scrollTop,50);assert.equal(top(),300,'the rows above move up and the box stays where it was');
+  // A box that doesn't show, or doesn't have focus, leaves the page where it is.
+  offset=600;arrive();assert.equal(panel.scrollTop,50);
+  offset=200;t.d.getElementById('cmtIn').blur();arrive();assert.equal(panel.scrollTop,50);
+});
+
 test('count refreshes keep the focused task description', () => {
   const t=boot(),input=t.d.getElementById('task-description');
   input.value='Keep this unsent task description';input.focus();

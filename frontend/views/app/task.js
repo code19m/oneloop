@@ -9,7 +9,7 @@ import { checklistHtml, refreshChecklist } from '../../src/features/checklist/ch
 import { sourcePosition } from '../../src/features/files/file-views.js';
 import { attachmentsHtml } from './attachments.js';
 import { renderBoard } from './board.js';
-import { blockText, composerHtml, feedHtml, retryTaskPage, sizeCommentBodies, taskFeedState } from './collaboration.js';
+import { blockText, composerHtml, feedHtml, holdComposer, retryTaskPage, sizeCommentBodies, taskFeedState } from './collaboration.js';
 import { dateHtml, multiHtml, selectHtml, setSelectValue } from './controls.js';
 import {
   I, STATUS, UIAction, ago, avatarHtml, esc, formatInstant, overdue, setHTML, stIcon,
@@ -62,12 +62,13 @@ function refreshTaskActivity(id,preserveComments=true) {
   const children=next.map(el=>{const old=existing.get(el.dataset.feedKey),markup=el.outerHTML;if(old&&((preserveComments&&old.classList.contains('comment-row'))||feedRowMarkup.get(old)===markup))return old;feedRowMarkup.set(el,markup);if(old)changed.push(el);return el;});
   const gone=[...existing].filter(([key])=>!wanted.has(key)).map(([key,el])=>[el,rows.get(key)]),viewport=timeline.closest('.content')?.getBoundingClientRect();
   timeline.style.position='relative';
-  placeRows(timeline,children);
+  const held=holdComposer(()=>placeRows(timeline,children));
   if(children.length<=100)changed.forEach(el=>UIMotion.fade(el));
   if(gone.length<=20)fadeOutRows(timeline,gone,{listRect:timelineRect,viewport,height:before});
   if(active?.isConnected&&timeline.contains(active))active.focus({preventScroll:true});
   else if(focusedKey&&focusedControl){const row=[...timeline.querySelectorAll('[data-feed-key]')].find(el=>el.dataset.feedKey===focusedKey);const target=focusedControl.comment?[...row?.querySelectorAll('[data-comment] button')||[]].find(el=>el.closest('[data-comment]')?.dataset.comment===focusedControl.comment&&el.getAttribute('aria-label')===focusedControl.action&&el.className===focusedControl.className):[...row?.querySelectorAll('button')||[]].find(el=>el.className===focusedControl.className);target?.focus({preventScroll:true});}
-  UIMotion.height(timeline,before);UIMotion.reflow(timeline,'[data-feed-key]','data-feed-key',rows);
+  if(!held)UIMotion.height(timeline,before);
+  UIMotion.reflow(timeline,'[data-feed-key]','data-feed-key',rows);
 }
 
 // A title or description that is not saved yet stays as typed, with Save.
