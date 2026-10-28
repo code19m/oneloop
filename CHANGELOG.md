@@ -6,6 +6,31 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-rc.9] - 2026-10-29
+
+The ninth release candidate. A task's comments now read as a chat: comments
+and replies show in one list in the order they were written, and each reply
+shows the comment it answers. The Board's **Done** column no longer has the
+**Newest first** button, because Done already lists finished tasks newest
+first. This release also updates ctutils, tokio and DOMPurify for security
+advisories. Read the upgrade notes before you upgrade; if you upgrade from an
+older release candidate, read the upgrade notes of each release after yours
+too.
+
+### Upgrade notes
+
+- From 0.1.0-rc.8, the database doesn't change: it stays at schema 10. Stop
+  oneloop, install the new version and start it. If you run
+  `oneloop db migrate --backup-dir <directory>` as usual, it prints
+  `database in <data folder> is current (schema 10)` and changes nothing.
+- Browser tabs that are open during the upgrade reload themselves at a safe
+  moment, as before: when nothing typed would be lost and the tab is hidden or
+  unused for five minutes. Until then they keep working.
+- Existing comments and replies need nothing. They show in the chat in the
+  order they were written.
+- From 0.1.0-rc.7 or older, read the upgrade notes of each release after yours
+  too.
+
 ### Changed
 
 - A task's comments read as a chat. Comments and replies show in one list in
@@ -44,6 +69,13 @@ All notable changes to oneloop are recorded here. The format follows
   Each advisory needs a DOMPurify setting that neither oneloop nor Mermaid
   uses (`SAFE_FOR_TEMPLATES`, `IN_PLACE` or the XHTML `PARSER_MEDIA_TYPE`), so
   oneloop was not affected.
+
+### Distribution
+
+- Docker: `ghcr.io/code19m/oneloop:0.1.0-rc.9`, for linux/amd64 and
+  linux/arm64
+- From source:
+  `cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.9 --locked`
 
 ## [0.1.0-rc.8] - 2026-10-22
 
@@ -1176,7 +1208,8 @@ report what you find.
 - Browser testing covers current Chromium, Firefox and WebKit. Phones and
   tablets have had less testing than desktop browsers.
 
-[Unreleased]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.8...HEAD
+[Unreleased]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.9...HEAD
+[0.1.0-rc.9]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.8...v0.1.0-rc.9
 [0.1.0-rc.8]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.7...v0.1.0-rc.8
 [0.1.0-rc.7]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.6...v0.1.0-rc.7
 [0.1.0-rc.6]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.5...v0.1.0-rc.6
