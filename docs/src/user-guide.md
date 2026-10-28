@@ -315,7 +315,9 @@ Shift+Enter starts a new line. Every project member can comment, even with a
 read-only Board.
 
 - Comments read as a chat: comments and replies show in the order they were
-  written, the newest last, and your own sit on the right.
+  written, the newest last, and your own sit on the right. Older ones load with
+  **Load older activity**. Until then, a comment that a reply answers shows at
+  the top, above a line that says earlier comments aren't loaded.
 - **Reply** answers a comment. You write the reply in the box at the bottom,
   and it shows the comment it answers above its text; choose that line to go to
   the comment.
