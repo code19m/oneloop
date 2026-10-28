@@ -431,6 +431,17 @@ test('text typed after Enter is a new comment, never joined to the one being sen
  assert.ok([...t.d.querySelectorAll('.cmt-body')].some(body=>body.textContent.includes('please check')),'the list shows the saved comment');
 });
 
+test('a reply saved while the next one is written shows in the chat at once, and the next one keeps its box',async()=>{
+ const t=sendingComments();
+ t.task.comments=['first','second'].map((id,index)=>({id,who:'robin',ts:1000+index,text:`The ${id} question`,mentions:[]}));t.A.refresh();
+ t.A.replyComment('BIR-079','first');typeComment(t,'Answer to the first');t.A.addComment('BIR-079');
+ t.A.replyComment('BIR-079','second');const input=typeComment(t,'Half an answer to the second');input.focus();
+ t.save(0);await settle();
+ assert(t.d.querySelector('[data-comment="saved-0"]'),'the saved reply shows');
+ assert.equal(t.d.getElementById('cmtIn'),input);assert.equal(input.value,'Half an answer to the second');assert.equal(t.d.activeElement,input);
+ assert(t.d.querySelector('.reply-context-quote').textContent.includes('The second question'));
+});
+
 test('a comment that can\'t be sent comes back ahead of what was typed since, and alone it keeps its interaction',async()=>{
  const t=sendingComments();
  typeComment(t,'First thought');t.A.addComment('BIR-079');

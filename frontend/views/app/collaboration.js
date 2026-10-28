@@ -250,10 +250,11 @@ function currentCommentInput(submitted){
 function savedComment(task,c,mode,changed,submitted=null){
  capture();
  // The person writes something else by now: their next edit, a new comment
- // or a reply elsewhere. It stays as it is; the main box is outside the
- // list, so the list can show this comment at once.
+ // or a reply elsewhere. It stays as it is. Unless an edit is open in the
+ // list, what they write is in the box at the foot, outside the list, so
+ // the list shows this comment at once.
  const elsewhere=submitted&&(mode==='edit'?commentEditor?.interactionId!==submitted.interactionId:!!commentEditor?.text||commentMode.mode!==mode||(commentMode.target??null)!==(submitted.targetId??null));
- if(elsewhere){if(mode!=='edit'&&commentMode.mode==='comment')refreshComments(task);if(changed)App.toast(mode==='edit'?'Comment updated':mode==='reply'?'Reply added':'Comment added');return;}
+ if(elsewhere){if(commentMode.mode!=='edit')refreshComments(task);if(changed)App.toast(mode==='edit'?'Comment updated':mode==='reply'?'Reply added':'Comment added');return;}
  commentEditor=null;commentMode={mode:'comment',target:null};closeMentions();refreshComments(task,true);if(changed)App.toast(mode==='edit'?'Comment updated':mode==='reply'?'Reply added':'Comment added');const focus=mode==='comment'?document.getElementById('cmtIn'):[...document.querySelectorAll('[data-comment]')].find(el=>el.dataset.comment===c.id);if(focus&&mode!=='comment'){focus.classList.add('comment-save-focus');focus.addEventListener('blur',()=>focus.classList.remove('comment-save-focus'),{once:true});}focus?.focus({preventScroll:true});scrollWithinTask(mode==='comment'?focus?.closest('.collaboration-composer')||focus:focus);
 }
 function post(taskId){const task=taskById(taskId);if(!task||!canComment(task)){feedback('You must be an active project member to comment.');return false;}if(!recovery.ensureOnline())return false;capture();const cxt=context(task),d=editor(task),text=d.text;if(!text.trim()){if(!commentsOnTheirWay(task))feedback('Write a comment first.');return false;}if(text.length>2000){feedback('Comments are limited to 2,000 characters.');return false;}
