@@ -140,7 +140,7 @@ The full EPL-2.0 text is reproduced under License texts below.
 | crc32fast@1.5.2 | MIT OR Apache-2.0 |
 | crypto-common@0.1.7 | MIT OR Apache-2.0 |
 | crypto-common@0.2.2 | MIT OR Apache-2.0 |
-| ctutils@0.4.2 | Apache-2.0 OR MIT |
+| ctutils@0.4.4 | Apache-2.0 OR MIT |
 | curve25519-dalek-derive@0.1.1 | MIT/Apache-2.0 |
 | curve25519-dalek@4.1.3 | BSD-3-Clause |
 | cytoscape-cose-bilkent@4.1.0 | MIT |
@@ -393,7 +393,7 @@ The full EPL-2.0 text is reproduced under License texts below.
 | tokio-rustls@0.26.6 | MIT OR Apache-2.0 |
 | tokio-stream@0.1.19 | MIT |
 | tokio-util@0.7.19 | MIT |
-| tokio@1.53.1 | MIT |
+| tokio@1.53.3 | MIT |
 | tower-layer@0.3.3 | MIT |
 | tower-service@0.3.3 | MIT |
 | tower@0.5.3 | MIT |
@@ -486,7 +486,7 @@ The full EPL-2.0 text is reproduced under License texts below.
 - crc32fast@1.5.2
 - crypto-common@0.1.7
 - crypto-common@0.2.2
-- ctutils@0.4.2
+- ctutils@0.4.4
 - curve25519-dalek-derive@0.1.1
 - digest@0.10.7
 - digest@0.11.3
@@ -3239,7 +3239,7 @@ third-party/chromium/LICENSE.
 - crc32fast@1.5.2: Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors
 - crypto-common@0.1.7: Copyright (c) 2021 RustCrypto Developers
 - crypto-common@0.2.2: Copyright (c) 2021-2026 RustCrypto Developers
-- ctutils@0.4.2: Copyright (c) 2025-2026 The RustCrypto Project Developers
+- ctutils@0.4.4: Copyright (c) 2025-2026 The RustCrypto Project Developers
 - curve25519-dalek-derive@0.1.1
 - darling@0.24.1: Copyright (c) 2017 Ted Driggs
 - darling_core@0.24.1: Copyright (c) 2017 Ted Driggs
@@ -3409,7 +3409,7 @@ third-party/chromium/LICENSE.
 - tokio-rustls@0.26.6: Copyright (c) 2017 quininer kel
 - tokio-stream@0.1.19: Copyright (c) Tokio Contributors
 - tokio-util@0.7.19: Copyright (c) Tokio Contributors
-- tokio@1.53.1: Copyright (c) Tokio Contributors
+- tokio@1.53.3: Copyright (c) Tokio Contributors
 - tower-layer@0.3.3: Copyright (c) 2019 Tower Contributors
 - tower-service@0.3.3: Copyright (c) 2019 Tower Contributors
 - tower@0.5.3: Copyright (c) 2019 Tower Contributors

@@ -17,6 +17,13 @@ All notable changes to oneloop are recorded here. The format follows
   shows Done's own order. To put a finished task elsewhere, drag it or use
   **Move up** and **Move down**.
 
+### Security
+
+- Updated ctutils to 0.4.4 (RUSTSEC-2026-0385). The password hashing that
+  checks sign-ins uses it to compare values in constant time.
+- Updated tokio to 1.53.3 (RUSTSEC-2026-0386). Neither oneloop nor the
+  libraries it uses call the affected functions.
+
 ## [0.1.0-rc.8] - 2026-10-22
 
 The eighth release candidate. HTML previews of attachments and Knowledge files
