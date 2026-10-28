@@ -95,7 +95,7 @@
   --text-secondary: #585858;
   --text-tertiary: #686868;
   --ink-soft: #383838;
-  --ink-ghost: #6b6b6b;
+  --ink-ghost: #666666;
   --fill-hover: rgba(0,0,0,0.045);
   --fill-selected: rgba(0,0,0,0.075);
   --glass-1: rgba(0,0,0,0.02);
@@ -703,9 +703,7 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .tp-title:disabled:hover { border-bottom-color: transparent; }
 .tp-sec { display: flex; flex-direction: column; gap: 8px; }
 .tp-sec h2 { margin: 0; display: flex; align-items: center; font-size: var(--text-ui); font-weight: 500; color: var(--ink); }
-.cmt { padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
-.cmt-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: var(--text-label); color: var(--ink-soft); }
-.cmt-body { margin-top: 6px; font-size: var(--text-ui); line-height: 1.65; color: var(--ink); white-space: pre-line; }
+.cmt-body { margin-top: 6px; font-size: var(--text-body); line-height: 1.5; color: var(--ink); white-space: pre-line; }
 .cmt-new { margin-top: 10px; }
 .cmt-new textarea { width: 100%; min-height: 60px; }
 .act-row { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; font-size: var(--text-label); color: var(--ink-muted); }
@@ -1227,7 +1225,9 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 /* Instance-wide Inbox and project-scoped navigation. */
 .sidebar-bottom{margin-top:auto;flex-shrink:0}.sidebar-bottom .profile-area{margin-top:0}.inbox-nav{position:relative}.inbox-dot{display:none;position:absolute;right:4px;top:6px;width:5px;height:5px;border-radius:50%;background:var(--ink)}
 
-.comment-mention{color:var(--run);font-weight:500}.comment-feedback{font-size:var(--text-sm);color:var(--ink-muted);margin-top:6px;line-height:1.4}.comment-notify-hint{font-size:var(--text-xs);color:var(--warn);margin-top:8px}.mention-picker{position:fixed;z-index:105;max-height:240px;overflow:auto;background:var(--surface-raised);border:1px solid var(--line-strong);padding:5px;border-radius:10px;box-shadow:var(--shadow-modal)}.mention-picker button{display:flex;flex-direction:column;gap:3px;width:100%;background:transparent;border:0;color:var(--ink);font:inherit;text-align:left;padding:9px 10px;border-radius:6px;cursor:pointer}.mention-picker button strong{font-size:var(--text-label);font-weight:500}.mention-picker button small{font-size:var(--text-xs);color:var(--ink-muted)}.mention-picker button[aria-selected=true],.mention-picker button:hover{background:var(--fill-selected)}.comment-highlight{animation:comment-flash 2s ease-out}@keyframes comment-flash{from{background:var(--fill-selected)}to{background:transparent}}.collaboration-composer textarea{resize:vertical;min-height:88px;max-height:340px}.tl-cmt:focus-visible{outline:2px solid var(--focus-ring);outline-offset:4px}
+.comment-mention{color:var(--run);font-weight:500}.comment-feedback{font-size:var(--text-sm);color:var(--ink-muted);margin-top:6px;line-height:1.4}.comment-notify-hint{font-size:var(--text-xs);color:var(--warn);margin-top:8px}.mention-picker{position:fixed;z-index:105;max-height:240px;overflow:auto;background:var(--surface-raised);border:1px solid var(--line-strong);padding:5px;border-radius:10px;box-shadow:var(--shadow-modal)}.mention-picker button{display:flex;flex-direction:column;gap:3px;width:100%;background:transparent;border:0;color:var(--ink);font:inherit;text-align:left;padding:9px 10px;border-radius:6px;cursor:pointer}.mention-picker button strong{font-size:var(--text-label);font-weight:500}.mention-picker button small{font-size:var(--text-xs);color:var(--ink-muted)}.mention-picker button[aria-selected=true],.mention-picker button:hover{background:var(--fill-selected)}.collaboration-composer textarea{resize:vertical;min-height:88px;max-height:340px}.tl-cmt:focus-visible{outline:2px solid var(--focus-ring);outline-offset:4px}
+/* The flash lays a fill over the comment or block it leads to, so each fades back to its own surface. */
+.comment-highlight{animation:comment-flash 2s ease-out}@keyframes comment-flash{from{box-shadow:inset 0 0 0 100vmax var(--fill-selected)}to{box-shadow:inset 0 0 0 100vmax transparent}}
 
 .pdf-surface { flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:20px; }.pdf-surface canvas { display:block;margin:auto;background:white;box-shadow:0 2px 12px #0002; }.file-preview-content>.access-note { padding:0 20px;flex-shrink:0; }
 
@@ -1436,12 +1436,6 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .attachment-dropzone.is-compact .attachment-drop-icon svg { width:22px;height:22px; }
 .attachment-dropzone.is-compact .attachment-drop-copy { gap:2px; }
 
-/* Thread contents stay mounted so both expansion and collapse can interpolate. */
-.comment-thread-wrap { display:grid;grid-template-rows:0fr;opacity:0;visibility:hidden;transition:grid-template-rows var(--motion-normal) cubic-bezier(.2,.8,.2,1),opacity var(--motion-normal) cubic-bezier(.2,.8,.2,1),visibility 0s var(--motion-normal); }
-.comment-thread-wrap>div { min-height:0;overflow:hidden; }
-.comment-thread-wrap.is-expanded { grid-template-rows:1fr;opacity:1;visibility:visible;transition-delay:0s; }
-@media(prefers-reduced-motion:reduce) { .comment-thread-wrap { transition:none; } }
-
 .member-access-row.off .member-person b { color:var(--ink-muted);font-weight:400; }
 
 
@@ -1546,7 +1540,7 @@ textarea.checklist-title[data-unsaved] { border-color:color-mix(in srgb, var(--e
 /* People write in any script: each paragraph of their text takes its direction,
    and so its alignment, from its own first letter. */
 :is(.tp-title, #task-description, .description-editor, .description-content, .cmt-body, #cmtIn,
-    .reply-context-quote, #block-reason, .modal textarea[name="reason"], .task-block p,
+    .reply-reference > span, .reply-context-quote, #block-reason, .modal textarea[name="reason"], .task-block p,
     #poolNewDesc, .pool-description-editor textarea, .pool-description-preview) {
   unicode-bidi: plaintext;
 }

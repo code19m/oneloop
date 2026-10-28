@@ -6,6 +6,10 @@ for (const theme of ['light', 'dark']) {
   test(`views and open controls have no serious accessibility violations (${theme})`, { tag: theme === 'light' ? '@smoke' : [] }, async ({ page, instance }) => {
     test.setTimeout(90_000);
     page.setDefaultTimeout(10_000);
+    // The task page is scanned with a chat on it: someone else's comment and the owner's reply to it.
+    const chatTask = instance.projects[0].task;
+    const [question] = (await command(instance.writer, 'discussion.comment.create', { taskId: chatTask.id, content: 'Which API do we call?', mentions: [] })).entities;
+    await command(instance.api, 'discussion.comment.create', { taskId: chatTask.id, content: 'The new one.', replyToId: question.id, mentions: [] });
     await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
     await useTheme(page, theme);
     await page.goto(instance.url);
@@ -27,7 +31,7 @@ for (const theme of ['light', 'dark']) {
     await expect(page.getByRole('dialog')).toBeVisible();
     await scan(page, 'Pool');
     await page.keyboard.press('Escape');
-    for (const route of ['roadmap', `task/${instance.projects[0].task.taskKey}`, 'knowledge', 'inbox', 'settings']) {
+    for (const route of ['roadmap', `task/${chatTask.taskKey}`, 'knowledge', 'inbox', 'settings']) {
       await page.evaluate(value => { location.hash = `#/${value}`; }, route);
       await expect.poll(() => page.evaluate(() => App.context().view)).toBe(route.startsWith('task/') ? 'task' : route);
       await scan(page, route);
@@ -258,7 +262,8 @@ test('Blocked reasons and comment times add no Tab stops, and keep their details
   await expect(comment.getByRole('group')).toHaveAccessibleName(/^Smoke Owner \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   await comment.locator('.comment-menu-button').focus();
   await page.keyboard.press('Shift+Tab');
-  expect(await page.evaluate(() => !!document.activeElement?.closest('.cmt-head')), 'the time is no Tab stop').toBe(false);
+  // The time between Reply and the menu is no Tab stop.
+  await expect(comment.locator('.reply-action')).toBeFocused();
 });
 
 test('a focused file name keeps its tip while the task page scrolls, and the tip does not repeat the name', async ({ page, instance }) => {

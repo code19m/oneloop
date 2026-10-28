@@ -26,6 +26,28 @@ test('muted labels meet normal-text contrast on both themes and selected control
   assert.match(css,/\.cal-d\.out\s*\{\s*color:\s*var\(--ink-faint\)/);
 });
 
+test('every text on both comment bubbles and their quotes meets normal-text contrast on both themes',()=>{
+  // Each theme's tokens, with var() resolved; light overrides the dark defaults.
+  const block=selector=>Object.fromEntries([...css.match(new RegExp(`${selector}\\s*\\{([^}]*)\\}`))[1].matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map(match=>[match[1],match[2].trim()]));
+  const dark=block(':root'),themes={dark,light:{...dark,...block(':root\\[data-theme="light"\\]')}};
+  const resolve=(tokens,value)=>value.replace(/var\((--[\w-]+)\)/g,(_,name)=>resolve(tokens,tokens[name]));
+  const rgba=value=>{const hex=value.match(/^#([\da-f]{6})$/i);if(hex)return [...hex[1].match(/../g).map(part=>parseInt(part,16)),1];const [r,g,b,a=1]=value.match(/[\d.]+/g).map(Number);return [r,g,b,a];};
+  const over=([r,g,b,a],surface)=>[r,g,b].map((value,index)=>value*a+surface[index]*(1-a));
+  const hex=rgb=>'#'+rgb.map(value=>Math.round(value).toString(16).padStart(2,'0')).join('');
+  // Everyone else's bubble and the person's own, as the app's styles mix them.
+  const surfaces=[...appCss.matchAll(/--comment-surface:color-mix\(in srgb,var\((--[\w-]+)\) (\d+)%,var\((--[\w-]+)\)\)/g)];
+  assert.equal(surfaces.length,2);
+  for(const [name,tokens] of Object.entries(themes)){
+    const color=token=>rgba(resolve(tokens,`var(${token})`)),check=(texts,surface)=>{for(const text of texts)assert(contrast(hex(color(text).slice(0,3)),hex(surface))>=4.5,`${name}: ${text} on ${hex(surface)}`);};
+    for(const [,first,percent,second] of surfaces){
+      const bubble=over([...color(first).slice(0,3),percent/100],color(second));
+      // The body, author, Reply, Show more and removed note, time, and mentions.
+      check(['--ink','--ink-soft','--ink-muted','--ink-ghost','--run'],bubble);
+      // A quote's author and line, on its fill and hovered.
+      for(const fill of ['--fill-hover','--fill-selected'])check(['--ink-soft','--ink-muted'],over(color(fill),bubble));
+    }
+  }
+});
 
 test('light focus ring clears 3:1 on white, sidebar, controls and selected navigation',()=>{
   const ring=css.match(/--focus-ring:\s*(#[\da-f]{6})/i)[1];

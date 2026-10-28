@@ -175,16 +175,45 @@ test('the task feed shows load states, refreshes in place and ignores unmounted 
   t.w.testFacade.taskPage(task.id,{loaded:false,loading:false,error:true,hasMore:false,background:false});assert(t.d.querySelector('.timeline').textContent.includes('Could not load activity'));assert(t.d.querySelector('.timeline button')?.textContent.includes('Retry'));
   t.w.testFacade.taskPage(task.id,{loaded:true,loading:false,error:false,hasMore:false,background:false});assert(t.d.querySelector('.timeline').textContent.includes('No activity yet'));
   task.comments=[{id:'root',who:'robin',ts:1000,text:'First note',mentions:[],parentId:null},{id:'reply',who:'taylorwu',ts:2000,text:'First reply',mentions:[],parentId:'root',replyToId:'root'}];task.activity=[];t.A.refresh();
-  let toggle=t.d.querySelector('[data-reply-root="root"]');assert(toggle);toggle.focus();
+  const replyButton=()=>t.d.querySelector('[data-comment="reply"] .reply-action');
+  let focused=replyButton();assert(focused);focused.focus();
   t.w.testFacade.taskPage(task.id,{loaded:true,loading:false,error:false,hasMore:false,background:true});
-  assert.equal(t.d.activeElement,toggle);assert.equal(t.d.querySelector('[data-reply-root="root"]'),toggle);
+  assert.equal(t.d.activeElement,focused);assert.equal(replyButton(),focused);
   let serializations=0;task.comments.toJSON=()=>{serializations++;return [...task.comments];};
   task.comments[1].text='Changed reply';t.w.testFacade.taskPage(task.id,{loaded:true,loading:false,error:false,hasMore:false,background:true});
-  toggle=t.d.querySelector('[data-reply-root="root"]');assert.equal(t.d.activeElement,toggle);assert(t.d.querySelector('[data-comment="reply"]').textContent.includes('Changed reply'));
+  // The reply was drawn again; focus goes back to its Reply, not to the line above that names the comment it answers.
+  assert.notEqual(replyButton(),focused);assert.equal(t.d.activeElement,replyButton());assert(t.d.querySelector('[data-comment="reply"]').textContent.includes('Changed reply'));
   assert.equal(serializations,1,'one feed serialization per callback');
   t.A.nav('board');serializations=0;t.w.testFacade.taskPage(task.id,{loaded:true});assert.equal(serializations,0,'unmounted feeds are not serialized');
   t.A.openTask(task.id);assert(t.d.querySelector('[data-comment="reply"]').textContent.includes('Changed reply'));
   const other=t.D.tasks.find(item=>item.id!==task.id);t.A.openTask(other.id);serializations=0;t.w.testFacade.taskPage(task.id,{loaded:true});assert.equal(serializations,0,'stale task callbacks do not replace the mounted snapshot');
+});
+
+test('a reply being written stays in its box while new comments arrive in the chat', () => {
+  const t=boot('task/BIR-079',w=>{w.OneloopCollaboration={bind(_app,facade){w.testFacade=facade;return {beforeRender(){},mount(){}};}};}),task=t.D.tasks.find(item=>item.id==='BIR-079');
+  task.comments=[{id:'root',who:'robin',ts:1000,text:'First note',mentions:[],parentId:null}];task.activity=[];
+  t.w.testFacade.taskPage(task.id,{loaded:true,loading:false,error:false,hasMore:false,background:false});
+  t.A.replyComment(task.id,'root');const input=t.d.getElementById('cmtIn');input.value='Half a reply';input.dispatchEvent(new t.w.Event('input',{bubbles:true}));
+  task.comments=[...task.comments,{id:'late',who:'blairq',ts:3000,text:'Arrived while you wrote',mentions:[],parentId:null}];
+  t.w.testFacade.taskPage(task.id,{loaded:true,loading:false,error:false,hasMore:false,background:true});
+  assert(t.d.querySelector('[data-comment="late"]'),'the new comment shows at once');
+  assert.equal(t.d.getElementById('cmtIn'),input);assert.equal(input.value,'Half a reply');assert(t.d.querySelector('.reply-context-quote').textContent.includes('First note'));
+});
+
+test('the comment box being written in keeps its place on screen while new comments arrive above it', () => {
+  const t=boot('task/BIR-079',w=>{w.OneloopCollaboration={bind(_app,facade){w.testFacade=facade;return {beforeRender(){},mount(){}};}};}),task=t.D.tasks.find(item=>item.id==='BIR-079');
+  task.comments=[{id:'root',who:'robin',ts:1000,text:'First note',mentions:[],parentId:null}];task.activity=[];
+  const arrive=()=>{task.comments=[...task.comments,{id:`late-${task.comments.length}`,who:'blairq',ts:2000+task.comments.length,text:'Arrived',mentions:[],parentId:null}];t.w.testFacade.taskPage(task.id,{loaded:true,loading:false,error:false,hasMore:false,background:true});};
+  arrive();
+  // jsdom lays nothing out: here the box sits under the chat's rows, 50 px each, and the page shows 0 to 500 px.
+  const panel=t.d.querySelector('.task-page'),home=t.d.querySelector('.comment-composer-home');let offset=200;
+  const top=()=>offset+50*t.d.querySelectorAll('.timeline [data-comment]').length-panel.scrollTop;
+  home.getBoundingClientRect=()=>({top:top(),bottom:top()+120});
+  t.d.getElementById('cmtIn').focus();arrive();
+  assert.equal(panel.scrollTop,50);assert.equal(top(),300,'the rows above move up and the box stays where it was');
+  // A box that doesn't show, or doesn't have focus, leaves the page where it is.
+  offset=600;arrive();assert.equal(panel.scrollTop,50);
+  offset=200;t.d.getElementById('cmtIn').blur();arrive();assert.equal(panel.scrollTop,50);
 });
 
 test('count refreshes keep the focused task description', () => {

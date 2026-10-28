@@ -94,20 +94,35 @@ test('the task page keeps usable controls on a narrow phone viewport', async ({ 
   expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
 });
 
-test('Enter posts a comment and a reply closes its inline composer after sending', { tag: '@smoke' }, async ({ page, instance }) => {
+test('Enter posts a comment, and a reply shows last in the chat with the comment it answers', { tag: '@smoke' }, async ({ page, instance }) => {
   await openApp(page, instance);
   const composer = page.locator('#cmtIn');
   await composer.fill('Browser baseline root comment');
   await composer.press('Enter');
-  const root = page.locator('article[data-comment]').filter({ hasText: 'Browser baseline root comment' });
-  await expect(root).toBeVisible();
+  await expect(page.locator('article[data-comment]').filter({ hasText: 'Browser baseline root comment' })).toBeVisible();
+  // The reply quotes the root's text too, so the root is held by its ID.
+  const root = page.locator(`article[data-comment="${await page.locator('article[data-comment]').last().getAttribute('data-comment')}"]`);
+  await expect(page.locator('.comment-row.is-own')).toHaveCount(1);
   await root.locator('.reply-action').click();
-  await expect(page.getByText('Replying to', { exact: false })).toBeVisible();
+  await expect(page.locator('.comment-composer-home').getByText('Replying to', { exact: false })).toBeVisible();
   await page.locator('#cmtIn').fill('Browser baseline reply');
   await page.locator('#cmtIn').press('Enter');
   await expect(page.getByText('Replying to', { exact: false })).toBeHidden();
-  await expect(page.locator('article[data-comment]').filter({ hasText: 'Browser baseline reply' })).toBeVisible();
-  await expect(page.locator('#cmtIn')).toBeVisible();
+  const reply = page.locator('article[data-comment]').last();
+  await expect(reply).toContainText('Browser baseline reply');
+  await expect(reply.locator('.reply-reference')).toContainText('Browser baseline root comment');
+  await expect(page.locator('.comment-composer-home #cmtIn')).toBeVisible();
+  await reply.locator('.reply-reference').click();
+  await expect(root).toBeFocused();
+  // The flash fades back to the comment's own surface, not to a paler one that then snaps back.
+  const [fading, after] = await root.evaluate(el => {
+    const flash = el.getAnimations().find(animation => animation.animationName === 'comment-flash');
+    flash.pause(); flash.currentTime = 1990;
+    const fading = getComputedStyle(el).backgroundColor;
+    flash.finish();
+    return [fading, getComputedStyle(el).backgroundColor];
+  });
+  expect(fading).toBe(after);
 });
 
 test('a comment whose answer is lost is saved once, also when the next one was typed meanwhile', async ({ page, instance, allowedConsoleErrors }) => {
@@ -335,13 +350,13 @@ test('a task evicted from the Board keeps its attachments and discussion after r
   await expect(page.locator('.attachment-title')).toHaveCount(1);
   await page.locator('#cmtIn').fill('Retained comment');
   await page.locator('#cmtIn').press('Enter');
-  await expect(page.locator('.comment-conversation')).toHaveCount(1);
+  await expect(page.locator('.comment-row')).toHaveCount(1);
   await page.locator('.nav-item[title=Board]').click();
   await expect(page.locator('.board')).toBeVisible();
   await expect.poll(() => page.evaluate(id => DATA.tasks.some(t => t.internalId === id), task.id)).toBe(false);
   await page.evaluate(key => location.hash = `#/task/${key}`, task.taskKey);
   await expect(page.locator('.attachment-title')).toHaveCount(1);
-  await expect(page.locator('.comment-conversation')).toContainText('Retained comment');
+  await expect(page.locator('.comment-row')).toContainText('Retained comment');
 });
 
 test('comment readers avoid duplicate landmarks and focus only bounded bodies', async ({ page, instance }) => {
@@ -369,19 +384,19 @@ test('feed updates reuse unchanged comments and animate only connected document 
   const task = instance.projects[0].task;
   for (let i = 0; i < 105; i++) await command(instance.writer, 'discussion.comment.create', { taskId: task.id, content: `Comment ${i}`, mentions: [] });
   await openApp(page, instance);
-  await expect(page.locator('.comment-conversation')).toHaveCount(50);
+  await expect(page.locator('.comment-row')).toHaveCount(50);
   for (let i = 0; i < 2; i++) {
     await page.getByRole('button', { name: 'Load older activity' }).click();
-    await expect(page.locator('.comment-conversation')).toHaveCount(i === 0 ? 100 : 105);
+    await expect(page.locator('.comment-row')).toHaveCount(i === 0 ? 100 : 105);
   }
   // Background refresh retains the already loaded history window.
   await page.evaluate(() => OneloopCollaboration.loadTaskPage(App.context().taskId));
-  await expect(page.locator('.comment-conversation')).toHaveCount(105);
+  await expect(page.locator('.comment-row')).toHaveCount(105);
   expect(await page.evaluate(() => window.invalidAnimations)).toBe(0);
   // A new page starts a fresh window for the independent node/listener budget.
   await page.reload();
   await waitForLiveChannel(page);
-  await expect(page.locator('.comment-conversation')).toHaveCount(50);
+  await expect(page.locator('.comment-row')).toHaveCount(50);
   const liveComment = async i => {
     await command(instance.writer, 'discussion.comment.create', { taskId: task.id, content: `Live comment ${i}`, mentions: [] });
     await expect(page.locator('.timeline')).toContainText(`Live comment ${i}`);
@@ -392,8 +407,8 @@ test('feed updates reuse unchanged comments and animate only connected document 
   // Only a row that changed is drawn again. Its time label changes by
   // itself, from "just now" to "1m ago" 30 s after its comment, which a slow
   // run reaches; the row drawn then is the one to watch.
-  const key = await page.locator('.comment-conversation').last().getAttribute('data-feed-key');
-  const watched = page.locator(`.comment-conversation[data-feed-key="${key}"]`), label = el => el.querySelector('time').textContent;
+  const key = await page.locator('.comment-row').last().getAttribute('data-feed-key');
+  const watched = page.locator(`.comment-row[data-feed-key="${key}"]`), label = el => el.querySelector('time').textContent;
   let row = await watched.elementHandle();
   for (let i = 1; i < 20; i++) {
     const before = await row.evaluate(label);
@@ -425,7 +440,7 @@ test('Load older activity still works when a live comment arrives during the cli
   const task = instance.projects[0].task;
   for (let i = 0; i < 55; i++) await command(instance.writer, 'discussion.comment.create', { taskId: task.id, content: `Comment ${i}`, mentions: [] });
   await openApp(page, instance);
-  await expect(page.locator('.comment-conversation')).toHaveCount(50);
+  await expect(page.locator('.comment-row')).toHaveCount(50);
   await expect(page.locator('.timeline')).not.toContainText('Comment 0');
   await page.getByRole('button', { name: 'Load older activity' }).hover();
   await page.mouse.down();
@@ -458,9 +473,10 @@ test('a live change re-reads the task page in the background, so it does not cou
 test('descriptions and comments take each paragraph\'s direction from its own text', async ({ page, instance }) => {
   const { task } = instance.projects[0];
   await command(instance.api, 'task.update', { taskId: task.id, description: 'وصف المهمة بالعربية.\nAn English line.' }, task.revision);
-  for (const content of ['تعليق باللغة العربية، هل يظهر بشكل صحيح؟', 'An English comment.']) {
-    await command(instance.api, 'discussion.comment.create', { taskId: task.id, content, mentions: [] });
-  }
+  // A comment's bubble is as wide as its text, so each one wraps: its last line shows the side it reads from.
+  const [arabic] = (await command(instance.api, 'discussion.comment.create', { taskId: task.id, content: 'تعليق باللغة العربية، هل يظهر بشكل صحيح؟ '.repeat(6).trim(), mentions: [] })).entities;
+  await command(instance.api, 'discussion.comment.create', { taskId: task.id, content: 'An English comment. '.repeat(14).trim(), mentions: [] });
+  await command(instance.writer, 'discussion.comment.create', { taskId: task.id, content: 'A reply.', replyToId: arabic.id, mentions: [] });
   await openApp(page, instance);
   // Where a text sits in its box: right-aligned when it reads right to left.
   const sides = locator => locator.evaluate(element => {
@@ -468,8 +484,15 @@ test('descriptions and comments take each paragraph\'s direction from its own te
     range.selectNodeContents(element);
     return [...range.getClientRects()].map(line => Math.round(box.right - line.right) < Math.round(line.left - box.left) ? 'right' : 'left');
   });
-  await expect.poll(() => sides(page.locator('.cmt-body').filter({ hasText: 'تعليق' }))).toEqual(['right']);
-  expect(await sides(page.locator('.cmt-body').filter({ hasText: 'An English comment.' }))).toEqual(['left']);
+  const lastLine = async locator => (await sides(locator)).at(-1);
+  await expect.poll(() => lastLine(page.locator('.cmt-body').filter({ hasText: 'تعليق' }))).toBe('right');
+  expect(await lastLine(page.locator('.cmt-body').filter({ hasText: 'An English comment.' }))).toBe('left');
+  // The reply's quote of it starts on the right too, so a line too long for it is cut at its end, on the left.
+  expect(await page.locator('.reply-reference span').evaluate(element => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    return Math.round(Math.abs(element.getBoundingClientRect().right - Math.max(...[...range.getClientRects()].map(line => line.right))));
+  })).toBeLessThanOrEqual(1);
   // The description's lines, as it shows them and in its editor.
   const lines = await sides(page.locator('#task-description-content p'));
   expect([lines.at(0), lines.at(-1)]).toEqual(['right', 'left']);
