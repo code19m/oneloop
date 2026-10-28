@@ -4,6 +4,6 @@
   "private": true,
   "description": "Generated audit-only inventory; do not install or independently update",
   "dependencies": {
-    "bundled-0": "npm:dompurify@3.4.16"
+    "bundled-0": "npm:dompurify@3.4.17"
   }
 }

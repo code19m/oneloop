@@ -1,7 +1,7 @@
 # Mermaid bundled dependency notices
 
 Mermaid 12.0.0 security rebuild, source commit
-98a0945418c76238f15df2afaddbba4272656c3b; DOMPurify overridden to 3.4.16, lodash-es to 4.18.1
+98a0945418c76238f15df2afaddbba4272656c3b; DOMPurify overridden to 3.4.17, lodash-es to 4.18.1
 and KaTeX to 0.18.9.
 This conservative inventory includes the source lock's production dependency
 closure, parser runtime dependencies and bundled lodash-es. Some listed packages
@@ -4358,13 +4358,13 @@ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 ```
 
-## dompurify@3.4.16
+## dompurify@3.4.17
 
 License: (MPL-2.0 OR Apache-2.0)
 
-Source: https://registry.npmjs.org/dompurify/-/dompurify-3.4.16.tgz
+Source: https://registry.npmjs.org/dompurify/-/dompurify-3.4.17.tgz
 
-Integrity: `sha512-sqo+pNp3qRhCIpbgRi1y8Tgk27Bo2Ry7w0dC1NBeNTdZChWjz9Xb/KOoZbRP/R6pQZ80Qw8YhXw13hWWBbMRnQ==`
+Integrity: `sha512-B/pSlYVHQ58kqISD/yDjuJ1yfzI34m1gF4lAod2bwSRhiN4K5Cl3H8Af7hqB2PmTL911tdEudnnXn5FnhRoz0w==`
 
 ### LICENSE
 

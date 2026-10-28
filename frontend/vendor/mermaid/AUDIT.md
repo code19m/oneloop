@@ -14,7 +14,10 @@ The security rebuild uses lodash-es 4.18.1 throughout, resolving the
 [template imports advisory](https://github.com/advisories/GHSA-r5fr-rjxr-66jc)
 and [array-path advisory](https://github.com/advisories/GHSA-f23m-r3pf-42rh).
 It also uses KaTeX 0.18.9, resolving the
-[trust advisory](https://github.com/advisories/GHSA-238p-pmpm-9mq7).
+[trust advisory](https://github.com/advisories/GHSA-238p-pmpm-9mq7), and DOMPurify
+3.4.17, resolving [GHSA-cg2g-xh64-v4q7](https://github.com/advisories/GHSA-cg2g-xh64-v4q7),
+[GHSA-mrv2-3pqr-j5jr](https://github.com/advisories/GHSA-mrv2-3pqr-j5jr) and
+[GHSA-c6gr-qvv4-5v3f](https://github.com/advisories/GHSA-c6gr-qvv4-5v3f).
 The generated source map was checked for the resolved versions. The inventory
 and licenses match the rebuilt source lock; no advisory suppression is configured.
 See [rebuild instructions](REBUILD.md).

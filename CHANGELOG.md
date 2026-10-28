@@ -17,6 +17,21 @@ All notable changes to oneloop are recorded here. The format follows
   shows Done's own order. To put a finished task elsewhere, drag it or use
   **Move up** and **Move down**.
 
+### Security
+
+- Updated ctutils to 0.4.4 (RUSTSEC-2026-0385). The password hashing that
+  checks sign-ins uses it to compare values in constant time.
+- Updated tokio to 1.53.3 (RUSTSEC-2026-0386). Neither oneloop nor the
+  libraries it uses call the affected functions.
+- Updated DOMPurify to 3.4.17 in the browser's Markdown previews and in
+  Mermaid diagrams
+  ([GHSA-cg2g-xh64-v4q7](https://github.com/advisories/GHSA-cg2g-xh64-v4q7),
+  [GHSA-mrv2-3pqr-j5jr](https://github.com/advisories/GHSA-mrv2-3pqr-j5jr),
+  [GHSA-c6gr-qvv4-5v3f](https://github.com/advisories/GHSA-c6gr-qvv4-5v3f)).
+  Each advisory needs a DOMPurify setting that neither oneloop nor Mermaid
+  uses (`SAFE_FOR_TEMPLATES`, `IN_PLACE` or the XHTML `PARSER_MEDIA_TYPE`), so
+  oneloop was not affected.
+
 ## [0.1.0-rc.8] - 2026-10-22
 
 The eighth release candidate. HTML previews of attachments and Knowledge files
