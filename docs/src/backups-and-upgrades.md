@@ -123,7 +123,7 @@ With Docker, run `docker compose down`, and restore into a new volume:
 ```sh
 docker volume create oneloop-restored
 docker run --rm -v oneloop-restored:/data -v /srv/oneloop-backups:/backups:ro \
-  ghcr.io/code19m/oneloop:0.1.0-rc.8 backup restore /backups/2026-09-28
+  ghcr.io/code19m/oneloop:0.1.0-rc.9 backup restore /backups/2026-09-28
 ```
 
 In `compose.yaml`, change the volume's `name:` to `oneloop-restored`. If the
@@ -151,7 +151,7 @@ you choose, and it changes nothing if the backup fails.
 2. Stop oneloop.
 3. Install the new version:
    ```sh
-   cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.8 --locked
+   cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.9 --locked
    sudo install ~/.cargo/bin/oneloop /usr/local/bin/oneloop
    ```
 4. Upgrade the database, and check the result with the settings from the unit
@@ -193,7 +193,7 @@ let you try the next version early.
 - The Docker tags `latest` and `0.1` follow stable versions only. A release
   candidate gets only its exact tag.
 - In production, use an exact version, such as
-  `ghcr.io/code19m/oneloop:0.1.0-rc.8` or `--tag v0.1.0-rc.8`.
+  `ghcr.io/code19m/oneloop:0.1.0-rc.9` or `--tag v0.1.0-rc.9`.
 
 <a id="databases-from-before-010"></a>
 
